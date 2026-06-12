@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Hukuk bürosu / kiracı
+model Tenant {
+  id           String   @id @default(uuid())
+  buroAdi      String   @map("buro_adi")
+  slug         String   @unique
+  telefon      String?  @map("telefon")
+  eposta       String?  @map("eposta")
+  adres        String?  @map("adres")
+  vergiNo      String?  @map("vergi_no")
+  vergiDairesi String?  @map("vergi_dairesi")
+  aktifMi      Boolean  @default(true) @map("aktif_mi")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  users     User[]
+  auditLogs AuditLog[]
+
+  @@map("tenant")
+}
+
+enum UserRole {
+  BURO_SAHIBI
+  AVUKAT_YONETICI
+  KATIP_PERSONEL
+}
+
+model User {
+  id               String    @id @default(uuid())
+  tenantId         String    @map("tenant_id")
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  adSoyad          String    @map("ad_soyad")
+  kullaniciAdi     String    @map("kullanici_adi")
+  eposta           String?   @map("eposta")
+  telefon          String?   @map("telefon")
+  sifreHash        String    @map("sifre_hash")
+  role             UserRole
+  aktifMi          Boolean   @default(true) @map("aktif_mi")
+  sonGirisTarihi   DateTime? @map("son_giris_tarihi")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  auditLogs AuditLog[]
+
+  @@unique([tenantId, kullaniciAdi])
+  @@unique([tenantId, eposta])
+  @@index([tenantId])
+  @@index([eposta])
+  @@map("user")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String?  @map("tenant_id")
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  userId     String?  @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  oldValue   Json?    @map("old_value")
+  newValue   Json?    @map("new_value")
+  meta       Json?
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("audit_log")
+}
