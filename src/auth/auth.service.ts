@@ -1,18 +1,18 @@
 import bcrypt from 'bcrypt'
 import type { Tenant, User } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { slugifyBuroAdi } from '../lib/slug.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { signAccessToken } from './jwt.js'
-import type { RegisterOfficeBody, LoginBody } from './auth.schemas.js'
+import type { LoginBody } from './auth.schemas.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { Request } from 'express'
 import { getRequestMeta } from './requestMeta.js'
+import { assertTenantLoginAllowed } from '../tenant/tenantLicense.js'
 
 const BCRYPT_ROUNDS = 12
 
 export type PublicUser = Omit<User, 'sifreHash'>
-export type PublicTenant = Tenant
+export type PublicTenant = Omit<Tenant, 'yillikUcret'> & { yillikUcret: string | null }
 
 export function serializeUser(u: User & { tenant?: Tenant }): PublicUser {
   const { sifreHash: _, tenant: __, ...rest } = u
@@ -20,94 +20,17 @@ export function serializeUser(u: User & { tenant?: Tenant }): PublicUser {
 }
 
 export function serializeTenant(t: Tenant): PublicTenant {
-  return t
+  const { yillikUcret, ...rest } = t
+  return {
+    ...rest,
+    yillikUcret: yillikUcret == null ? null : yillikUcret.toFixed(2)
+  }
 }
 
 export type AuthSuccessPayload = {
   accessToken: string
   user: PublicUser
   tenant: PublicTenant
-}
-
-async function ensureUniqueSlug(base: string): Promise<string> {
-  let slug = base
-  let n = 0
-  while (await prisma.tenant.findUnique({ where: { slug } })) {
-    n += 1
-    slug = `${base}-${n}`
-  }
-  return slug
-}
-
-export async function registerOffice(body: RegisterOfficeBody, req: Request): Promise<AuthSuccessPayload> {
-  const meta = getRequestMeta(req)
-  const slugBase = slugifyBuroAdi(body.buroAdi)
-  const slug = await ensureUniqueSlug(slugBase)
-  const sifreHash = await bcrypt.hash(body.sifre, BCRYPT_ROUNDS)
-
-  const usernameTaken = await prisma.user.findFirst({
-    where: { kullaniciAdi: { equals: body.kullaniciAdi, mode: 'insensitive' } }
-  })
-  if (usernameTaken) {
-    throw new AppError(409, 'Bu kullanıcı adı kullanılıyor.', 'USERNAME_TAKEN')
-  }
-
-  try {
-    const result = await prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.create({
-        data: {
-          buroAdi: body.buroAdi.trim(),
-          slug,
-          telefon: body.telefon.trim(),
-          eposta: body.eposta.trim().toLowerCase(),
-          aktifMi: true
-        }
-      })
-      const user = await tx.user.create({
-        data: {
-          tenantId: tenant.id,
-          adSoyad: body.adSoyad.trim(),
-          kullaniciAdi: body.kullaniciAdi,
-          eposta: body.eposta.trim().toLowerCase(),
-          telefon: body.telefon.trim(),
-          sifreHash,
-          role: 'BURO_SAHIBI',
-          aktifMi: true
-        }
-      })
-      return { tenant, user }
-    })
-
-    await writeAuditLog({
-      tenantId: result.tenant.id,
-      userId: result.user.id,
-      action: 'AUTH_REGISTER_OFFICE',
-      entityType: 'Tenant',
-      entityId: result.tenant.id,
-      newValue: { buroAdi: result.tenant.buroAdi, slug: result.tenant.slug },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-
-    const accessToken = signAccessToken({
-      userId: result.user.id,
-      tenantId: result.tenant.id,
-      role: result.user.role,
-      kullaniciAdi: result.user.kullaniciAdi
-    })
-
-    return {
-      accessToken,
-      user: serializeUser(result.user),
-      tenant: serializeTenant(result.tenant)
-    }
-  } catch (e: unknown) {
-    const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: string }).code) : ''
-    if (code === 'P2002') {
-      throw new AppError(409, 'Bu kullanıcı adı kullanılıyor veya bu büroda e-posta zaten kayıtlı.', 'DUPLICATE')
-    }
-    throw e
-  }
 }
 
 export async function login(body: LoginBody, req: Request): Promise<AuthSuccessPayload> {
@@ -122,8 +45,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
     const matches = await prisma.user.findMany({
       where: {
         eposta: { equals: email, mode: 'insensitive' },
-        aktifMi: true,
-        tenant: { aktifMi: true }
+        aktifMi: true
       },
       include: { tenant: true }
     })
@@ -158,8 +80,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
     user = await prisma.user.findFirst({
       where: {
         kullaniciAdi: { equals: raw, mode: 'insensitive' },
-        aktifMi: true,
-        tenant: { aktifMi: true }
+        aktifMi: true
       },
       include: { tenant: true }
     })
@@ -188,6 +109,8 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
     })
     throw new AppError(401, 'E-posta/kullanıcı adı veya şifre hatalı.', 'INVALID_CREDENTIALS')
   }
+
+  assertTenantLoginAllowed(user.tenant)
 
   const updated = await prisma.user.update({
     where: { id: user.id },

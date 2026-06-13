@@ -13,7 +13,8 @@ export function signAccessToken(input: {
     sub: input.userId,
     tenantId: input.tenantId,
     role: input.role,
-    kullaniciAdi: input.kullaniciAdi
+    kullaniciAdi: input.kullaniciAdi,
+    typ: 'tenant'
   }
   const secret: Secret = env.JWT_SECRET
   const options = { expiresIn: env.JWT_EXPIRES_IN } as SignOptions

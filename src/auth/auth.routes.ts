@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { Router } from 'express'
-import { forgotPasswordBodySchema, loginBodySchema, registerOfficeBodySchema, resetPasswordBodySchema } from './auth.schemas.js'
-import { login, registerOffice } from './auth.service.js'
+import { forgotPasswordBodySchema, loginBodySchema, resetPasswordBodySchema } from './auth.schemas.js'
+import { login } from './auth.service.js'
 import { requestPasswordReset, resetPasswordWithToken } from './passwordReset.service.js'
 
 export const authRouter = Router()
@@ -12,14 +12,14 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
   }
 }
 
-authRouter.post(
-  '/register-office',
-  asyncHandler(async (req, res) => {
-    const body = registerOfficeBodySchema.parse(req.body)
-    const { accessToken, user, tenant } = await registerOffice(body, req)
-    res.status(201).json({ ok: true, accessToken, user, tenant })
+/** Public self-service büro oluşturma kapalı; yalnız admin `POST /api/v1/admin/tenants`. */
+authRouter.post('/register-office', (_req, res) => {
+  res.status(403).json({
+    ok: false,
+    message: 'Büro hesabı oluşturma işlemi Woontegra tarafından yapılır.',
+    code: 'PUBLIC_REGISTRATION_DISABLED'
   })
-)
+})
 
 authRouter.post(
   '/login',

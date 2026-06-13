@@ -7,6 +7,14 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Yıllık lisans / demo durumu (paket sistemi yok).
+enum TenantLicenseStatus {
+  DEMO
+  AKTIF
+  SURESI_DOLDU
+  PASIF
+}
+
 /// Hukuk bürosu / kiracı
 model Tenant {
   id           String   @id @default(uuid())
@@ -18,6 +26,16 @@ model Tenant {
   vergiNo      String?  @map("vergi_no")
   vergiDairesi String?  @map("vergi_dairesi")
   aktifMi      Boolean  @default(true) @map("aktif_mi")
+
+  lisansBaslangicTarihi DateTime?             @map("lisans_baslangic")
+  lisansBitisTarihi     DateTime?             @map("lisans_bitis")
+  lisansDurumu          TenantLicenseStatus   @default(AKTIF) @map("lisans_durumu")
+  demoMu                Boolean               @default(false) @map("demo_mu")
+  demoBitisTarihi       DateTime?             @map("demo_bitis")
+  sonOdemeTarihi        DateTime?             @map("son_odeme")
+  yillikUcret           Decimal?              @map("yillik_ucret") @db.Decimal(14, 2)
+  lisansNotlari         String?               @map("lisans_notlari")
+
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -404,4 +422,47 @@ model ImportBatch {
   @@index([tenantId, sourceFingerprint])
   @@index([tenantId, status])
   @@map("import_batch")
+}
+
+/// Woontegra platform yöneticisi (büro kullanıcısı değildir).
+enum SuperAdminRole {
+  SUPER_ADMIN
+  DESTEK
+  FINANS
+}
+
+model SuperAdmin {
+  id             String          @id @default(uuid())
+  adSoyad        String          @map("ad_soyad")
+  kullaniciAdi   String          @unique @map("kullanici_adi")
+  eposta         String?         @unique @map("eposta")
+  sifreHash      String          @map("sifre_hash")
+  rol            SuperAdminRole
+  aktifMi        Boolean         @default(true) @map("aktif_mi")
+  sonGirisTarihi DateTime?       @map("son_giris_tarihi")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  adminAuditLogs AdminAuditLog[]
+
+  @@map("super_admin")
+}
+
+/// Woontegra admin işlem kaydı (kiracı audit_log’dan ayrı).
+model AdminAuditLog {
+  id         String      @id @default(uuid())
+  adminId    String?     @map("admin_id")
+  admin      SuperAdmin? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String?     @map("entity_type")
+  entityId   String?     @map("entity_id")
+  oldValue   Json?       @map("old_value")
+  newValue   Json?       @map("new_value")
+  ipAddress  String?     @map("ip_address")
+  userAgent  String?     @map("user_agent")
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@index([adminId, createdAt])
+  @@index([entityType, entityId])
+  @@map("admin_audit_log")
 }

@@ -6,4 +6,6 @@ export type AuthUserPayload = {
   tenantId: string
   role: UserRole
   kullaniciAdi: string
+  /** Büro JWT; admin tokenlarında yok. */
+  typ?: 'tenant'
 }

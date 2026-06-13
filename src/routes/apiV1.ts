@@ -13,11 +13,14 @@ import { dashboardRouter } from '../dashboard/dashboard.routes.js'
 import { smmRouter } from '../smm/smm.routes.js'
 import { desktopImportRouter } from '../import/desktopImport.routes.js'
 import { usersRouter } from '../users/users.routes.js'
+import { licenseRouter } from '../license/license.routes.js'
 import { Permission } from '../permissions/roles.js'
 import { meHandler } from './me.js'
+import { adminRouter } from '../admin/admin.routes.js'
 
 export const apiV1Router = Router()
 
+apiV1Router.use('/admin', adminRouter)
 apiV1Router.use(tenantContext)
 apiV1Router.use('/auth', authRouter)
 apiV1Router.use('/muvekkiller', muvekkillerRouter)
@@ -29,6 +32,7 @@ apiV1Router.use('/dashboard', dashboardRouter)
 apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)
 apiV1Router.use('/users', usersRouter)
+apiV1Router.use('/license', licenseRouter)
 
 apiV1Router.get('/me', requireAuth, loadAuthContext, meHandler)
 

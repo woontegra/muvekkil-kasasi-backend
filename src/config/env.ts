@@ -9,6 +9,12 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_SECRET: z.string().min(16, 'JWT_SECRET en az 16 karakter olmalı'),
   JWT_EXPIRES_IN: z.string().default('8h'),
+  /** Woontegra süper admin JWT; yoksa JWT_SECRET kullanılır (payload `typ: admin` zorunlu). */
+  ADMIN_JWT_SECRET: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim().length >= 16 ? v.trim() : undefined),
+    z.string().min(16).optional()
+  ),
+  ADMIN_JWT_EXPIRES_IN: z.string().default('8h'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   /** Şifre sıfırlama e-postasındaki link kökü; yoksa CORS_ORIGIN kullanılır. */
   PUBLIC_APP_URL: z.preprocess(
