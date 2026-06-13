@@ -21,8 +21,15 @@ model Tenant {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  users     User[]
-  auditLogs AuditLog[]
+  users        User[]
+  auditLogs    AuditLog[]
+  muvekkiller  Muvekkil[]
+  dosyalar          Dosya[]
+  kasaHareketleri       KasaHareketi[]
+  vekaletUcretleri      VekaletUcreti[]
+  vekaletTaksitleri     VekaletTaksiti[]
+  ofisKasaHareketleri   OfisKasaHareketi[]
+  importBatches         ImportBatch[]
 
   @@map("tenant")
 }
@@ -48,9 +55,25 @@ model User {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  auditLogs AuditLog[]
+  auditLogs             AuditLog[]
+  passwordResetTokens   PasswordResetToken[]
+  muvekkillerCreated    Muvekkil[]            @relation("MuvekkilCreatedBy")
+  muvekkillerUpdated    Muvekkil[]            @relation("MuvekkilUpdatedBy")
+  dosyalarCreated       Dosya[]               @relation("DosyaCreatedBy")
+  dosyalarUpdated       Dosya[]               @relation("DosyaUpdatedBy")
+  kasaHareketleriCreated KasaHareketi[]        @relation("KasaCreatedBy")
+  kasaHareketleriUpdated KasaHareketi[]        @relation("KasaUpdatedBy")
+  kasaHareketleriOnaylayan KasaHareketi[]     @relation("KasaOnaylayan")
+  vekaletUcretleriCreated   VekaletUcreti[]   @relation("VekaletUcretiCreatedBy")
+  vekaletUcretleriUpdated   VekaletUcreti[]   @relation("VekaletUcretiUpdatedBy")
+  vekaletTaksitleriCreated   VekaletTaksiti[] @relation("VekaletTaksitCreatedBy")
+  vekaletTaksitleriUpdated   VekaletTaksiti[] @relation("VekaletTaksitUpdatedBy")
+  ofisKasaHareketleriCreated OfisKasaHareketi[] @relation("OfisKasaCreatedBy")
+  ofisKasaHareketleriUpdated OfisKasaHareketi[] @relation("OfisKasaUpdatedBy")
+  ofisKasaHareketleriOnaylayan OfisKasaHareketi[] @relation("OfisKasaOnaylayan")
+  importBatchesCommitted       ImportBatch[]
 
-  @@unique([tenantId, kullaniciAdi])
+  @@unique([kullaniciAdi])
   @@unique([tenantId, eposta])
   @@index([tenantId])
   @@index([eposta])
@@ -75,4 +98,310 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@map("audit_log")
+}
+
+enum MuvekkilTur {
+  GERCEK
+  TUZEL
+}
+
+model Muvekkil {
+  id                String      @id @default(uuid())
+  tenantId          String      @map("tenant_id")
+  tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tur               MuvekkilTur
+  gorunenAd         String      @map("gorunen_ad")
+  adSoyad           String      @default("") @map("ad_soyad")
+  sirketUnvani      String?     @map("sirket_unvani")
+  telefon           String?
+  eposta            String?
+  notMetni          String?     @map("not_metni")
+  yetkiliAdSoyad    String      @default("") @map("yetkili_ad_soyad")
+  yetkiliTelefon    String      @default("") @map("yetkili_telefon")
+  mudurAdSoyad      String      @default("") @map("mudur_ad_soyad")
+  mudurTelefon      String      @default("") @map("mudur_telefon")
+  muhasebeAdSoyad   String      @default("") @map("muhasebe_ad_soyad")
+  muhasebeTelefon   String      @default("") @map("muhasebe_telefon")
+  aktifMi           Boolean     @default(true) @map("aktif_mi")
+  createdById       String      @map("created_by_id")
+  createdBy         User        @relation("MuvekkilCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById       String?     @map("updated_by_id")
+  updatedBy         User?       @relation("MuvekkilUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+  dosyalar           Dosya[]
+  kasaHareketleri    KasaHareketi[]
+  vekaletUcretleri   VekaletUcreti[]
+  vekaletTaksitleri  VekaletTaksiti[]
+
+  @@index([tenantId, aktifMi])
+  @@index([tenantId, gorunenAd])
+  @@map("muvekkil")
+}
+
+enum DosyaDurumu {
+  AKTIF
+  PASIF
+  KAPANDI
+  ARSIV
+}
+
+enum DosyaTuru {
+  DAVA
+  ICRA
+  DANISMANLIK
+  DIGER
+}
+
+model Dosya {
+  id           String       @id @default(uuid())
+  tenantId     String       @map("tenant_id")
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  muvekkilId   String       @map("muvekkil_id")
+  muvekkil     Muvekkil     @relation(fields: [muvekkilId], references: [id], onDelete: Cascade)
+  konuBasligi  String       @map("konu_basligi")
+  mahkeme      String?
+  icraDairesi  String?      @map("icra_dairesi")
+  dosyaNo      String?      @map("dosya_no")
+  dosyaTuru    DosyaTuru    @map("dosya_turu")
+  durum        DosyaDurumu
+  aciklama     String?
+  aktifMi      Boolean      @default(true) @map("aktif_mi")
+  createdById  String       @map("created_by_id")
+  createdBy    User         @relation("DosyaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById  String?      @map("updated_by_id")
+  updatedBy    User?        @relation("DosyaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+  kasaHareketleri   KasaHareketi[]
+  vekaletUcreti     VekaletUcreti?
+  vekaletTaksitleri VekaletTaksiti[]
+
+  @@index([tenantId, muvekkilId, aktifMi])
+  @@index([tenantId, aktifMi])
+  @@map("dosya")
+}
+
+enum KasaHareketTipi {
+  AVANS_GIRISI
+  MASRAF
+  DUZELTME
+}
+
+enum KasaOnayDurumu {
+  ONAYSIZ
+  ONAYLI
+  REDDEDILDI
+}
+
+enum OdemeYontemi {
+  NAKIT
+  BANKA
+  KREDI_KARTI
+  DIGER
+}
+
+/// Dosya / müvekkil kasasından bağımsız büro ofis kasası
+enum OfisKasaIslemTipi {
+  GELIR
+  GIDER
+  DUZELTME
+}
+
+enum OfisKasaOnayDurumu {
+  ONAYSIZ
+  ONAYLI
+  REDDEDILDI
+}
+
+enum OfisKasaOdemeYontemi {
+  NAKIT
+  BANKA
+  KREDI_KARTI
+  DIGER
+}
+
+model OfisKasaHareketi {
+  id                  String               @id @default(uuid())
+  tenantId            String               @map("tenant_id")
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  islemTipi           OfisKasaIslemTipi    @map("islem_tipi")
+  tarih               DateTime
+  kategori            String               @map("kategori")
+  ozelKategoriAdi     String?              @map("ozel_kategori_adi")
+  aciklama            String?
+  tutar               Decimal              @db.Decimal(14, 2)
+  odemeYontemi        OfisKasaOdemeYontemi @map("odeme_yontemi")
+  belgeNo             String               @map("belge_no")
+  onayDurumu          OfisKasaOnayDurumu   @default(ONAYSIZ) @map("onay_durumu")
+  onaylayanId         String?              @map("onaylayan_id")
+  onaylayan           User?                @relation("OfisKasaOnaylayan", fields: [onaylayanId], references: [id], onDelete: SetNull)
+  onayTarihi          DateTime?            @map("onay_tarihi")
+  redSebebi           String?              @map("red_sebebi")
+  orijinalHareketId   String?              @map("orijinal_hareket_id")
+  orijinalHareket     OfisKasaHareketi?    @relation("OfisKasaDuzeltme", fields: [orijinalHareketId], references: [id], onDelete: SetNull)
+  duzeltmeler         OfisKasaHareketi[]   @relation("OfisKasaDuzeltme")
+  otomatikOnayMi      Boolean              @default(false) @map("otomatik_onay_mi")
+  createdById         String               @map("created_by_id")
+  createdBy           User                 @relation("OfisKasaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById         String?              @map("updated_by_id")
+  updatedBy           User?                @relation("OfisKasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+
+  @@unique([tenantId, belgeNo])
+  @@index([tenantId, tarih])
+  @@index([tenantId, onayDurumu])
+  @@index([tenantId, islemTipi])
+  @@map("ofis_kasa_hareketi")
+}
+
+model KasaHareketi {
+  id                 String           @id @default(uuid())
+  tenantId           String           @map("tenant_id")
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dosyaId            String           @map("dosya_id")
+  dosya              Dosya            @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  muvekkilId         String           @map("muvekkil_id")
+  muvekkil           Muvekkil         @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
+  tip                KasaHareketTipi
+  tarih              DateTime
+  masrafTuru         String?          @map("masraf_turu")
+  ozelMasrafAdi      String?          @map("ozel_masraf_adi")
+  aciklama           String?
+  tutar              Decimal          @db.Decimal(14, 2)
+  /** Dosya kasası akışında kullanılmıyor; kolon geriye dönük uyumluluk için nullable. */
+  odemeYontemi       OdemeYontemi?    @map("odeme_yontemi")
+  masrafiYapanKisi   String?          @map("masrafi_yapan_kisi")
+  belgeNo            String           @map("belge_no")
+  onayDurumu         KasaOnayDurumu   @default(ONAYSIZ) @map("onay_durumu")
+  onaylayanId        String?          @map("onaylayan_id")
+  onaylayan          User?            @relation("KasaOnaylayan", fields: [onaylayanId], references: [id], onDelete: SetNull)
+  onayTarihi         DateTime?        @map("onay_tarihi")
+  redSebebi          String?          @map("red_sebebi")
+  orijinalHareketId String?          @map("orijinal_hareket_id")
+  orijinalHareket    KasaHareketi?    @relation("DuzeltmeBaglanti", fields: [orijinalHareketId], references: [id], onDelete: SetNull)
+  duzeltmeler        KasaHareketi[]   @relation("DuzeltmeBaglanti")
+  otomatikOnayMi     Boolean          @default(false) @map("otomatik_onay_mi")
+  createdById        String           @map("created_by_id")
+  createdBy          User             @relation("KasaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById        String?          @map("updated_by_id")
+  updatedBy          User?            @relation("KasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  @@unique([tenantId, belgeNo])
+  @@index([tenantId, dosyaId, tarih])
+  @@index([tenantId, dosyaId, onayDurumu])
+  @@map("kasa_hareketi")
+}
+
+enum VekaletTaksitOdemeDurumu {
+  ODENMEDI
+  ODENDI
+  IPTAL
+}
+
+/// Dosya başına tek anlaşılan vekalet ücreti; dosya kasası (avans) ile ilişkilendirilmez.
+model VekaletUcreti {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dosyaId      String   @unique @map("dosya_id")
+  dosya        Dosya    @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  muvekkilId   String   @map("muvekkil_id")
+  muvekkil     Muvekkil @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
+  toplamTutar  Decimal  @map("toplam_tutar") @db.Decimal(14, 2)
+  aciklama     String?
+  createdById  String   @map("created_by_id")
+  createdBy    User     @relation("VekaletUcretiCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById  String?  @map("updated_by_id")
+  updatedBy    User?    @relation("VekaletUcretiUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  taksitler    VekaletTaksiti[]
+
+  @@index([tenantId, muvekkilId])
+  @@map("vekalet_ucreti")
+}
+
+model VekaletTaksiti {
+  id              String                   @id @default(uuid())
+  tenantId        String                   @map("tenant_id")
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dosyaId         String                   @map("dosya_id")
+  dosya           Dosya                    @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  muvekkilId      String                   @map("muvekkil_id")
+  muvekkil        Muvekkil                 @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
+  vekaletUcretiId String                   @map("vekalet_ucreti_id")
+  vekaletUcreti   VekaletUcreti            @relation(fields: [vekaletUcretiId], references: [id], onDelete: Cascade)
+  taksitNo        Int                      @map("taksit_no")
+  vadeTarihi      DateTime                 @map("vade_tarihi")
+  tutar           Decimal                  @db.Decimal(14, 2)
+  odemeDurumu     VekaletTaksitOdemeDurumu @default(ODENMEDI) @map("odeme_durumu")
+  odemeTarihi     DateTime?                @map("odeme_tarihi")
+  aciklama        String?
+  makbuzNo        String?                  @map("makbuz_no")
+  smmKesildiMi    Boolean                  @default(false) @map("smm_kesildi_mi")
+  smmKesimTarihi  DateTime?                @map("smm_kesim_tarihi")
+  smmNo           String?                  @map("smm_no")
+  smmAciklama     String?                  @map("smm_aciklama")
+  createdById     String                   @map("created_by_id")
+  createdBy       User                     @relation("VekaletTaksitCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById     String?                  @map("updated_by_id")
+  updatedBy       User?                    @relation("VekaletTaksitUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime                 @default(now()) @map("created_at")
+  updatedAt       DateTime                 @updatedAt @map("updated_at")
+
+  @@unique([vekaletUcretiId, taksitNo])
+  @@index([tenantId, dosyaId])
+  @@index([tenantId, dosyaId, odemeDurumu])
+  @@map("vekalet_taksiti")
+}
+
+/// Tek kullanımlık şifre sıfırlama jetonu (düz metin saklanmaz, yalnızca SHA-256 özeti).
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([tokenHash])
+  @@index([userId, createdAt])
+  @@map("password_reset_token")
+}
+
+enum ImportBatchSourceType {
+  DESKTOP_SQLITE
+}
+
+enum ImportBatchStatus {
+  PREVIEWED
+  COMMITTED
+  FAILED
+}
+
+model ImportBatch {
+  id                String                @id @default(uuid())
+  tenantId          String                @map("tenant_id")
+  tenant            Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceType        ImportBatchSourceType @map("source_type")
+  sourceFingerprint String                @map("source_fingerprint")
+  fileName          String                @map("file_name")
+  status            ImportBatchStatus
+  rowCounts         Json?                 @map("row_counts")
+  warnings          Json?
+  errors            Json?
+  committedAt       DateTime?             @map("committed_at")
+  committedById     String?               @map("committed_by_id")
+  committedBy       User?                 @relation(fields: [committedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+
+  @@index([tenantId, sourceFingerprint])
+  @@index([tenantId, status])
+  @@map("import_batch")
 }

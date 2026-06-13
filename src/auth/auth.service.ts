@@ -45,6 +45,13 @@ export async function registerOffice(body: RegisterOfficeBody, req: Request): Pr
   const slug = await ensureUniqueSlug(slugBase)
   const sifreHash = await bcrypt.hash(body.sifre, BCRYPT_ROUNDS)
 
+  const usernameTaken = await prisma.user.findFirst({
+    where: { kullaniciAdi: { equals: body.kullaniciAdi, mode: 'insensitive' } }
+  })
+  if (usernameTaken) {
+    throw new AppError(409, 'Bu kullanıcı adı kullanılıyor.', 'USERNAME_TAKEN')
+  }
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -97,7 +104,7 @@ export async function registerOffice(body: RegisterOfficeBody, req: Request): Pr
   } catch (e: unknown) {
     const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: string }).code) : ''
     if (code === 'P2002') {
-      throw new AppError(409, 'Bu e-posta veya kullanıcı adı zaten kayıtlı.', 'DUPLICATE')
+      throw new AppError(409, 'Bu kullanıcı adı kullanılıyor veya bu büroda e-posta zaten kayıtlı.', 'DUPLICATE')
     }
     throw e
   }
@@ -105,7 +112,7 @@ export async function registerOffice(body: RegisterOfficeBody, req: Request): Pr
 
 export async function login(body: LoginBody, req: Request): Promise<AuthSuccessPayload> {
   const meta = getRequestMeta(req)
-  const raw = body.epostaVeyaKullaniciAdi.trim()
+  const raw = body.identifier.trim()
   const isEmail = raw.includes('@')
 
   let user: (User & { tenant: Tenant }) | null = null
@@ -129,7 +136,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent
       })
-      throw new AppError(401, 'Kullanıcı adı/e-posta veya şifre hatalı.', 'INVALID_CREDENTIALS')
+      throw new AppError(401, 'E-posta/kullanıcı adı veya şifre hatalı.', 'INVALID_CREDENTIALS')
     }
     if (matches.length > 1) {
       await writeAuditLog({
@@ -142,43 +149,30 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
       })
       throw new AppError(
         400,
-        'Bu e-posta birden fazla büroda kayıtlı. Lütfen kullanıcı adı + büro kodu ile giriş yapın.',
+        'Bu e-posta birden fazla büroda kayıtlı. Lütfen kullanıcı adınızla giriş yapın.',
         'AMBIGUOUS_EMAIL'
       )
     }
     user = matches[0]!
   } else {
-    const slug = body.tenantSlug!.trim().toLowerCase()
-    const tenant = await prisma.tenant.findUnique({ where: { slug } })
-    if (!tenant || !tenant.aktifMi) {
-      await writeAuditLog({
-        tenantId: null,
-        userId: null,
-        action: 'AUTH_LOGIN_FAILED',
-        meta: { reason: 'TENANT_NOT_FOUND', slug },
-        ipAddress: meta.ipAddress,
-        userAgent: meta.userAgent
-      })
-      throw new AppError(401, 'Kullanıcı adı/e-posta veya şifre hatalı.', 'INVALID_CREDENTIALS')
-    }
     user = await prisma.user.findFirst({
       where: {
-        tenantId: tenant.id,
         kullaniciAdi: { equals: raw, mode: 'insensitive' },
-        aktifMi: true
+        aktifMi: true,
+        tenant: { aktifMi: true }
       },
       include: { tenant: true }
     })
-    if (!user || !user.tenant.aktifMi) {
+    if (!user) {
       await writeAuditLog({
-        tenantId: tenant.id,
+        tenantId: null,
         userId: null,
         action: 'AUTH_LOGIN_FAILED',
         meta: { reason: 'USER_NOT_FOUND', kullaniciAdi: raw },
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent
       })
-      throw new AppError(401, 'Kullanıcı adı/e-posta veya şifre hatalı.', 'INVALID_CREDENTIALS')
+      throw new AppError(401, 'E-posta/kullanıcı adı veya şifre hatalı.', 'INVALID_CREDENTIALS')
     }
   }
 
@@ -192,7 +186,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
-    throw new AppError(401, 'Kullanıcı adı/e-posta veya şifre hatalı.', 'INVALID_CREDENTIALS')
+    throw new AppError(401, 'E-posta/kullanıcı adı veya şifre hatalı.', 'INVALID_CREDENTIALS')
   }
 
   const updated = await prisma.user.update({

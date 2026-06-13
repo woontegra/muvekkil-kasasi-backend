@@ -12,32 +12,33 @@ export const registerOfficeBodySchema = z.object({
     .pipe(z.string().regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı yalnızca küçük harf, rakam, . _ - içerebilir.')),
   eposta: z.string().trim().email('Geçerli bir e-posta girin.'),
   telefon: z.string().trim().min(3, 'Telefon zorunludur.').max(40),
-  sifre: z.string().min(6, 'Şifre en az 6 karakter olmalıdır.').max(200)
+  sifre: z.string().min(8, 'Şifre en az 8 karakter olmalıdır.').max(200)
 })
 
 export type RegisterOfficeBody = z.infer<typeof registerOfficeBodySchema>
 
-export const loginBodySchema = z
-  .object({
-    epostaVeyaKullaniciAdi: z.string().trim().min(1, 'E-posta veya kullanıcı adı zorunludur.'),
-    tenantSlug: z
-      .string()
-      .trim()
-      .max(80)
-      .optional()
-      .transform((s) => (s && s.length > 0 ? s : undefined)),
-    sifre: z.string().min(1, 'Şifre zorunludur.')
-  })
-  .superRefine((data, ctx) => {
-    const id = data.epostaVeyaKullaniciAdi
-    const isEmail = id.includes('@')
-    if (!isEmail && (!data.tenantSlug || data.tenantSlug.length < 1)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Kullanıcı adı ile giriş için büro kodu (tenantSlug) zorunludur.',
-        path: ['tenantSlug']
-      })
-    }
-  })
+export const loginBodySchema = z.object({
+  identifier: z.string().trim().min(1, 'E-posta veya kullanıcı adı zorunludur.'),
+  sifre: z.string().min(1, 'Şifre zorunludur.')
+})
 
 export type LoginBody = z.infer<typeof loginBodySchema>
+
+export const forgotPasswordBodySchema = z.object({
+  eposta: z.string().trim().email('Geçerli bir e-posta girin.')
+})
+
+export type ForgotPasswordBody = z.infer<typeof forgotPasswordBodySchema>
+
+export const resetPasswordBodySchema = z
+  .object({
+    token: z.string().trim().min(1, 'Sıfırlama anahtarı zorunludur.'),
+    yeniSifre: z.string().min(8, 'Şifre en az 8 karakter olmalıdır.').max(200),
+    yeniSifreTekrar: z.string().min(8, 'Şifre tekrarı en az 8 karakter olmalıdır.').max(200)
+  })
+  .refine((d) => d.yeniSifre === d.yeniSifreTekrar, {
+    message: 'Şifreler eşleşmiyor.',
+    path: ['yeniSifreTekrar']
+  })
+
+export type ResetPasswordBody = z.infer<typeof resetPasswordBodySchema>
