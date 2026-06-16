@@ -46,6 +46,7 @@ model Tenant {
   kasaHareketleri       KasaHareketi[]
   vekaletUcretleri      VekaletUcreti[]
   vekaletTaksitleri     VekaletTaksiti[]
+  vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   ofisKasaHareketleri   OfisKasaHareketi[]
   importBatches         ImportBatch[]
 
@@ -86,6 +87,7 @@ model User {
   vekaletUcretleriUpdated   VekaletUcreti[]   @relation("VekaletUcretiUpdatedBy")
   vekaletTaksitleriCreated   VekaletTaksiti[] @relation("VekaletTaksitCreatedBy")
   vekaletTaksitleriUpdated   VekaletTaksiti[] @relation("VekaletTaksitUpdatedBy")
+  vekaletTaksitOdemeleriCreated VekaletTaksitOdeme[] @relation("VekaletTaksitOdemeCreatedBy")
   ofisKasaHareketleriCreated OfisKasaHareketi[] @relation("OfisKasaCreatedBy")
   ofisKasaHareketleriUpdated OfisKasaHareketi[] @relation("OfisKasaUpdatedBy")
   ofisKasaHareketleriOnaylayan OfisKasaHareketi[] @relation("OfisKasaOnaylayan")
@@ -151,6 +153,7 @@ model Muvekkil {
   kasaHareketleri    KasaHareketi[]
   vekaletUcretleri   VekaletUcreti[]
   vekaletTaksitleri  VekaletTaksiti[]
+  vekaletTaksitOdemeleri VekaletTaksitOdeme[]
 
   @@index([tenantId, aktifMi])
   @@index([tenantId, gorunenAd])
@@ -194,6 +197,7 @@ model Dosya {
   kasaHareketleri   KasaHareketi[]
   vekaletUcreti     VekaletUcreti?
   vekaletTaksitleri VekaletTaksiti[]
+  vekaletTaksitOdemeleri VekaletTaksitOdeme[]
 
   @@index([tenantId, muvekkilId, aktifMi])
   @@index([tenantId, aktifMi])
@@ -204,6 +208,7 @@ enum KasaHareketTipi {
   AVANS_GIRISI
   MASRAF
   DUZELTME
+  VEKALET_TAHSILAT
 }
 
 enum KasaOnayDurumu {
@@ -307,6 +312,7 @@ model KasaHareketi {
   updatedBy          User?            @relation("KasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
+  vekaletTaksitOdeme VekaletTaksitOdeme?
 
   @@unique([tenantId, belgeNo])
   @@index([tenantId, dosyaId, tarih])
@@ -316,6 +322,7 @@ model KasaHareketi {
 
 enum VekaletTaksitOdemeDurumu {
   ODENMEDI
+  KISMI_ODENDI
   ODENDI
   IPTAL
 }
@@ -370,11 +377,43 @@ model VekaletTaksiti {
   updatedBy       User?                    @relation("VekaletTaksitUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   createdAt       DateTime                 @default(now()) @map("created_at")
   updatedAt       DateTime                 @updatedAt @map("updated_at")
+  odemeler        VekaletTaksitOdeme[]
 
   @@unique([vekaletUcretiId, taksitNo])
   @@index([tenantId, dosyaId])
   @@index([tenantId, dosyaId, odemeDurumu])
   @@map("vekalet_taksiti")
+}
+
+/// Vekalet taksitine bağlı kısmi veya tam tahsilat kaydı.
+model VekaletTaksitOdeme {
+  id            String         @id @default(uuid())
+  tenantId      String         @map("tenant_id")
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  muvekkilId    String         @map("muvekkil_id")
+  muvekkil      Muvekkil       @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
+  dosyaId       String         @map("dosya_id")
+  dosya         Dosya          @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  taksitId      String         @map("taksit_id")
+  taksit        VekaletTaksiti @relation(fields: [taksitId], references: [id], onDelete: Cascade)
+  odemeTarihi   DateTime       @map("odeme_tarihi")
+  tutar         Decimal        @db.Decimal(14, 2)
+  odemeYontemi  OdemeYontemi   @map("odeme_yontemi")
+  aciklama      String?
+  makbuzNo      String         @map("makbuz_no")
+  smmKesildiMi  Boolean        @default(false) @map("smm_kesildi_mi")
+  kasaHareketId String?        @unique @map("kasa_hareket_id")
+  kasaHareket   KasaHareketi?  @relation(fields: [kasaHareketId], references: [id], onDelete: SetNull)
+  createdById   String         @map("created_by_id")
+  createdBy     User           @relation("VekaletTaksitOdemeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  @@unique([tenantId, makbuzNo])
+  @@index([tenantId, taksitId])
+  @@index([tenantId, dosyaId])
+  @@index([tenantId, smmKesildiMi])
+  @@map("vekalet_taksit_odeme")
 }
 
 /// Tek kullanımlık şifre sıfırlama jetonu (düz metin saklanmaz, yalnızca SHA-256 özeti).

@@ -7,7 +7,8 @@ import { requireRole } from '../middleware/requireRole.js'
 import {
   markTaksitPaidBodySchema,
   markTaksitSmmBodySchema,
-  updateVekaletTaksitiBodySchema
+  updateVekaletTaksitiBodySchema,
+  createVekaletTaksitOdemeBodySchema
 } from './vekalet.schemas.js'
 import {
   cancelVekaletTaksiti,
@@ -15,6 +16,7 @@ import {
   markVekaletTaksitSmm,
   updateVekaletTaksiti
 } from './vekalet.service.js'
+import { createVekaletTaksitOdeme, listVekaletTaksitOdemeler } from './vekaletTaksitOdeme.service.js'
 
 export const vekaletTaksitleriRouter = Router()
 
@@ -28,6 +30,35 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
     void fn(req, res, next).catch(next)
   }
 }
+
+vekaletTaksitleriRouter.post(
+  '/:id/odemeler',
+  requireAuth,
+  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const body = createVekaletTaksitOdemeBodySchema.parse(req.body)
+    const taksit = await createVekaletTaksitOdeme(tenantId, userId, id, body, req)
+    res.status(201).json({ ok: true, taksit })
+  })
+)
+
+vekaletTaksitleriRouter.get(
+  '/:id/odemeler',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const items = await listVekaletTaksitOdemeler(tenantId, id)
+    if (items === null) {
+      res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Taksit bulunamadı.' })
+      return
+    }
+    res.json({ ok: true, items })
+  })
+)
 
 vekaletTaksitleriRouter.put(
   '/:id',

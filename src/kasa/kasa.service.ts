@@ -87,6 +87,78 @@ export async function assertKasaHareketiForTenant(
   })
 }
 
+async function buildKasaSearchOr(tenantId: string, dosyaId: string, q: string): Promise<Prisma.KasaHareketiWhereInput['OR']> {
+  const or: Prisma.KasaHareketiWhereInput[] = [
+    { belgeNo: { contains: q, mode: 'insensitive' } },
+    { aciklama: { contains: q, mode: 'insensitive' } },
+    { masrafTuru: { contains: q, mode: 'insensitive' } },
+    { ozelMasrafAdi: { contains: q, mode: 'insensitive' } },
+    { masrafiYapanKisi: { contains: q, mode: 'insensitive' } }
+  ]
+
+  const tipMap: Record<string, KasaHareketTipi> = {
+    avans: KasaHareketTipi.AVANS_GIRISI,
+    masraf: KasaHareketTipi.MASRAF,
+    duzeltme: KasaHareketTipi.DUZELTME,
+    vekalet: KasaHareketTipi.VEKALET_TAHSILAT,
+    tahsilat: KasaHareketTipi.VEKALET_TAHSILAT
+  }
+  const tipKey = q.trim().toLowerCase()
+  if (tipMap[tipKey]) or.push({ tip: tipMap[tipKey] })
+  if (q.toUpperCase().includes('AVANS')) or.push({ tip: KasaHareketTipi.AVANS_GIRISI })
+  if (q.toLowerCase().includes('vekalet')) or.push({ tip: KasaHareketTipi.VEKALET_TAHSILAT })
+  if (q.toLowerCase().includes('masraf')) or.push({ tip: KasaHareketTipi.MASRAF })
+  if (q.toLowerCase().includes('düzeltme') || q.toLowerCase().includes('duzeltme')) {
+    or.push({ tip: KasaHareketTipi.DUZELTME })
+  }
+
+  const onayMap: Record<string, KasaOnayDurumu> = {
+    onaysiz: KasaOnayDurumu.ONAYSIZ,
+    onayli: KasaOnayDurumu.ONAYLI,
+    onaylı: KasaOnayDurumu.ONAYLI,
+    reddedildi: KasaOnayDurumu.REDDEDILDI
+  }
+  if (onayMap[tipKey]) or.push({ onayDurumu: onayMap[tipKey] })
+
+  const odemeMap: Record<string, string> = {
+    nakit: 'NAKIT',
+    banka: 'BANKA',
+    kredi: 'KREDI_KARTI',
+    kart: 'KREDI_KARTI'
+  }
+  if (odemeMap[tipKey]) or.push({ odemeYontemi: odemeMap[tipKey] as Prisma.EnumOdemeYontemiFilter['equals'] })
+
+  const amount = Number(q.replace(',', '.'))
+  if (Number.isFinite(amount)) {
+    or.push({ tutar: { equals: new PrismaClient.Decimal(amount.toFixed(2)) } })
+  }
+
+  const dateMatch = q.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (dateMatch) {
+    const start = new Date(`${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}T00:00:00.000Z`)
+    const end = new Date(start)
+    end.setUTCDate(end.getUTCDate() + 1)
+    or.push({ tarih: { gte: start, lt: end } })
+  }
+
+  const dmy = q.match(/(\d{1,2})[./](\d{1,2})[./](\d{4})/)
+  if (dmy) {
+    const start = new Date(`${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}T00:00:00.000Z`)
+    const end = new Date(start)
+    end.setUTCDate(end.getUTCDate() + 1)
+    or.push({ tarih: { gte: start, lt: end } })
+  }
+
+  const makbuzRows = await prisma.vekaletTaksitOdeme.findMany({
+    where: { tenantId, dosyaId, makbuzNo: { contains: q, mode: 'insensitive' } },
+    select: { kasaHareketId: true }
+  })
+  const kasaIds = makbuzRows.map((r) => r.kasaHareketId).filter((id): id is string => Boolean(id))
+  if (kasaIds.length > 0) or.push({ id: { in: kasaIds } })
+
+  return or
+}
+
 export async function listKasaHareketleri(
   tenantId: string,
   dosyaId: string,
@@ -98,22 +170,14 @@ export async function listKasaHareketleri(
   const { q, tip, onayDurumu, page, limit } = query
   const skip = (page - 1) * limit
 
+  const searchOr = q.length > 0 ? await buildKasaSearchOr(tenantId, dosyaId, q) : undefined
+
   const where: Prisma.KasaHareketiWhereInput = {
     tenantId,
     dosyaId,
     ...(tip ? { tip } : {}),
     ...(onayDurumu ? { onayDurumu } : {}),
-    ...(q.length > 0
-      ? {
-          OR: [
-            { belgeNo: { contains: q, mode: 'insensitive' } },
-            { aciklama: { contains: q, mode: 'insensitive' } },
-            { masrafTuru: { contains: q, mode: 'insensitive' } },
-            { ozelMasrafAdi: { contains: q, mode: 'insensitive' } },
-            { masrafiYapanKisi: { contains: q, mode: 'insensitive' } }
-          ]
-        }
-      : {})
+    ...(searchOr && searchOr.length > 0 ? { OR: searchOr } : {})
   }
 
   const [total, items] = await prisma.$transaction([
@@ -176,6 +240,7 @@ export async function getKasaOzet(tenantId: string, dosyaId: string): Promise<{
     if (r.tip === KasaHareketTipi.AVANS_GIRISI) avans += v
     else if (r.tip === KasaHareketTipi.MASRAF) masraf += v
     else if (r.tip === KasaHareketTipi.DUZELTME) duzeltme += v
+    // VEKALET_TAHSILAT dosya kasası bakiyesine dahil edilmez
   }
   const bakiye = avans - masraf + duzeltme
 

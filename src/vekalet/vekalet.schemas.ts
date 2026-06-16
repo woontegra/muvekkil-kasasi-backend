@@ -1,3 +1,4 @@
+import { OdemeYontemi } from '@prisma/client'
 import { z } from 'zod'
 
 const tutarPositive = z.preprocess(
@@ -46,3 +47,13 @@ export const markTaksitSmmBodySchema = z.object({
 })
 
 export type MarkTaksitSmmBody = z.infer<typeof markTaksitSmmBodySchema>
+
+export const createVekaletTaksitOdemeBodySchema = z.object({
+  tutar: tutarPositive,
+  odemeTarihi: z.coerce.date().optional(),
+  odemeYontemi: z.nativeEnum(OdemeYontemi),
+  aciklama: z.string().trim().max(4000).optional().nullable(),
+  smmKesildiMi: z.boolean().optional().default(false)
+})
+
+export type CreateVekaletTaksitOdemeBody = z.infer<typeof createVekaletTaksitOdemeBodySchema>

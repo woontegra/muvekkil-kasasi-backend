@@ -8,6 +8,7 @@ import { muvekkillerRouter } from '../muvekkil/muvekkil.routes.js'
 import { dosyalarRouter } from '../dosya/dosya.routes.js'
 import { kasaHareketleriRouter } from '../kasa/kasa.routes.js'
 import { vekaletTaksitleriRouter } from '../vekalet/vekaletTaksit.routes.js'
+import { vekaletTaksitOdemeleriRouter } from '../vekalet/vekaletTaksitOdeme.routes.js'
 import { ofisKasasiRouter } from '../ofisKasa/ofisKasa.routes.js'
 import { dashboardRouter } from '../dashboard/dashboard.routes.js'
 import { smmRouter } from '../smm/smm.routes.js'
@@ -27,6 +28,7 @@ apiV1Router.use('/muvekkiller', muvekkillerRouter)
 apiV1Router.use('/dosyalar', dosyalarRouter)
 apiV1Router.use('/kasa-hareketleri', kasaHareketleriRouter)
 apiV1Router.use('/vekalet-taksitleri', vekaletTaksitleriRouter)
+apiV1Router.use('/vekalet-taksit-odemeleri', vekaletTaksitOdemeleriRouter)
 apiV1Router.use('/ofis-kasasi', ofisKasasiRouter)
 apiV1Router.use('/dashboard', dashboardRouter)
 apiV1Router.use('/smm', smmRouter)

@@ -21,6 +21,14 @@ export function createApp(): express.Express {
   app.use('/', healthRoutes)
   app.use('/api/v1', apiV1Router)
 
+  app.use('/api', (_req, res) => {
+    res.status(404).json({
+      ok: false,
+      code: 'NOT_FOUND',
+      message: 'İlgili API endpointi bulunamadı.'
+    })
+  })
+
   app.use(errorHandler)
   return app
 }

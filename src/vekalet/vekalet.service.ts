@@ -1,4 +1,4 @@
-import type { Prisma, UserRole, VekaletTaksitOdemeDurumu } from '@prisma/client'
+import type { Prisma, UserRole, VekaletTaksitOdemeDurumu, VekaletTaksiti } from '@prisma/client'
 import { Prisma as PrismaNamespace } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
@@ -12,6 +12,117 @@ import type {
   UpdateVekaletTaksitiBody,
   UpsertVekaletUcretiBody
 } from './vekalet.schemas.js'
+
+export type TaksitComputedDurum = 'ODENMEDI' | 'KISMI_ODENDI' | 'ODENDI' | 'GECIKTI'
+export type TaksitSmmDurum = 'YOK' | 'BEKLIYOR' | 'KESILDI'
+
+type OdemeRow = { id: string; tutar: Prisma.Decimal; odemeTarihi: Date; makbuzNo: string; smmKesildiMi: boolean }
+
+function sumOdemeTutar(odemeler: { tutar: Prisma.Decimal }[]): number {
+  return odemeler.reduce((s, o) => s + Number(o.tutar), 0)
+}
+
+export function computeTaksitDurum(
+  taksit: Pick<VekaletTaksiti, 'tutar' | 'vadeTarihi' | 'odemeDurumu'>,
+  odemeler: { tutar: Prisma.Decimal }[]
+): TaksitComputedDurum {
+  if (taksit.odemeDurumu === 'IPTAL') return 'ODENMEDI'
+  const taksitTutari = Number(taksit.tutar)
+  const odenen = sumOdemeTutar(odemeler)
+  const kalan = Math.max(0, taksitTutari - odenen)
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  const gecikti = taksit.vadeTarihi < startOfToday && kalan > 0.0001
+  if (gecikti) return 'GECIKTI'
+  if (odenen <= 0) return 'ODENMEDI'
+  if (odenen + 0.0001 < taksitTutari) return 'KISMI_ODENDI'
+  return 'ODENDI'
+}
+
+export function computeTaksitSmmDurum(odemeler: { smmKesildiMi: boolean; tutar: Prisma.Decimal }[]): TaksitSmmDurum {
+  if (odemeler.length === 0) return 'YOK'
+  const hasPayment = odemeler.some((o) => Number(o.tutar) > 0)
+  if (!hasPayment) return 'YOK'
+  if (odemeler.some((o) => !o.smmKesildiMi)) return 'BEKLIYOR'
+  return 'KESILDI'
+}
+
+export function serializeVekaletTaksitiWithOzet(
+  t: VekaletTaksiti,
+  odemeler: OdemeRow[]
+): Record<string, unknown> {
+  const base = serializeVekaletTaksiti(t)
+  const taksitTutari = Number(t.tutar)
+  const odenenToplam = sumOdemeTutar(odemeler)
+  const kalanTutar = Math.max(0, taksitTutari - odenenToplam)
+  const durum = computeTaksitDurum(t, odemeler)
+  const son = odemeler.length > 0 ? odemeler[odemeler.length - 1] : null
+  const smmDurumu = computeTaksitSmmDurum(odemeler)
+  let smmBekleyenOdemeId: string | null = null
+  for (let i = odemeler.length - 1; i >= 0; i--) {
+    if (!odemeler[i].smmKesildiMi) {
+      smmBekleyenOdemeId = odemeler[i].id
+      break
+    }
+  }
+  return {
+    ...base,
+    taksitTutari: decimalStr(t.tutar),
+    odenenToplam: odenenToplam.toFixed(2),
+    kalanTutar: kalanTutar.toFixed(2),
+    durum,
+    sonOdemeTarihi: son?.odemeTarihi.toISOString() ?? null,
+    sonMakbuzNo: son?.makbuzNo ?? null,
+    smmDurumu,
+    smmBekleyenOdemeId
+  }
+}
+
+async function loadTaksitOdemeler(taksitId: string): Promise<OdemeRow[]> {
+  return prisma.vekaletTaksitOdeme.findMany({
+    where: { taksitId },
+    orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }]
+  })
+}
+
+export async function serializeTaksitApiResponse(t: VekaletTaksiti): Promise<Record<string, unknown>> {
+  const odemeler = await loadTaksitOdemeler(t.id)
+  return serializeVekaletTaksitiWithOzet(t, odemeler)
+}
+
+export async function syncTaksitOdemeDurumu(
+  tx: Prisma.TransactionClient,
+  taksitId: string,
+  userId: string
+): Promise<VekaletTaksiti> {
+  const taksit = await tx.vekaletTaksiti.findUniqueOrThrow({
+    where: { id: taksitId },
+    include: { odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] } }
+  })
+  if (taksit.odemeDurumu === 'IPTAL') return taksit
+
+  const odenen = sumOdemeTutar(taksit.odemeler)
+  const taksitTutari = Number(taksit.tutar)
+  let odemeDurumu: VekaletTaksitOdemeDurumu = 'ODENMEDI'
+  if (odenen <= 0) odemeDurumu = 'ODENMEDI'
+  else if (odenen + 0.0001 < taksitTutari) odemeDurumu = 'KISMI_ODENDI'
+  else odemeDurumu = 'ODENDI'
+
+  const son = taksit.odemeler[taksit.odemeler.length - 1]
+  const allSmm = taksit.odemeler.length > 0 && taksit.odemeler.every((o) => o.smmKesildiMi)
+
+  return tx.vekaletTaksiti.update({
+    where: { id: taksitId },
+    data: {
+      odemeDurumu,
+      odemeTarihi: son?.odemeTarihi ?? null,
+      makbuzNo: son?.makbuzNo ?? null,
+      smmKesildiMi: taksit.odemeler.length > 0 ? allSmm : false,
+      smmKesimTarihi: allSmm ? (taksit.smmKesimTarihi ?? new Date()) : null,
+      updatedById: userId
+    }
+  })
+}
 
 function decimalStr(d: Prisma.Decimal): string {
   return d.toFixed(2)
@@ -91,7 +202,11 @@ export function serializeVekaletTaksiti(t: {
 
 function computeOzet(
   anlasilan: Prisma.Decimal,
-  taksitler: { tutar: Prisma.Decimal; odemeDurumu: VekaletTaksitOdemeDurumu; smmKesildiMi: boolean }[]
+  taksitler: {
+    tutar: Prisma.Decimal
+    odemeDurumu: VekaletTaksitOdemeDurumu
+    odemeler: { tutar: Prisma.Decimal; smmKesildiMi: boolean }[]
+  }[]
 ): {
   anlasilan: string
   odenenToplam: string
@@ -103,12 +218,13 @@ function computeOzet(
   let odenmemis = 0
   let smmBekleyen = 0
   for (const t of taksitler) {
-    if (t.odemeDurumu === 'ODENDI') {
-      odenen += Number(t.tutar)
-      if (!t.smmKesildiMi) smmBekleyen += 1
-    } else if (t.odemeDurumu === 'ODENMEDI') {
+    if (t.odemeDurumu === 'IPTAL') continue
+    const tOdenen = sumOdemeTutar(t.odemeler)
+    odenen += tOdenen
+    if (t.odemeDurumu === 'ODENMEDI' || t.odemeDurumu === 'KISMI_ODENDI') {
       odenmemis += 1
     }
+    smmBekleyen += t.odemeler.filter((o) => !o.smmKesildiMi).length
   }
   const a = Number(anlasilan)
   const kalan = Math.max(0, a - odenen)
@@ -156,16 +272,23 @@ export async function listSmmBekleyenForDosya(
   const dosya = await assertDosyaForVekalet(tenantId, dosyaId)
   if (!dosya) return null
 
-  const rows = await prisma.vekaletTaksiti.findMany({
+  const rows = await prisma.vekaletTaksitOdeme.findMany({
     where: {
       tenantId,
       dosyaId,
-      odemeDurumu: 'ODENDI',
       smmKesildiMi: false
     },
-    orderBy: [{ odemeTarihi: 'desc' }, { taksitNo: 'asc' }]
+    orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }]
   })
-  return rows.map(serializeVekaletTaksiti)
+  return rows.map((o) => ({
+    id: o.id,
+    odemeId: o.id,
+    taksitId: o.taksitId,
+    odemeTarihi: o.odemeTarihi.toISOString(),
+    tutar: decimalStr(o.tutar),
+    makbuzNo: o.makbuzNo,
+    smmKesildiMi: o.smmKesildiMi
+  }))
 }
 
 export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string): Promise<{
@@ -183,7 +306,12 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
   const vekalet = await prisma.vekaletUcreti.findUnique({
     where: { dosyaId },
     include: {
-      taksitler: { orderBy: [{ taksitNo: 'asc' }, { vadeTarihi: 'asc' }] }
+      taksitler: {
+        orderBy: [{ taksitNo: 'asc' }, { vadeTarihi: 'asc' }],
+        include: {
+          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] }
+        }
+      }
     }
   })
 
@@ -200,7 +328,7 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
   const ozet = computeOzet(vekalet.toplamTutar, vekalet.taksitler)
   return {
     vekaletUcreti: serializeVekaletUcreti(vekalet),
-    taksitler: vekalet.taksitler.map(serializeVekaletTaksiti),
+    taksitler: vekalet.taksitler.map((t) => serializeVekaletTaksitiWithOzet(t, t.odemeler)),
     ozet,
     smmBekleyen: smmBekleyenRows
   }
@@ -314,7 +442,7 @@ export async function createVekaletTaksiti(
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
-    return serializeVekaletTaksiti(row)
+    return serializeVekaletTaksitiWithOzet(row, [])
   } catch (e) {
     if (e instanceof PrismaNamespace.PrismaClientKnownRequestError && e.code === 'P2002') {
       throw new AppError(409, 'Bu taksit numarası zaten kullanılıyor.', 'CONFLICT')
@@ -418,7 +546,7 @@ export async function updateVekaletTaksiti(
     userAgent: meta.userAgent
   })
 
-  return serializeVekaletTaksiti(updated)
+  return await serializeTaksitApiResponse(updated)
 }
 
 export async function markVekaletTaksitPaid(
@@ -435,44 +563,28 @@ export async function markVekaletTaksitPaid(
   if (existing.odemeDurumu === 'IPTAL') {
     throw new AppError(400, 'İptal edilmiş taksit ödenemez.', 'INVALID_STATE')
   }
-  if (existing.odemeDurumu === 'ODENDI') {
+
+  const odemeler = await prisma.vekaletTaksitOdeme.findMany({ where: { taksitId: existing.id } })
+  const odenen = sumOdemeTutar(odemeler)
+  const kalan = Math.max(0, Number(existing.tutar) - odenen)
+  if (kalan <= 0.0001) {
     throw new AppError(400, 'Taksit zaten ödenmiş.', 'ALREADY_PAID')
   }
 
-  const meta = getRequestMeta(req)
-  const odemeTarihi = body.odemeTarihi ?? new Date()
-
-  const updated = await prisma.$transaction(async (tx) => {
-    const makbuzNo = existing.makbuzNo ?? (await nextMakbuzNo(tx, tenantId, odemeTarihi))
-    return tx.vekaletTaksiti.update({
-      where: { id: existing.id },
-      data: {
-        odemeDurumu: 'ODENDI',
-        odemeTarihi,
-        aciklama: body.aciklama !== undefined ? body.aciklama?.trim() || null : existing.aciklama,
-        makbuzNo,
-        smmKesildiMi: false,
-        smmKesimTarihi: null,
-        smmNo: null,
-        smmAciklama: null,
-        updatedById: userId
-      }
-    })
-  })
-
-  await writeAuditLog({
+  const { createVekaletTaksitOdeme } = await import('./vekaletTaksitOdeme.service.js')
+  return createVekaletTaksitOdeme(
     tenantId,
     userId,
-    action: 'VEKALET_TAKSIT_PAID',
-    entityType: 'VekaletTaksiti',
-    entityId: updated.id,
-    oldValue: serializeVekaletTaksiti(existing),
-    newValue: serializeVekaletTaksiti(updated),
-    ipAddress: meta.ipAddress,
-    userAgent: meta.userAgent
-  })
-
-  return serializeVekaletTaksiti(updated)
+    taksitId,
+    {
+      tutar: kalan,
+      odemeTarihi: body.odemeTarihi ?? new Date(),
+      odemeYontemi: 'NAKIT',
+      aciklama: body.aciklama ?? null,
+      smmKesildiMi: false
+    },
+    req
+  )
 }
 
 export async function markVekaletTaksitSmm(
@@ -514,7 +626,7 @@ export async function markVekaletTaksitSmm(
     userAgent: meta.userAgent
   })
 
-  return serializeVekaletTaksiti(updated)
+  return await serializeTaksitApiResponse(updated)
 }
 
 export async function cancelVekaletTaksiti(
@@ -557,5 +669,5 @@ export async function cancelVekaletTaksiti(
     userAgent: meta.userAgent
   })
 
-  return serializeVekaletTaksiti(updated)
+  return await serializeTaksitApiResponse(updated)
 }

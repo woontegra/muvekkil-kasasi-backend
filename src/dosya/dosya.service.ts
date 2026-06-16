@@ -1,5 +1,5 @@
 import type { Dosya, Muvekkil, Prisma } from '@prisma/client'
-import { KasaHareketTipi, KasaOnayDurumu, VekaletTaksitOdemeDurumu } from '@prisma/client'
+import { KasaHareketTipi, KasaOnayDurumu } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -282,20 +282,22 @@ export async function getDosyaMakbuzlariForTenant(
       }
     })
 
-  const vekaletMakbuzlari = pack.taksitler
-    .filter((t) => (t as { odemeDurumu: string }).odemeDurumu === VekaletTaksitOdemeDurumu.ODENDI)
-    .map((t) => {
-      const x = t as Record<string, unknown>
-      return {
-        id: x.id,
-        taksitNo: x.taksitNo,
-        odemeTarihi: x.odemeTarihi ?? null,
-        makbuzNo: x.makbuzNo ?? null,
-        tutar: x.tutar,
-        smmKesildiMi: Boolean(x.smmKesildiMi),
-        smmNo: x.smmNo ?? null
-      }
-    })
+  const odemeler = await prisma.vekaletTaksitOdeme.findMany({
+    where: { tenantId, dosyaId },
+    orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }],
+    include: { taksit: { select: { taksitNo: true } } }
+  })
+
+  const vekaletMakbuzlari = odemeler.map((o) => ({
+    id: o.id,
+    odemeId: o.id,
+    taksitId: o.taksitId,
+    taksitNo: o.taksit.taksitNo,
+    odemeTarihi: o.odemeTarihi.toISOString(),
+    makbuzNo: o.makbuzNo,
+    tutar: o.tutar.toFixed(2),
+    smmKesildiMi: o.smmKesildiMi
+  }))
 
   return { avansMakbuzlari, vekaletMakbuzlari }
 }

@@ -38,7 +38,7 @@ export async function getDashboardSummaryForTenant(tenantId: string): Promise<Da
     prisma.vekaletTaksiti.count({
       where: {
         tenantId,
-        odemeDurumu: VekaletTaksitOdemeDurumu.ODENMEDI,
+        odemeDurumu: { in: [VekaletTaksitOdemeDurumu.ODENMEDI, VekaletTaksitOdemeDurumu.KISMI_ODENDI] },
         vadeTarihi: { lt: startOfToday }
       }
     }),

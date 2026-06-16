@@ -24,9 +24,11 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     return
   }
   if (err instanceof AppError) {
+    const code = err.code ?? 'APP_ERROR'
     res.status(err.statusCode).json({
       ok: false,
-      error: err.code ?? 'APP_ERROR',
+      error: code,
+      code,
       message: err.message
     })
     return
