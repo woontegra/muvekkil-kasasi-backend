@@ -335,11 +335,31 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
   ].join('\n')
 }
 
+export type WelcomeActivationEmailResult = {
+  sent: boolean
+  error?: string
+}
+
+function describeWelcomeMailConfigError(cfg: ReturnType<typeof getResolvedMailTransport>): string {
+  if (cfg.gmailUserMissing) {
+    return 'GMAIL_APP_PASSWORD var ama GMAIL_USER/SMTP_USER/MAIL_USER eksik'
+  }
+  const hasGmailUser = !!(env.GMAIL_USER?.trim() || env.MAIL_USER?.trim() || env.SMTP_USER?.trim())
+  const hasGmailPass = !!env.GMAIL_APP_PASSWORD?.trim()
+  if (!hasGmailUser && !hasGmailPass) {
+    return 'GMAIL_USER ve GMAIL_APP_PASSWORD (veya SMTP_HOST/SMTP_USER/SMTP_PASS) tanımlı değil'
+  }
+  if (!hasGmailUser) return 'GMAIL_USER eksik'
+  if (!hasGmailPass) return 'GMAIL_APP_PASSWORD eksik'
+  return cfg.missing.length ? `Mail taşıyıcı hazır değil: ${cfg.missing.join(', ')}` : 'SMTP not configured'
+}
+
 /**
  * Hoş geldiniz / aktivasyon e-postası gönderir.
- * @returns true e-posta gönderildi veya dev modda konsola yazıldı; false SMTP yok / hata.
  */
-export async function sendWelcomeActivationEmail(params: SendWelcomeActivationEmailParams): Promise<boolean> {
+export async function sendWelcomeActivationEmail(
+  params: SendWelcomeActivationEmailParams
+): Promise<WelcomeActivationEmailResult> {
   const toMasked = maskEmail(params.to)
   console.info('[mail] Welcome activation mail attempt — recipient:', toMasked)
 
@@ -349,13 +369,14 @@ export async function sendWelcomeActivationEmail(params: SendWelcomeActivationEm
   const activationUrl = buildPasswordResetUrl(params.plainToken)
 
   if (!tx || !from) {
+    const reason = describeWelcomeMailConfigError(cfg)
     if (env.NODE_ENV === 'development') {
       console.info('[DEV ONLY] Activation link:', activationUrl)
       console.info('[mail] Welcome activation mail skipped (SMTP not configured, development mode)')
-      return true
+      return { sent: true }
     }
-    console.error('[mail] Welcome activation mail FAILED — SMTP not configured')
-    return false
+    console.error('[mail] Welcome activation mail FAILED —', reason)
+    return { sent: false, error: reason }
   }
 
   try {
@@ -367,11 +388,11 @@ export async function sendWelcomeActivationEmail(params: SendWelcomeActivationEm
       html: buildWelcomeEmailHtml(params)
     })
     console.info('[mail] Welcome activation mail sent successfully — recipient:', toMasked)
-    return true
+    return { sent: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[mail] Welcome activation mail FAILED — recipient:', toMasked, '— error:', msg)
-    return false
+    return { sent: false, error: msg }
   }
 }
 

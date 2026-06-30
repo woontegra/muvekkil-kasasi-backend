@@ -181,11 +181,15 @@ export function logMailConfigOnStartup(): void {
   }
 
   if (!cfg.configured) {
+    const gmailUser = optionalTrim(env.GMAIL_USER)
+    const gmailPass = optionalTrim(env.GMAIL_APP_PASSWORD)
+    if (!gmailUser) console.error('[mail] GMAIL_USER eksik')
+    if (!gmailPass) console.error('[mail] GMAIL_APP_PASSWORD eksik')
     console.warn('[mail] SMTP yapılandırması eksik:', cfg.missing.join(', ') || '(bilinmeyen)')
     if (env.NODE_ENV === 'development') {
       console.warn('[mail] Geliştirme modunda sıfırlama bağlantıları konsola yazdırılacak.')
     } else {
-      console.warn('[mail] Üretimde şifre sıfırlama e-postası SMTP olmadan gönderilemez.')
+      console.warn('[mail] Üretimde aktivasyon ve şifre sıfırlama e-postası SMTP olmadan gönderilemez.')
     }
     return
   }

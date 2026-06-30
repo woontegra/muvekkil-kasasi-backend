@@ -28,6 +28,14 @@ export type ProvisionTenantResult = {
   }
   loginUrl: string
   mailSent: boolean
+  mailError?: string
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@')
+  if (!domain || !local) return '***'
+  const visible = local.length <= 2 ? (local[0] ?? '*') : `${local.slice(0, 2)}***`
+  return `${visible}@${domain}`
 }
 
 function buildLicenseNotes(body: ProvisionTenantBody): string | null {
@@ -52,7 +60,8 @@ function toProvisionResponse(
   tenant: { id: string; slug: string; lisansDurumu: string; lisansBitisTarihi: Date | null },
   owner: { id: string; kullaniciAdi: string; eposta: string | null },
   idempotentReplay: boolean,
-  mailSent: boolean
+  mailSent: boolean,
+  mailError?: string
 ): ProvisionTenantResult {
   return {
     ok: true,
@@ -69,7 +78,61 @@ function toProvisionResponse(
       eposta: owner.eposta
     },
     loginUrl: `${getFrontendBaseUrl()}/login`,
-    mailSent
+    mailSent,
+    ...(mailSent ? {} : { mailError: mailError ?? 'MAIL_SEND_FAILED' })
+  }
+}
+
+async function sendOwnerActivationEmail(
+  tenant: {
+    id: string
+    buroAdi: string
+    lisansBaslangicTarihi: Date | null
+    lisansBitisTarihi: Date | null
+  },
+  owner: { id: string; kullaniciAdi: string; eposta: string | null },
+  fallback: { ownerEmail?: string; licenseStart: string; licenseEnd: string }
+): Promise<{ mailSent: boolean; mailError?: string }> {
+  const email = (owner.eposta?.trim() || fallback.ownerEmail?.trim())?.toLowerCase()
+  if (!email) {
+    console.warn('[internal] activation mail skipped — no owner email', {
+      tenantId: tenant.id,
+      userId: owner.id.slice(0, 8)
+    })
+    return { mailSent: false, mailError: 'OWNER_EMAIL_MISSING' }
+  }
+
+  const toMasked = maskEmail(email)
+  try {
+    const { plainToken } = await issueActivationToken(owner.id)
+    const result = await sendWelcomeActivationEmail({
+      to: email,
+      plainToken,
+      buroAdi: tenant.buroAdi,
+      kullaniciAdi: owner.kullaniciAdi,
+      lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? fallback.licenseStart,
+      lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? fallback.licenseEnd,
+      activationExpiresHours: getActivationTokenExpiresHours()
+    })
+    if (!result.sent) {
+      const error = result.error ?? 'MAIL_SEND_FAILED'
+      console.error('[internal] activation mail not sent', {
+        tenantId: tenant.id,
+        recipient: toMasked,
+        error
+      })
+      return { mailSent: false, mailError: error }
+    }
+    console.info('[internal] activation mail sent', { tenantId: tenant.id, recipient: toMasked })
+    return { mailSent: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[internal] activation mail failed', {
+      tenantId: tenant.id,
+      recipient: toMasked,
+      error: msg
+    })
+    return { mailSent: false, mailError: msg }
   }
 }
 
@@ -90,6 +153,12 @@ export async function provisionTenantFromCentralLicense(
     console.warn('[internal] x-idempotency-key header yok — body.externalOrderId kullanılıyor:', body.externalOrderId)
   }
 
+  const mailFallback = {
+    ownerEmail: body.owner.email,
+    licenseStart: body.licenseStartDate.toISOString(),
+    licenseEnd: body.licenseEndDate.toISOString()
+  }
+
   const existing = await prisma.tenant.findUnique({
     where: { externalOrderId: body.externalOrderId }
   })
@@ -99,7 +168,8 @@ export async function provisionTenantFromCentralLicense(
     if (!owner) {
       throw new AppError(500, 'Mevcut tenant için büro sahibi bulunamadı.', 'OWNER_MISSING')
     }
-    return toProvisionResponse(existing, owner, true, false)
+    const mail = await sendOwnerActivationEmail(existing, owner, mailFallback)
+    return toProvisionResponse(existing, owner, true, mail.mailSent, mail.mailError)
   }
 
   const isDemo = body.licenseStatus === 'DEMO'
@@ -151,43 +221,15 @@ export async function provisionTenantFromCentralLicense(
       })
       if (raced) {
         const owner = await findTenantOwner(raced.id)
-        if (owner) return toProvisionResponse(raced, owner, true, false)
+        if (owner) {
+          const mail = await sendOwnerActivationEmail(raced, owner, mailFallback)
+          return toProvisionResponse(raced, owner, true, mail.mailSent, mail.mailError)
+        }
       }
     }
     throw e
   }
 
-  let mailSent = false
-  const ownerEmail = createdTenant.ownerUser.eposta?.trim().toLowerCase()
-  if (ownerEmail) {
-    try {
-      const { plainToken } = await issueActivationToken(createdTenant.ownerUser.id)
-      const expiresHours = getActivationTokenExpiresHours()
-      mailSent = await sendWelcomeActivationEmail({
-        to: ownerEmail,
-        plainToken,
-        buroAdi: createdTenant.tenant.buroAdi,
-        kullaniciAdi: createdTenant.ownerUser.kullaniciAdi,
-        lisansBaslangic:
-          createdTenant.tenant.lisansBaslangicTarihi?.toISOString() ?? body.licenseStartDate.toISOString(),
-        lisansBitis: createdTenant.tenant.lisansBitisTarihi?.toISOString() ?? body.licenseEndDate.toISOString(),
-        activationExpiresHours: expiresHours
-      })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error(
-        '[internal] activation mail failed — tenant kept, userId:',
-        createdTenant.ownerUser.id.slice(0, 8),
-        msg
-      )
-      mailSent = false
-    }
-  } else {
-    console.warn(
-      '[internal] owner has no email — activation mail skipped, userId:',
-      createdTenant.ownerUser.id.slice(0, 8)
-    )
-  }
-
-  return toProvisionResponse(createdTenant.tenant, createdTenant.ownerUser, false, mailSent)
+  const mail = await sendOwnerActivationEmail(createdTenant.tenant, createdTenant.ownerUser, mailFallback)
+  return toProvisionResponse(createdTenant.tenant, createdTenant.ownerUser, false, mail.mailSent, mail.mailError)
 }
