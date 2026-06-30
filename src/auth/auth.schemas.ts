@@ -1,14 +1,19 @@
 import { z } from 'zod'
+import { normalizeLoginIdentifier } from '../lib/normalizeKullaniciAdi.js'
 
 export const loginBodySchema = z.object({
-  identifier: z.string().trim().min(1, 'E-posta veya kullanıcı adı zorunludur.'),
+  identifier: z
+    .string()
+    .trim()
+    .min(1, 'E-posta veya kullanıcı adı zorunludur.')
+    .transform((s) => normalizeLoginIdentifier(s)),
   sifre: z.string().min(1, 'Şifre zorunludur.')
 })
 
 export type LoginBody = z.infer<typeof loginBodySchema>
 
 export const forgotPasswordBodySchema = z.object({
-  eposta: z.string().trim().email('Geçerli bir e-posta girin.')
+  identifier: z.string().trim().min(1, 'E-posta veya kullanıcı adı girin.')
 })
 
 export type ForgotPasswordBody = z.infer<typeof forgotPasswordBodySchema>

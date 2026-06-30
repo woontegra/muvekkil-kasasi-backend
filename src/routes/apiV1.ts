@@ -19,10 +19,6 @@ import { Permission } from '../permissions/roles.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
 import { internalRouter } from '../internal/internal.routes.js'
-import { primRouter } from '../prim/prim.routes.js'
-import { primPersonelRouter } from '../primPersonel/primPersonel.routes.js'
-import { icraTahsilatRouter } from '../icraTahsilat/icraTahsilat.routes.js'
-import { reportsRouter } from '../reports/reports.routes.js'
 
 export const apiV1Router = Router()
 
@@ -41,10 +37,6 @@ apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)
 apiV1Router.use('/users', usersRouter)
 apiV1Router.use('/license', licenseRouter)
-apiV1Router.use('/prim', primRouter)
-apiV1Router.use('/prim-personel', primPersonelRouter)
-apiV1Router.use('/icra-tahsilat', icraTahsilatRouter)
-apiV1Router.use('/reports', reportsRouter)
 
 apiV1Router.get('/me', requireAuth, loadAuthContext, meHandler)
 
