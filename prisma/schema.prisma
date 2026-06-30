@@ -36,6 +36,10 @@ model Tenant {
   yillikUcret           Decimal?              @map("yillik_ucret") @db.Decimal(14, 2)
   lisansNotlari         String?               @map("lisans_notlari")
 
+  /// Merkezi lisans / website sipariş idempotency (unique).
+  externalOrderId    String? @unique @map("external_order_id")
+  externalCustomerId String? @map("external_customer_id")
+
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -49,6 +53,13 @@ model Tenant {
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   ofisKasaHareketleri   OfisKasaHareketi[]
   importBatches         ImportBatch[]
+  primKurallari         PrimKurali[]
+  primKuralKademeleri   PrimKuralKademesi[]
+  primDonemOdemeleri    PrimDonemOdemesi[]
+  primPersoneller       PrimPersonel[]
+  icraTahsilatAlacaklari IcraTahsilatAlacagi[]
+  icraTahsilatTaksitleri IcraTahsilatTaksit[]
+  icraTahsilatOdemeleri  IcraTahsilatOdeme[]
 
   @@map("tenant")
 }
@@ -92,6 +103,17 @@ model User {
   ofisKasaHareketleriUpdated OfisKasaHareketi[] @relation("OfisKasaUpdatedBy")
   ofisKasaHareketleriOnaylayan OfisKasaHareketi[] @relation("OfisKasaOnaylayan")
   importBatchesCommitted       ImportBatch[]
+  tahsilatlariYapanKasa        KasaHareketi[]        @relation("KasaTahsilatiYapan")
+  tahsilatlariYapanVekalet     VekaletTaksitOdeme[]  @relation("VekaletOdemeTahsilatiYapan")
+  tahsilatlariYapanOfisKasa    OfisKasaHareketi[]    @relation("OfisKasaTahsilatiYapan")
+  primKurallari                PrimKurali[]
+  primDonemOdemeleri           PrimDonemOdemesi[]
+  primDonemOdemeleriIsaretleyen PrimDonemOdemesi[]   @relation("PrimDonemOdendiIsaretleyen")
+  bagliPrimPersonel             PrimPersonel?         @relation("PrimPersonelBagliUser")
+  icraTahsilatAlacaklariCreated IcraTahsilatAlacagi[] @relation("IcraAlacakCreatedBy")
+  icraTahsilatAlacaklariUpdated IcraTahsilatAlacagi[] @relation("IcraAlacakUpdatedBy")
+  icraTahsilatOdemeleriCreated  IcraTahsilatOdeme[]   @relation("IcraOdemeCreatedBy")
+  tahsilatlariYapanIcraTahsilat IcraTahsilatOdeme[]   @relation("IcraOdemeTahsilatiYapan")
 
   @@unique([kullaniciAdi])
   @@unique([tenantId, eposta])
@@ -154,6 +176,7 @@ model Muvekkil {
   vekaletUcretleri   VekaletUcreti[]
   vekaletTaksitleri  VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
+  icraTahsilatAlacaklari IcraTahsilatAlacagi[]
 
   @@index([tenantId, aktifMi])
   @@index([tenantId, gorunenAd])
@@ -198,6 +221,7 @@ model Dosya {
   vekaletUcreti     VekaletUcreti?
   vekaletTaksitleri VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
+  icraTahsilatAlacaklari IcraTahsilatAlacagi[]
 
   @@index([tenantId, muvekkilId, aktifMi])
   @@index([tenantId, aktifMi])
@@ -267,15 +291,26 @@ model OfisKasaHareketi {
   otomatikOnayMi      Boolean              @default(false) @map("otomatik_onay_mi")
   createdById         String               @map("created_by_id")
   createdBy           User                 @relation("OfisKasaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  tahsilatiYapanUserId String?             @map("tahsilati_yapan_user_id")
+  tahsilatiYapanUser  User?                @relation("OfisKasaTahsilatiYapan", fields: [tahsilatiYapanUserId], references: [id], onDelete: SetNull)
+  tahsilatiYapanPersonelId String?         @map("tahsilati_yapan_personel_id")
+  tahsilatiYapanPersonel PrimPersonel?     @relation("OfisKasaTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
   updatedById         String?              @map("updated_by_id")
   updatedBy           User?                @relation("OfisKasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
+  kaynakTipi          String?              @map("kaynak_tipi")
+  kaynakId            String?              @map("kaynak_id")
+  icraTahsilatOdeme   IcraTahsilatOdeme?
+  vekaletTaksitOdeme  VekaletTaksitOdeme?
 
   @@unique([tenantId, belgeNo])
+  @@unique([tenantId, kaynakTipi, kaynakId])
   @@index([tenantId, tarih])
   @@index([tenantId, onayDurumu])
   @@index([tenantId, islemTipi])
+  @@index([tenantId, tahsilatiYapanUserId, tarih])
+  @@index([tenantId, tahsilatiYapanPersonelId, tarih])
   @@map("ofis_kasa_hareketi")
 }
 
@@ -308,6 +343,10 @@ model KasaHareketi {
   otomatikOnayMi     Boolean          @default(false) @map("otomatik_onay_mi")
   createdById        String           @map("created_by_id")
   createdBy          User             @relation("KasaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  tahsilatiYapanUserId String?        @map("tahsilati_yapan_user_id")
+  tahsilatiYapanUser User?            @relation("KasaTahsilatiYapan", fields: [tahsilatiYapanUserId], references: [id], onDelete: SetNull)
+  tahsilatiYapanPersonelId String?    @map("tahsilati_yapan_personel_id")
+  tahsilatiYapanPersonel PrimPersonel? @relation("KasaTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
   updatedById        String?          @map("updated_by_id")
   updatedBy          User?            @relation("KasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   createdAt          DateTime         @default(now()) @map("created_at")
@@ -317,6 +356,8 @@ model KasaHareketi {
   @@unique([tenantId, belgeNo])
   @@index([tenantId, dosyaId, tarih])
   @@index([tenantId, dosyaId, onayDurumu])
+  @@index([tenantId, tahsilatiYapanUserId, tarih])
+  @@index([tenantId, tahsilatiYapanPersonelId, tarih])
   @@map("kasa_hareketi")
 }
 
@@ -404,8 +445,14 @@ model VekaletTaksitOdeme {
   smmKesildiMi  Boolean        @default(false) @map("smm_kesildi_mi")
   kasaHareketId String?        @unique @map("kasa_hareket_id")
   kasaHareket   KasaHareketi?  @relation(fields: [kasaHareketId], references: [id], onDelete: SetNull)
+  ofisKasaHareketId String?    @unique @map("ofis_kasa_hareket_id")
+  ofisKasaHareket   OfisKasaHareketi? @relation(fields: [ofisKasaHareketId], references: [id], onDelete: SetNull)
   createdById   String         @map("created_by_id")
   createdBy     User           @relation("VekaletTaksitOdemeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  tahsilatiYapanUserId String? @map("tahsilati_yapan_user_id")
+  tahsilatiYapanUser User?      @relation("VekaletOdemeTahsilatiYapan", fields: [tahsilatiYapanUserId], references: [id], onDelete: SetNull)
+  tahsilatiYapanPersonelId String? @map("tahsilati_yapan_personel_id")
+  tahsilatiYapanPersonel PrimPersonel? @relation("VekaletOdemeTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
 
@@ -413,7 +460,226 @@ model VekaletTaksitOdeme {
   @@index([tenantId, taksitId])
   @@index([tenantId, dosyaId])
   @@index([tenantId, smmKesildiMi])
+  @@index([tenantId, tahsilatiYapanUserId, odemeTarihi])
+  @@index([tenantId, tahsilatiYapanPersonelId, odemeTarihi])
   @@map("vekalet_taksit_odeme")
+}
+
+enum PrimKuralKapsam {
+  TENANT_DEFAULT
+  USER_SPECIFIC
+}
+
+enum PrimHesaplamaTipi {
+  TOTAL_BRACKET
+  PROGRESSIVE
+}
+
+enum PrimDonemTipi {
+  MONTHLY
+}
+
+enum PrimDonemOdemeDurumu {
+  HESAPLANDI
+  ODENDI
+}
+
+/// Prim takibi için büro personeli (sistem kullanıcısı olmak zorunda değil).
+model PrimPersonel {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  adSoyad     String   @map("ad_soyad")
+  telefon     String?
+  eposta      String?
+  unvan       String?
+  aktifMi     Boolean  @default(true) @map("aktif_mi")
+  not         String?
+  bagliUserId String?  @unique @map("bagli_user_id")
+  bagliUser   User?    @relation("PrimPersonelBagliUser", fields: [bagliUserId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  primKurallari              PrimKurali[]
+  primDonemOdemeleri         PrimDonemOdemesi[]
+  tahsilatlariYapanKasa      KasaHareketi[]        @relation("KasaTahsilatiYapanPersonel")
+  tahsilatlariYapanVekalet   VekaletTaksitOdeme[]  @relation("VekaletOdemeTahsilatiYapanPersonel")
+  tahsilatlariYapanOfisKasa  OfisKasaHareketi[]    @relation("OfisKasaTahsilatiYapanPersonel")
+  tahsilatlariYapanIcraTahsilat IcraTahsilatOdeme[] @relation("IcraOdemeTahsilatiYapanPersonel")
+
+  @@index([tenantId, aktifMi])
+  @@index([tenantId, adSoyad])
+  @@map("prim_personel")
+}
+
+enum IcraTahsilatAlacakTuru {
+  KARSI_TARAF_VEKALET
+  ICRA_VEKALET
+}
+
+enum IcraTahsilatAlacakDurum {
+  ACIK
+  KISMI_ODENDI
+  ODENDI
+  GECIKTI
+  IPTAL
+}
+
+model IcraTahsilatAlacagi {
+  id                       String                   @id @default(uuid())
+  tenantId                 String                   @map("tenant_id")
+  tenant                   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  alacakTuru               IcraTahsilatAlacakTuru   @map("alacak_turu")
+  borcluAd                 String                   @map("borclu_ad")
+  muvekkilId               String?                  @map("muvekkil_id")
+  muvekkil                 Muvekkil?                @relation(fields: [muvekkilId], references: [id], onDelete: SetNull)
+  dosyaId                  String?                  @map("dosya_id")
+  dosya                    Dosya?                   @relation(fields: [dosyaId], references: [id], onDelete: SetNull)
+  toplamTutar              Decimal                  @map("toplam_tutar") @db.Decimal(14, 2)
+  pesinatTutar             Decimal                  @default(0) @map("pesinat_tutar") @db.Decimal(14, 2)
+  taksitSayisi             Int                      @map("taksit_sayisi")
+  ilkVadeTarihi            DateTime                 @map("ilk_vade_tarihi")
+  varsayilanOdemeYontemi   OfisKasaOdemeYontemi     @map("varsayilan_odeme_yontemi")
+  aciklama                 String?
+  durum                    IcraTahsilatAlacakDurum  @default(ACIK)
+  createdById              String                   @map("created_by_id")
+  createdBy                User                     @relation("IcraAlacakCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById              String?                  @map("updated_by_id")
+  updatedBy                User?                    @relation("IcraAlacakUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt                DateTime                 @default(now()) @map("created_at")
+  updatedAt                DateTime                 @updatedAt @map("updated_at")
+  taksitler                IcraTahsilatTaksit[]
+  odemeler                 IcraTahsilatOdeme[]
+
+  @@index([tenantId, durum])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, muvekkilId])
+  @@index([tenantId, dosyaId])
+  @@map("icra_tahsilat_alacak")
+}
+
+model IcraTahsilatTaksit {
+  id          String               @id @default(uuid())
+  tenantId    String               @map("tenant_id")
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  alacakId    String               @map("alacak_id")
+  alacak      IcraTahsilatAlacagi  @relation(fields: [alacakId], references: [id], onDelete: Cascade)
+  taksitNo    Int                  @map("taksit_no")
+  tutar       Decimal              @db.Decimal(14, 2)
+  vadeTarihi  DateTime             @map("vade_tarihi")
+  aciklama    String?
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+  odemeler    IcraTahsilatOdeme[]
+
+  @@unique([alacakId, taksitNo])
+  @@index([tenantId, alacakId])
+  @@map("icra_tahsilat_taksit")
+}
+
+model IcraTahsilatOdeme {
+  id                       String               @id @default(uuid())
+  tenantId                 String               @map("tenant_id")
+  tenant                   Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  alacakId                 String               @map("alacak_id")
+  alacak                   IcraTahsilatAlacagi  @relation(fields: [alacakId], references: [id], onDelete: Cascade)
+  taksitId                 String?              @map("taksit_id")
+  taksit                   IcraTahsilatTaksit?  @relation(fields: [taksitId], references: [id], onDelete: SetNull)
+  odemeTarihi              DateTime             @map("odeme_tarihi")
+  tutar                    Decimal              @db.Decimal(14, 2)
+  odemeYontemi             OfisKasaOdemeYontemi @map("odeme_yontemi")
+  aciklama                 String?
+  smmKesildiMi             Boolean              @default(false) @map("smm_kesildi_mi")
+  pesinatMi                Boolean              @default(false) @map("pesinat_mi")
+  ofisKasaHareketId        String?              @unique @map("ofis_kasa_hareket_id")
+  ofisKasaHareket          OfisKasaHareketi?    @relation(fields: [ofisKasaHareketId], references: [id], onDelete: SetNull)
+  tahsilatiYapanPersonelId String?              @map("tahsilati_yapan_personel_id")
+  tahsilatiYapanPersonel   PrimPersonel?        @relation("IcraOdemeTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
+  tahsilatiYapanUserId     String?              @map("tahsilati_yapan_user_id")
+  tahsilatiYapanUser       User?                @relation("IcraOdemeTahsilatiYapan", fields: [tahsilatiYapanUserId], references: [id], onDelete: SetNull)
+  createdById              String               @map("created_by_id")
+  createdBy                User                 @relation("IcraOdemeCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt                DateTime             @default(now()) @map("created_at")
+  updatedAt                DateTime             @updatedAt @map("updated_at")
+
+  @@index([tenantId, alacakId])
+  @@index([tenantId, taksitId])
+  @@index([tenantId, tahsilatiYapanPersonelId, odemeTarihi])
+  @@index([tenantId, smmKesildiMi])
+  @@map("icra_tahsilat_odeme")
+}
+
+/// Personel tahsilat primi kuralı
+model PrimKurali {
+  id                 String              @id @default(uuid())
+  tenantId           String              @map("tenant_id")
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ad                 String              @map("ad")
+  aktifMi            Boolean             @default(true) @map("aktif_mi")
+  kapsam             PrimKuralKapsam     @map("kapsam")
+  userId             String?             @map("user_id")
+  user               User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  primPersonelId     String?             @map("prim_personel_id")
+  primPersonel       PrimPersonel?       @relation(fields: [primPersonelId], references: [id], onDelete: Cascade)
+  hesaplamaTipi      PrimHesaplamaTipi   @map("hesaplama_tipi")
+  donemTipi          PrimDonemTipi       @default(MONTHLY) @map("donem_tipi")
+  dosyaTahsilatMi    Boolean             @default(true) @map("dosya_tahsilat_mi")
+  vekaletTahsilatMi  Boolean             @default(true) @map("vekalet_tahsilat_mi")
+  ofisKasaGelirMi    Boolean             @default(true) @map("ofis_kasa_gelir_mi")
+  icraTahsilatMi     Boolean             @default(false) @map("icra_tahsilat_mi")
+  kademeler          PrimKuralKademesi[]
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  @@index([tenantId, aktifMi])
+  @@index([tenantId, kapsam, userId])
+  @@index([tenantId, kapsam, primPersonelId])
+  @@map("prim_kurali")
+}
+
+model PrimKuralKademesi {
+  id        String     @id @default(uuid())
+  tenantId  String     @map("tenant_id")
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kuralId   String     @map("kural_id")
+  kural     PrimKurali @relation(fields: [kuralId], references: [id], onDelete: Cascade)
+  minTutar  Decimal    @map("min_tutar") @db.Decimal(14, 2)
+  maxTutar  Decimal?   @map("max_tutar") @db.Decimal(14, 2)
+  oranYuzde Decimal    @map("oran_yuzde") @db.Decimal(6, 2)
+  siraNo    Int        @map("sira_no")
+
+  @@index([tenantId, kuralId])
+  @@map("prim_kural_kademesi")
+}
+
+/// Aylık hesaplanan personel prim özeti
+model PrimDonemOdemesi {
+  id                  String               @id @default(uuid())
+  tenantId            String               @map("tenant_id")
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId              String?              @map("user_id")
+  user                User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  primPersonelId      String               @map("prim_personel_id")
+  primPersonel        PrimPersonel         @relation(fields: [primPersonelId], references: [id], onDelete: Cascade)
+  yil                 Int                  @map("yil")
+  ay                  Int                  @map("ay")
+  toplamTahsilat      Decimal              @map("toplam_tahsilat") @db.Decimal(14, 2)
+  hesaplananPrim      Decimal              @map("hesaplanan_prim") @db.Decimal(14, 2)
+  uygulananKuralId    String?              @map("uygulanan_kural_id")
+  hesaplamaTipi       PrimHesaplamaTipi?   @map("hesaplama_tipi")
+  hesaplamaDetay      Json?                @map("hesaplama_detay")
+  durum               PrimDonemOdemeDurumu @default(HESAPLANDI)
+  odendiTarihi        DateTime?            @map("odendi_tarihi")
+  odendiIsaretleyenId String?              @map("odendi_isaretleyen_id")
+  odendiIsaretleyen   User?                @relation("PrimDonemOdendiIsaretleyen", fields: [odendiIsaretleyenId], references: [id], onDelete: SetNull)
+  not                 String?
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+
+  @@unique([tenantId, primPersonelId, yil, ay])
+  @@index([tenantId, yil, ay])
+  @@index([tenantId, userId, yil, ay])
+  @@map("prim_donem_odemesi")
 }
 
 /// Tek kullanımlık şifre sıfırlama jetonu (düz metin saklanmaz, yalnızca SHA-256 özeti).
