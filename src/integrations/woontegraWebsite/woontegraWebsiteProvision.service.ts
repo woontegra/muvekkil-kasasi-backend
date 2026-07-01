@@ -7,12 +7,15 @@ import { issueActivationToken } from '../../auth/passwordReset.service.js'
 import { getRequestMeta } from '../../auth/requestMeta.js'
 import { getActivationTokenExpiresHours } from '../../config/env.js'
 import { AppError } from '../../middleware/errorHandler.js'
-import { isValidKullaniciAdi, normalizeKullaniciAdi } from '../../lib/normalizeKullaniciAdi.js'
 import { sendWelcomeActivationEmail } from '../../mail/mail.service.js'
 import {
   findTenantOwner,
   provisionTenantWithOwner
 } from '../../tenant/provisionTenantWithOwner.js'
+import { resolveOwnerEmailConflict } from './woontegraWebsiteOwnerEmailGuard.js'
+import {
+  buildOwnerUsernameCandidates
+} from './woontegraWebsiteOwnerUsername.js'
 import type { WoontegraWebsiteProvisionBody } from './woontegraWebsiteProvision.schemas.js'
 
 const DEFAULT_LICENSE_NOTE = 'Woontegra Website ödeme sonrası otomatik oluşturuldu.'
@@ -58,13 +61,53 @@ function resolveBuroAdi(body: WoontegraWebsiteProvisionBody): string {
   return body.customer.name.trim()
 }
 
-function resolveOwnerUsername(body: WoontegraWebsiteProvisionBody): string {
-  const emailLocal = body.customer.email.split('@')[0] ?? ''
-  const fromEmail = normalizeKullaniciAdi(emailLocal)
-  if (isValidKullaniciAdi(fromEmail)) return fromEmail
-  const fromName = normalizeKullaniciAdi(body.customer.name)
-  if (isValidKullaniciAdi(fromName)) return fromName
-  throw new AppError(422, 'Geçerli owner kullanıcı adı üretilemedi.', 'VALIDATION_ERROR')
+async function resolveAvailableOwnerUsername(body: WoontegraWebsiteProvisionBody): Promise<string> {
+  const candidates = buildOwnerUsernameCandidates(body)
+  for (const candidate of candidates) {
+    const taken = await prisma.user.findFirst({
+      where: { kullaniciAdi: { equals: candidate, mode: 'insensitive' } }
+    })
+    if (!taken) return candidate
+  }
+  throw new AppError(
+    500,
+    'Büro sahibi kullanıcı adı üretilemedi. Lütfen destek ile iletişime geçin.',
+    'USERNAME_GENERATION_FAILED'
+  )
+}
+
+async function returnIdempotentProvision(
+  existing: {
+    id: string
+    slug: string
+    buroAdi: string
+    lisansBaslangicTarihi: Date | null
+    lisansBitisTarihi: Date | null
+    lisansAnahtari: string | null
+  },
+  owner: { id: string; kullaniciAdi: string; eposta: string | null },
+  body: WoontegraWebsiteProvisionBody,
+  mailFallback: { ownerEmail: string; licenseStart: string; licenseEnd: string },
+  meta: { ipAddress: string | null; userAgent: string | null },
+  extraAudit?: Record<string, unknown>
+): Promise<WoontegraWebsiteProvisionExistsResponse> {
+  const ownerEmail = owner.eposta?.trim().toLowerCase() || mailFallback.ownerEmail
+  mailFallback.licenseStart = existing.lisansBaslangicTarihi?.toISOString() ?? mailFallback.licenseStart
+  mailFallback.licenseEnd = existing.lisansBitisTarihi?.toISOString() ?? mailFallback.licenseEnd
+
+  await writeAuditLog({
+    tenantId: existing.id,
+    userId: owner.id,
+    action: 'WOONTEGRA_WEBSITE_PROVISION_IDEMPOTENT_HIT',
+    entityType: 'Tenant',
+    entityId: existing.id,
+    newValue: { externalOrderId: body.externalOrderId, ...extraAudit },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  await sendOwnerActivationEmail(existing, owner, mailFallback, meta)
+  return toExistsResponse(existing, ownerEmail)
 }
 
 function resolveLicenseWindow(body: WoontegraWebsiteProvisionBody): {
@@ -243,30 +286,26 @@ export async function provisionTenantFromWoontegraWebsite(
     if (!owner) {
       throw new AppError(500, 'Mevcut tenant için büro sahibi bulunamadı.', 'OWNER_MISSING')
     }
-    const ownerEmail = owner.eposta?.trim().toLowerCase() || mailFallback.ownerEmail
-    mailFallback.licenseStart = existing.lisansBaslangicTarihi?.toISOString() ?? ''
-    mailFallback.licenseEnd = existing.lisansBitisTarihi?.toISOString() ?? ''
+    return returnIdempotentProvision(existing, owner, body, mailFallback, meta)
+  }
 
-    await writeAuditLog({
-      tenantId: existing.id,
-      userId: owner.id,
-      action: 'WOONTEGRA_WEBSITE_PROVISION_IDEMPOTENT_HIT',
-      entityType: 'Tenant',
-      entityId: existing.id,
-      newValue: { externalOrderId: body.externalOrderId },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-
-    await sendOwnerActivationEmail(existing, owner, mailFallback, meta)
-    return toExistsResponse(existing, ownerEmail)
+  const emailConflict = await resolveOwnerEmailConflict(body)
+  if (emailConflict) {
+    return returnIdempotentProvision(
+      emailConflict.tenant,
+      emailConflict.owner,
+      body,
+      mailFallback,
+      meta,
+      { reason: 'owner_email_match' }
+    )
   }
 
   const { start, end, isDemo } = resolveLicenseWindow(body)
   mailFallback.licenseStart = start.toISOString()
   mailFallback.licenseEnd = end.toISOString()
 
-  const kullaniciAdi = resolveOwnerUsername(body)
+  const kullaniciAdi = await resolveAvailableOwnerUsername(body)
   const randomSecret = crypto.randomBytes(32).toString('base64url')
   const sifreHash = await hashPassword(randomSecret)
   const now = new Date()
@@ -316,21 +355,16 @@ export async function provisionTenantFromWoontegraWebsite(
       if (raced) {
         const owner = await findTenantOwner(raced.id)
         if (owner) {
-          const ownerEmail = owner.eposta?.trim().toLowerCase() || mailFallback.ownerEmail
-          await writeAuditLog({
-            tenantId: raced.id,
-            userId: owner.id,
-            action: 'WOONTEGRA_WEBSITE_PROVISION_IDEMPOTENT_HIT',
-            entityType: 'Tenant',
-            entityId: raced.id,
-            newValue: { externalOrderId: body.externalOrderId, race: true },
-            ipAddress: meta.ipAddress,
-            userAgent: meta.userAgent
-          })
-          await sendOwnerActivationEmail(raced, owner, mailFallback, meta)
-          return toExistsResponse(raced, ownerEmail)
+          return returnIdempotentProvision(raced, owner, body, mailFallback, meta, { race: true })
         }
       }
+    }
+    if (e instanceof AppError && e.code === 'USERNAME_TAKEN') {
+      throw new AppError(
+        500,
+        'Büro sahibi kullanıcı adı üretilemedi. Lütfen destek ile iletişime geçin.',
+        'USERNAME_GENERATION_FAILED'
+      )
     }
     throw e
   }
