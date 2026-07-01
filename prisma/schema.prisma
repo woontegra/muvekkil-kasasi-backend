@@ -36,8 +36,9 @@ model Tenant {
   yillikUcret           Decimal?              @map("yillik_ucret") @db.Decimal(14, 2)
   lisansNotlari         String?               @map("lisans_notlari")
 
-  /// Merkezi lisans / website sipariş idempotency (unique).
+  /// Woontegra Website ödeme sonrası teslimat idempotency: website sipariş kimliği (unique).
   externalOrderId    String? @unique @map("external_order_id")
+  /// Woontegra Website ödeme sonrası teslimat: website müşteri kimliği.
   externalCustomerId String? @map("external_customer_id")
 
   createdAt    DateTime @default(now()) @map("created_at")
