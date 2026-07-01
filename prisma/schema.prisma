@@ -35,6 +35,8 @@ model Tenant {
   sonOdemeTarihi        DateTime?             @map("son_odeme")
   yillikUcret           Decimal?              @map("yillik_ucret") @db.Decimal(14, 2)
   lisansNotlari         String?               @map("lisans_notlari")
+  /// SaaS lisans anahtarı (kiracı başına; Woontegra Website veya süper admin oluşturma).
+  lisansAnahtari        String?               @unique @map("lisans_anahtari")
 
   /// Woontegra Website ödeme sonrası teslimat idempotency: website sipariş kimliği (unique).
   externalOrderId    String? @unique @map("external_order_id")
@@ -61,8 +63,36 @@ model Tenant {
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
   icraTahsilatTaksitleri IcraTahsilatTaksit[]
   icraTahsilatOdemeleri  IcraTahsilatOdeme[]
+  licenseRenewals        TenantLicenseRenewal[]
 
   @@map("tenant")
+}
+
+enum LicenseRenewalSource {
+  WOONTEGRA_WEBSITE
+  SUPER_ADMIN
+}
+
+/// Lisans / üyelik yenileme geçmişi (Website renew veya Super Admin uzatma).
+model TenantLicenseRenewal {
+  id                 String               @id @default(uuid())
+  tenantId           String               @map("tenant_id")
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  externalOrderId    String?              @unique @map("external_order_id")
+  externalCustomerId String?              @map("external_customer_id")
+  licenseKey         String?              @map("license_key")
+  previousEndDate    DateTime             @map("previous_end_date")
+  newEndDate         DateTime             @map("new_end_date")
+  renewalDays        Int                  @map("renewal_days")
+  amount             Decimal?             @db.Decimal(14, 2)
+  currency           String               @default("TRY")
+  paidAt             DateTime?            @map("paid_at")
+  source             LicenseRenewalSource @map("source")
+  note               String?
+  createdAt          DateTime             @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("tenant_license_renewal")
 }
 
 enum UserRole {

@@ -1,6 +1,5 @@
 import { Prisma, type SuperAdminRole, type Tenant } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { slugifyBuroAdi } from '../lib/slug.js'
 import { serializeTenant, serializeUser } from '../auth/auth.service.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -16,6 +15,15 @@ import {
   type AdminCreateTenantBody
 } from './admin.schemas.js'
 import crypto from 'node:crypto'
+import { normalizeKullaniciAdi, isValidKullaniciAdi } from '../lib/normalizeKullaniciAdi.js'
+import {
+  provisionTenantWithOwner
+} from '../tenant/provisionTenantWithOwner.js'
+import { extendTenantLicense } from '../tenant/extendTenantLicense.js'
+import { effectiveLicenseEnd } from '../tenant/tenantLicense.js'
+import { issueActivationToken } from '../auth/passwordReset.service.js'
+import { sendWelcomeActivationEmail } from '../mail/mail.service.js'
+import { getActivationTokenExpiresHours } from '../config/env.js'
 
 type TenantUpdateBody = z.infer<typeof adminTenantUpdateBodySchema>
 type ExtendBody = z.infer<typeof adminExtendLicenseBodySchema>
@@ -59,6 +67,21 @@ function stripForFinans(body: TenantUpdateBody): TenantUpdateBody {
   return out
 }
 
+function kalanGunForTenant(t: {
+  lisansDurumu: Tenant['lisansDurumu']
+  lisansBitisTarihi: Date | null
+  demoMu: boolean
+  demoBitisTarihi: Date | null
+}): number | null {
+  const end = effectiveLicenseEnd(t as Tenant)
+  if (!end) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const endDay = new Date(end)
+  endDay.setHours(0, 0, 0, 0)
+  return Math.round((endDay.getTime() - today.getTime()) / 86_400_000)
+}
+
 export async function adminListTenants(params: {
   q?: string
   lisansDurumu?: string
@@ -72,7 +95,20 @@ export async function adminListTenants(params: {
     where.OR = [
       { buroAdi: { contains: q, mode: 'insensitive' } },
       { slug: { contains: q, mode: 'insensitive' } },
-      { eposta: { contains: q, mode: 'insensitive' } }
+      { eposta: { contains: q, mode: 'insensitive' } },
+      { lisansAnahtari: { contains: q, mode: 'insensitive' } },
+      {
+        users: {
+          some: {
+            role: 'BURO_SAHIBI',
+            OR: [
+              { adSoyad: { contains: q, mode: 'insensitive' } },
+              { eposta: { contains: q, mode: 'insensitive' } },
+              { kullaniciAdi: { contains: q, mode: 'insensitive' } }
+            ]
+          }
+        }
+      }
     ]
   }
   if (params.lisansDurumu) {
@@ -90,28 +126,46 @@ export async function adminListTenants(params: {
       skip: (params.page - 1) * params.limit,
       take: params.limit,
       include: {
+        users: {
+          where: { role: 'BURO_SAHIBI' },
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+          select: {
+            adSoyad: true,
+            kullaniciAdi: true,
+            eposta: true,
+            telefon: true
+          }
+        },
         _count: { select: { users: true, muvekkiller: true, dosyalar: true } }
       }
     })
   ])
 
-  const items = rows.map((t) => ({
-    id: t.id,
-    buroAdi: t.buroAdi,
-    slug: t.slug,
-    eposta: t.eposta,
-    telefon: t.telefon,
-    aktifMi: t.aktifMi,
-    lisansDurumu: t.lisansDurumu,
-    lisansBaslangicTarihi: t.lisansBaslangicTarihi?.toISOString() ?? null,
-    lisansBitisTarihi: t.lisansBitisTarihi?.toISOString() ?? null,
-    demoMu: t.demoMu,
-    demoBitisTarihi: t.demoBitisTarihi?.toISOString() ?? null,
-    toplamKullanici: t._count.users,
-    toplamMuvekkil: t._count.muvekkiller,
-    toplamDosya: t._count.dosyalar,
-    createdAt: t.createdAt.toISOString()
-  }))
+  const items = rows.map((t) => {
+    const owner = t.users[0] ?? null
+    return {
+      id: t.id,
+      buroAdi: t.buroAdi,
+      slug: t.slug,
+      eposta: t.eposta ?? owner?.eposta ?? null,
+      telefon: t.telefon ?? owner?.telefon ?? null,
+      aktifMi: t.aktifMi,
+      lisansDurumu: t.lisansDurumu,
+      lisansBaslangicTarihi: t.lisansBaslangicTarihi?.toISOString() ?? null,
+      lisansBitisTarihi: t.lisansBitisTarihi?.toISOString() ?? null,
+      lisansAnahtari: t.lisansAnahtari,
+      demoMu: t.demoMu,
+      demoBitisTarihi: t.demoBitisTarihi?.toISOString() ?? null,
+      sahipAdSoyad: owner?.adSoyad ?? null,
+      sahipKullaniciAdi: owner?.kullaniciAdi ?? null,
+      kalanGun: kalanGunForTenant(t),
+      toplamKullanici: t._count.users,
+      toplamMuvekkil: t._count.muvekkiller,
+      toplamDosya: t._count.dosyalar,
+      createdAt: t.createdAt.toISOString()
+    }
+  })
 
   return { items, total, page: params.page, limit: params.limit }
 }
@@ -147,7 +201,7 @@ export async function adminGetTenant(id: string) {
   })
   if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
 
-  const [auditLogs, kasaCount] = await Promise.all([
+  const [auditLogs, kasaCount, licenseRenewals] = await Promise.all([
     prisma.auditLog.findMany({
       where: { tenantId: id },
       orderBy: { createdAt: 'desc' },
@@ -161,7 +215,11 @@ export async function adminGetTenant(id: string) {
         userId: true
       }
     }),
-    prisma.kasaHareketi.count({ where: { tenantId: id } })
+    prisma.kasaHareketi.count({ where: { tenantId: id } }),
+    prisma.tenantLicenseRenewal.findMany({
+      where: { tenantId: id },
+      orderBy: { createdAt: 'desc' }
+    })
   ])
 
   return {
@@ -183,6 +241,7 @@ export async function adminGetTenant(id: string) {
       sonOdemeTarihi: t.sonOdemeTarihi?.toISOString() ?? null,
       yillikUcret: dec(t.yillikUcret),
       lisansNotlari: t.lisansNotlari,
+      lisansAnahtari: t.lisansAnahtari,
       createdAt: t.createdAt.toISOString(),
       updatedAt: t.updatedAt.toISOString()
     },
@@ -201,6 +260,18 @@ export async function adminGetTenant(id: string) {
     sonAuditLoglar: auditLogs.map((a) => ({
       ...a,
       createdAt: a.createdAt.toISOString()
+    })),
+    licenseRenewals: licenseRenewals.map((r) => ({
+      id: r.id,
+      tarih: r.createdAt.toISOString(),
+      kaynak: r.source,
+      eskiBitis: r.previousEndDate.toISOString(),
+      yeniBitis: r.newEndDate.toISOString(),
+      gunSayisi: r.renewalDays,
+      tutar: dec(r.amount),
+      paraBirimi: r.currency,
+      externalOrderId: r.externalOrderId,
+      not: r.note
     }))
   }
 }
@@ -286,61 +357,48 @@ export async function adminExtendTenantLicense(
   const t = await prisma.tenant.findUnique({ where: { id } })
   if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
 
-  let next: Date
-  let auditBirim: 'GUN' | 'AY' | 'YIL' | null = null
-  let auditMiktar: number | null = null
-
-  if (body.bitisTarihi != null) {
-    next = new Date(body.bitisTarihi)
-    const bisDay = dayStart(next)
-    const today = dayStart(new Date())
-    if (bisDay.getTime() < today.getTime()) {
-      throw new AppError(400, 'Bitiş tarihi bugünden önce olamaz.', 'VALIDATION')
-    }
-  } else if (body.miktar != null && body.birim != null) {
-    const base = computeExtensionBaseDate(t)
-    next = addFromBase(base, body.miktar, body.birim)
-    auditBirim = body.birim
-    auditMiktar = body.miktar
-  } else if (body.aySayisi != null || body.yilSayisi != null) {
-    const base = computeExtensionBaseDate(t)
-    next = new Date(base)
-    if (body.aySayisi != null) next.setMonth(next.getMonth() + body.aySayisi)
-    if (body.yilSayisi != null) next.setFullYear(next.getFullYear() + body.yilSayisi)
-    if (body.yilSayisi != null) {
-      auditBirim = 'YIL'
-      auditMiktar = body.yilSayisi
-    } else {
-      auditBirim = 'AY'
-      auditMiktar = body.aySayisi!
-    }
-  } else {
-    throw new AppError(400, 'Geçersiz uzatma gövdesi.', 'VALIDATION')
-  }
-
   const isDemo = body.demoMu === true
   const meta = getRequestMeta(req)
   const noteAppend = body.aciklama?.trim()
+
+  let auditBirim: 'GUN' | 'AY' | 'YIL' | null = null
+  let auditMiktar: number | null = null
+
+  const extendInput: Parameters<typeof extendTenantLicense>[0] = {
+    tenantId: id,
+    source: 'SUPER_ADMIN',
+    externalOrderId: null,
+    licenseKey: t.lisansAnahtari,
+    demoMu: isDemo,
+    note: noteAppend || null,
+    appendLicenseNote: noteAppend || null
+  }
+
+  if (body.bitisTarihi != null) {
+    extendInput.newEndDate = new Date(body.bitisTarihi)
+  } else if (body.miktar != null && body.birim != null) {
+    extendInput.addDuration = { miktar: body.miktar, birim: body.birim }
+    auditBirim = body.birim
+    auditMiktar = body.miktar
+  } else if (body.yilSayisi != null) {
+    extendInput.addDuration = { miktar: body.yilSayisi, birim: 'YIL' }
+    auditBirim = 'YIL'
+    auditMiktar = body.yilSayisi
+  } else if (body.aySayisi != null) {
+    extendInput.addDuration = { miktar: body.aySayisi, birim: 'AY' }
+    auditBirim = 'AY'
+    auditMiktar = body.aySayisi
+  } else {
+    throw new AppError(400, 'Geçersiz uzatma gövdesi.', 'VALIDATION')
+  }
 
   const oldLisansBas = t.lisansBaslangicTarihi?.toISOString() ?? null
   const oldLisansBitis = t.lisansBitisTarihi?.toISOString() ?? null
   const oldDemoBitis = t.demoBitisTarihi?.toISOString() ?? null
 
-  const updated = await prisma.tenant.update({
-    where: { id },
-    data: {
-      ...(t.lisansBaslangicTarihi == null ? { lisansBaslangicTarihi: new Date() } : {}),
-      lisansBitisTarihi: next,
-      lisansDurumu: isDemo ? 'DEMO' : 'AKTIF',
-      demoMu: isDemo,
-      demoBitisTarihi: isDemo ? next : null,
-      ...(noteAppend
-        ? {
-            lisansNotlari: [t.lisansNotlari, noteAppend].filter(Boolean).join('\n')
-          }
-        : {})
-    }
-  })
+  const result = await extendTenantLicense(extendInput)
+  const updated = result.tenant
+  const next = result.newEndDate
 
   await writeAdminAuditLog({
     adminId,
@@ -364,7 +422,9 @@ export async function adminExtendTenantLicense(
       miktar: auditMiktar,
       bitisTarihiMode: body.bitisTarihi != null,
       demoMuBody: body.demoMu ?? false,
-      aciklama: body.aciklama ?? null
+      aciklama: body.aciklama ?? null,
+      renewalId: result.renewal.id,
+      renewalDays: result.renewalDays
     } as unknown as Prisma.InputJsonValue,
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
@@ -545,132 +605,255 @@ export async function adminListExpiringTenants(days: number) {
   })
 }
 
-async function ensureUniqueTenantSlug(buroAdi: string): Promise<string> {
-  const base = slugifyBuroAdi(buroAdi) || 'buro'
-  let slug = base
-  let n = 0
-  while (await prisma.tenant.findUnique({ where: { slug } })) {
-    n += 1
-    slug = `${base}-${n}`
-  }
-  return slug
-}
-
 function strOrNull(s: string | undefined): string | null {
   const t = s?.trim()
   return t ? t : null
+}
+
+function suggestOwnerKullaniciAdi(ownerEposta: string, ownerAdSoyad: string, buroAdi: string): string {
+  const fromEmail = ownerEposta.split('@')[0] ?? ''
+  let base =
+    normalizeKullaniciAdi(fromEmail) || normalizeKullaniciAdi(ownerAdSoyad) || normalizeKullaniciAdi(buroAdi)
+  if (!isValidKullaniciAdi(base)) {
+    base = base ? `${base}mk` : 'mk-user'
+    base = base.slice(0, 64)
+    if (!isValidKullaniciAdi(base)) base = `user-${Date.now().toString(36).slice(-6)}`
+  }
+  return base.slice(0, 64)
+}
+
+async function ensureUniqueOwnerUsername(preferred: string): Promise<string> {
+  let candidate = preferred
+  let n = 0
+  while (n < 200) {
+    const taken = await prisma.user.findFirst({
+      where: { kullaniciAdi: { equals: candidate, mode: 'insensitive' } }
+    })
+    if (!taken) return candidate
+    n += 1
+    candidate = `${preferred}-${n}`.slice(0, 64)
+  }
+  throw new AppError(409, 'Uygun kullanıcı adı üretilemedi.', 'USERNAME_TAKEN')
+}
+
+type AdminLicenseWindow = {
+  baslangic: Date
+  bitis: Date
+  lisansDurumu: 'DEMO' | 'AKTIF' | 'PASIF'
+  demoMu: boolean
+}
+
+function resolveAdminLicenseWindow(body: AdminCreateTenantBody): AdminLicenseWindow {
+  const baslangic = body.lisansBaslangicTarihi ? new Date(body.lisansBaslangicTarihi) : new Date()
+
+  if (body.lisansPaketi) {
+    let bitis: Date
+    if (body.lisansPaketi === 'OZEL') {
+      bitis = new Date(body.lisansBitisTarihi!)
+      const bisDay = dayStart(bitis)
+      const today = dayStart(new Date())
+      if (bisDay.getTime() < today.getTime()) {
+        throw new AppError(400, 'Bitiş tarihi bugünden önce olamaz.', 'VALIDATION')
+      }
+    } else {
+      const paketMap: Record<
+        Exclude<AdminCreateTenantBody['lisansPaketi'], 'OZEL' | undefined>,
+        { miktar: number; birim: 'GUN' | 'AY' }
+      > = {
+        DEMO: { miktar: 14, birim: 'GUN' },
+        AYLIK: { miktar: 1, birim: 'AY' },
+        UC_AY: { miktar: 3, birim: 'AY' },
+        ALTI_AY: { miktar: 6, birim: 'AY' },
+        YILLIK: { miktar: 12, birim: 'AY' }
+      }
+      const spec = paketMap[body.lisansPaketi as keyof typeof paketMap]
+      bitis = addFromBase(baslangic, spec.miktar, spec.birim)
+    }
+
+    const lisansDurumu = body.lisansDurumu ?? (body.lisansPaketi === 'DEMO' ? 'DEMO' : 'AKTIF')
+    const demoMu = body.demoMu ?? (body.lisansPaketi === 'DEMO' || lisansDurumu === 'DEMO')
+    return { baslangic, bitis, lisansDurumu, demoMu }
+  }
+
+  const demo = body.lisansTipi === 'DEMO'
+  const bitis = addFromBase(baslangic, body.lisansSuresiMiktar!, body.lisansSuresiBirim!)
+  return {
+    baslangic,
+    bitis,
+    lisansDurumu: demo ? 'DEMO' : 'AKTIF',
+    demoMu: demo
+  }
 }
 
 export async function adminCreateTenantWithOwner(
   body: AdminCreateTenantBody,
   adminId: string,
   req: Request
-): Promise<{ tenant: ReturnType<typeof serializeTenant>; ownerUser: ReturnType<typeof serializeUser>; geciciSifre: string }> {
-  const ownerLower = body.ownerKullaniciAdi
-  const taken = await prisma.user.findFirst({
-    where: { kullaniciAdi: { equals: ownerLower, mode: 'insensitive' } }
+): Promise<{
+  tenant: ReturnType<typeof serializeTenant>
+  ownerUser: ReturnType<typeof serializeUser>
+  geciciSifre: string | null
+  lisansAnahtari: string | null
+  mailSent: boolean
+  mailError?: string
+  aktivasyonMailiGonderildi: boolean
+  hosgeldinMailiGonderildi: boolean
+}> {
+  const ownerEmail = body.ownerEposta.trim().toLowerCase()
+  const emailTaken = await prisma.user.findFirst({
+    where: { eposta: { equals: ownerEmail, mode: 'insensitive' } }
   })
-  if (taken) throw new AppError(409, 'Bu kullanıcı adı zaten kullanılıyor.', 'USERNAME_TAKEN')
+  if (emailTaken) {
+    throw new AppError(409, 'Bu e-posta adresi zaten kayıtlı.', 'EMAIL_TAKEN')
+  }
 
-  const slug = await ensureUniqueTenantSlug(body.buroAdi)
-  const baslangic = new Date()
-  const bitis = addFromBase(new Date(baslangic.getTime()), body.lisansSuresiMiktar, body.lisansSuresiBirim)
-  const demo = body.lisansTipi === 'DEMO'
+  const usernameHint = body.ownerKullaniciAdi ?? suggestOwnerKullaniciAdi(ownerEmail, body.ownerAdSoyad, body.buroAdi)
+  const ownerLower = await ensureUniqueOwnerUsername(usernameHint)
+
+  const license = resolveAdminLicenseWindow(body)
   const meta = getRequestMeta(req)
+  const notlar = strOrNull(body.lisansNotlari) ?? strOrNull(body.notlar)
 
-  const tenantEposta = strOrNull(body.eposta)?.toLowerCase() ?? null
-  const ownerEposta = strOrNull(body.ownerEposta)?.toLowerCase() ?? null
-  const plainPassword = body.ownerSifre
-  const sifreHash = await hashPassword(plainPassword)
-  const notlar = strOrNull(body.notlar)
+  let plainPassword: string | null = null
+  let sifreHash: string
+  if (body.parolaModu === 'MANUEL') {
+    plainPassword = body.ownerSifre!.trim()
+    sifreHash = await hashPassword(plainPassword)
+  } else {
+    const randomSecret = crypto.randomBytes(32).toString('base64url')
+    sifreHash = await hashPassword(randomSecret)
+  }
 
-  try {
-    const result = await prisma.$transaction(async (tx) => {
-      const tenant = await tx.tenant.create({
-        data: {
-          buroAdi: body.buroAdi.trim(),
-          slug,
-          telefon: strOrNull(body.telefon),
-          eposta: tenantEposta,
-          adres: strOrNull(body.adres),
-          vergiNo: strOrNull(body.vergiNo),
-          vergiDairesi: strOrNull(body.vergiDairesi),
-          aktifMi: true,
-          lisansBaslangicTarihi: baslangic,
-          lisansBitisTarihi: bitis,
-          lisansDurumu: demo ? 'DEMO' : 'AKTIF',
-          demoMu: demo,
-          demoBitisTarihi: demo ? bitis : null,
-          yillikUcret: body.yillikUcret != null ? new Prisma.Decimal(body.yillikUcret) : null,
-          lisansNotlari: notlar
-        }
-      })
+  const tenantAktif = license.lisansDurumu !== 'PASIF'
 
-      const ownerUser = await tx.user.create({
-        data: {
-          tenantId: tenant.id,
-          adSoyad: body.ownerAdSoyad.trim(),
-          kullaniciAdi: ownerLower,
-          eposta: ownerEposta,
-          telefon: strOrNull(body.ownerTelefon),
-          sifreHash,
-          role: 'BURO_SAHIBI',
-          aktifMi: true
-        }
-      })
+  const result = await provisionTenantWithOwner(
+    {
+      buroAdi: body.buroAdi,
+      slug: body.slug,
+      telefon: body.telefon,
+      eposta: body.eposta,
+      adres: body.adres,
+      vergiNo: body.vergiNo,
+      vergiDairesi: body.vergiDairesi,
+      aktifMi: tenantAktif,
+      lisansBaslangicTarihi: license.baslangic,
+      lisansBitisTarihi: license.bitis,
+      lisansDurumu: license.lisansDurumu,
+      demoMu: license.demoMu,
+      demoBitisTarihi: license.demoMu ? license.bitis : null,
+      yillikUcret: body.yillikUcret ?? null,
+      sonOdemeTarihi: body.sonOdemeTarihi ?? null,
+      lisansNotlari: notlar,
+      owner: {
+        adSoyad: body.ownerAdSoyad,
+        kullaniciAdi: ownerLower,
+        eposta: ownerEmail,
+        telefon: body.ownerTelefon,
+        sifreHash
+      }
+    },
+    {
+      source: 'ADMIN',
+      adminId,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent
+    }
+  )
 
-      return { tenant, ownerUser }
+  let mailSent = false
+  let mailError: string | undefined
+  let aktivasyonMailiGonderildi = false
+  let hosgeldinMailiGonderildi = false
+
+  const shouldSendMail =
+    body.parolaModu === 'AKTIVASYON_MAIL' && (body.gonderAktivasyonMaili || body.gonderHosgeldinMaili)
+
+  if (shouldSendMail) {
+    const { plainToken } = await issueActivationToken(result.ownerUser.id)
+    const mailResult = await sendWelcomeActivationEmail({
+      to: ownerEmail,
+      plainToken,
+      buroAdi: result.tenant.buroAdi,
+      kullaniciAdi: result.ownerUser.kullaniciAdi,
+      lisansBaslangic: result.tenant.lisansBaslangicTarihi?.toISOString() ?? license.baslangic.toISOString(),
+      lisansBitis: result.tenant.lisansBitisTarihi?.toISOString() ?? license.bitis.toISOString(),
+      lisansAnahtari: result.tenant.lisansAnahtari,
+      activationExpiresHours: getActivationTokenExpiresHours()
     })
+    mailSent = mailResult.sent
+    mailError = mailResult.error
+    aktivasyonMailiGonderildi = body.gonderAktivasyonMaili && mailResult.sent
+    hosgeldinMailiGonderildi = body.gonderHosgeldinMaili && mailResult.sent
 
     await writeAdminAuditLog({
       adminId,
-      action: 'TENANT_CREATED_BY_ADMIN',
+      action: 'WELCOME_ACTIVATION_EMAIL_ON_CREATE',
       entityType: 'Tenant',
       entityId: result.tenant.id,
       newValue: {
-        tenantId: result.tenant.id,
-        buroAdi: result.tenant.buroAdi,
-        ownerUserId: result.ownerUser.id,
-        lisansDurumu: result.tenant.lisansDurumu,
-        lisansBitisTarihi: result.tenant.lisansBitisTarihi?.toISOString() ?? null,
-        adminId
-      } as unknown as Prisma.InputJsonValue,
+        mailSent: mailResult.sent,
+        mailError: mailResult.error ?? null,
+        ownerUserId: result.ownerUser.id
+      },
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
-
-    await writeAuditLog({
-      tenantId: result.tenant.id,
-      userId: null,
-      action: 'OFFICE_CREATED_BY_ADMIN',
-      entityType: 'Tenant',
-      entityId: result.tenant.id,
-      newValue: { slug: result.tenant.slug, adminId },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-
-    await writeAuditLog({
-      tenantId: result.tenant.id,
-      userId: result.ownerUser.id,
-      action: 'USER_CREATED_BY_ADMIN',
-      entityType: 'User',
-      entityId: result.ownerUser.id,
-      newValue: { kullaniciAdi: result.ownerUser.kullaniciAdi, adminId },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-
-    return {
-      tenant: serializeTenant(result.tenant),
-      ownerUser: serializeUser(result.ownerUser),
-      geciciSifre: plainPassword
-    }
-  } catch (e: unknown) {
-    const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: string }).code) : ''
-    if (code === 'P2002') {
-      throw new AppError(409, 'Büro veya kullanıcı bilgisi çakışıyor (ör. kullanıcı adı veya e-posta).', 'DUPLICATE')
-    }
-    throw e
   }
+
+  return {
+    tenant: serializeTenant(result.tenant),
+    ownerUser: serializeUser(result.ownerUser),
+    geciciSifre: plainPassword,
+    lisansAnahtari: result.tenant.lisansAnahtari,
+    mailSent,
+    ...(mailError ? { mailError } : {}),
+    aktivasyonMailiGonderildi,
+    hosgeldinMailiGonderildi
+  }
+}
+
+export async function adminResendWelcomeActivationEmail(
+  tenantId: string,
+  adminId: string,
+  req: Request
+): Promise<{ mailSent: boolean; mailError?: string }> {
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
+  if (!tenant) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
+
+  const owner = await prisma.user.findFirst({
+    where: { tenantId, role: 'BURO_SAHIBI' },
+    orderBy: { createdAt: 'asc' }
+  })
+  if (!owner) throw new AppError(404, 'Büro sahibi bulunamadı.', 'NOT_FOUND')
+
+  const email = owner.eposta?.trim().toLowerCase()
+  if (!email) throw new AppError(422, 'Büro sahibinin e-posta adresi yok.', 'VALIDATION_ERROR')
+
+  const { plainToken } = await issueActivationToken(owner.id)
+  const result = await sendWelcomeActivationEmail({
+    to: email,
+    plainToken,
+    buroAdi: tenant.buroAdi,
+    kullaniciAdi: owner.kullaniciAdi,
+    lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? new Date().toISOString(),
+    lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? new Date().toISOString(),
+    lisansAnahtari: tenant.lisansAnahtari,
+    activationExpiresHours: getActivationTokenExpiresHours()
+  })
+
+  const meta = getRequestMeta(req)
+  await writeAdminAuditLog({
+    adminId,
+    action: 'WELCOME_ACTIVATION_EMAIL_RESENT',
+    entityType: 'Tenant',
+    entityId: tenantId,
+    newValue: { mailSent: result.sent, mailError: result.error ?? null, ownerUserId: owner.id },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  if (!result.sent) {
+    return { mailSent: false, mailError: result.error ?? 'MAIL_SEND_FAILED' }
+  }
+  return { mailSent: true }
 }

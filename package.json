@@ -11,8 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "seed:admin": "tsx src/admin/seedAdmin.ts",
-    "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts",
-    "test:provisioning": "tsx scripts/test-internal-provisioning.ts"
+    "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

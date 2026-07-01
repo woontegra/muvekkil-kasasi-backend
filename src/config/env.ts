@@ -37,8 +37,11 @@ const envSchema = z.object({
   DEFAULT_MAIL_USER: optionalNonEmpty,
   GMAIL_USER: optionalNonEmpty,
   GMAIL_APP_PASSWORD: optionalNonEmpty,
-  /** Merkezi lisans / website M2M provisioning API anahtarı. */
-  PROVISIONING_API_KEY: optionalNonEmpty,
+  /** Woontegra Website ödeme sonrası tenant/büro oluşturma entegrasyonu (server-to-server). */
+  WOONTEGRA_WEBSITE_PROVISION_SECRET: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim().length >= 16 ? v.trim() : undefined),
+    z.string().min(16).optional()
+  ),
   /** Hoş geldiniz aktivasyon token süresi (saat). */
   ACTIVATION_TOKEN_EXPIRES_HOURS: z.coerce.number().int().min(1).max(720).default(72),
   SMTP_SECURE: z.preprocess((v) => {

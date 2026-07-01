@@ -1,4 +1,5 @@
 import type { Tenant, UserRole } from '@prisma/client'
+import { effectiveLicenseEnd, isTenantLicenseWriteBlocked } from '../tenant/tenantLicense.js'
 
 export type LicenseWarningLevel = 'NORMAL' | 'YAKLASIYOR' | 'KRITIK' | 'BITTI' | 'PASIF' | 'BILGI_EKSIK'
 
@@ -12,9 +13,9 @@ export type TenantLicenseCurrentDto = {
   demoBitisTarihi: string | null
   kalanGun: number | null
   uyariSeviyesi: LicenseWarningLevel
-  /** Bitiş tarihi yokken kullanıcıya gösterilecek kısa açıklama. */
   bilgiMesaji?: string | null
-  /** Yalnız `BURO_SAHIBI` için dolu. */
+  /** Yazma (POST/PUT/PATCH/DELETE) izni. */
+  yazmaIzinli: boolean
   yillikUcret?: string | null
 }
 
@@ -37,14 +38,6 @@ function dec(d: { toString: () => string } | null | undefined): string | null {
   return d.toString()
 }
 
-function effectiveLicenseEnd(tenant: Tenant): Date | null {
-  if (tenant.lisansDurumu === 'DEMO' && tenant.demoMu && tenant.demoBitisTarihi) {
-    return tenant.demoBitisTarihi
-  }
-  return tenant.lisansBitisTarihi
-}
-
-/** Bitiş tarihi varken kalan güne göre uyarı (PASIF / SURESI_DOLDU ayrı ele alınır). */
 function uyariFromRemainingDays(rawDays: number): LicenseWarningLevel {
   if (rawDays < 0) return 'BITTI'
   if (rawDays <= 7) return 'KRITIK'
@@ -61,13 +54,14 @@ export function buildTenantLicenseCurrent(tenant: Tenant, role: UserRole): Tenan
   const end = effectiveLicenseEnd(tenant)
   const rawDays = end ? calendarDaysFromTodayTo(end) : null
   const kalanGun = rawDays == null ? null : Math.max(0, rawDays)
+  const yazmaIzinli = !isTenantLicenseWriteBlocked(tenant) && tenant.aktifMi && tenant.lisansDurumu !== 'PASIF'
 
   let uyariSeviyesi: LicenseWarningLevel
   let bilgiMesaji: string | null = null
 
   if (!tenant.aktifMi || tenant.lisansDurumu === 'PASIF') {
     uyariSeviyesi = 'PASIF'
-  } else if (tenant.lisansDurumu === 'SURESI_DOLDU') {
+  } else if (tenant.lisansDurumu === 'SURESI_DOLDU' || isTenantLicenseWriteBlocked(tenant)) {
     uyariSeviyesi = 'BITTI'
   } else if (!end) {
     uyariSeviyesi = 'BILGI_EKSIK'
@@ -91,6 +85,7 @@ export function buildTenantLicenseCurrent(tenant: Tenant, role: UserRole): Tenan
     kalanGun,
     uyariSeviyesi,
     bilgiMesaji,
+    yazmaIzinli,
     ...(role === 'BURO_SAHIBI' ? { yillikUcret: dec(tenant.yillikUcret) } : {})
   }
 }

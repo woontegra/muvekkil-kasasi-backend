@@ -216,6 +216,7 @@ export type SendWelcomeActivationEmailParams = {
   kullaniciAdi: string
   lisansBaslangic: string
   lisansBitis: string
+  lisansAnahtari?: string | null
   activationExpiresHours: number
 }
 
@@ -235,6 +236,9 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
   const year = new Date().getFullYear()
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
+  const licenseKeyLine = params.lisansAnahtari?.trim()
+    ? `<strong style="color:#0f172a;">Lisans anahtarı:</strong> <code style="font-family:Consolas,monospace;font-size:13px;color:#0f172a;">${escapeHtml(params.lisansAnahtari.trim())}</code><br/>`
+    : ''
 
   return `<!DOCTYPE html>
 <html lang="tr" xmlns="http://www.w3.org/1999/xhtml">
@@ -270,6 +274,7 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
                   <td style="padding:16px;font-size:14px;line-height:1.7;color:#475569;">
                     <strong style="color:#0f172a;">Giriş adresi:</strong> <a href="${safeLoginUrl}" style="color:#2563eb;">${safeLoginUrl}</a><br/>
                     <strong style="color:#0f172a;">Kullanıcı adı:</strong> ${escapeHtml(params.kullaniciAdi)}<br/>
+                    ${licenseKeyLine}
                     <strong style="color:#0f172a;">Lisans:</strong> ${baslangic} — ${bitis}
                   </td>
                 </tr>
@@ -311,6 +316,9 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
   const loginUrl = `${getFrontendBaseUrl()}/login`
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
+  const licenseKeyLine = params.lisansAnahtari?.trim()
+    ? `Lisans anahtarı: ${params.lisansAnahtari.trim()}`
+  : null
 
   return [
     'WOONTEGRA — Müvekkil Kasa Defteri',
@@ -321,6 +329,7 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
     '',
     `Giriş adresi: ${loginUrl}`,
     `Kullanıcı adı: ${params.kullaniciAdi}`,
+    ...(licenseKeyLine ? [licenseKeyLine] : []),
     `Lisans: ${baslangic} — ${bitis}`,
     '',
     `Şifrenizi belirlemek için bağlantı (${params.activationExpiresHours} saat geçerli):`,
@@ -397,3 +406,99 @@ export async function sendWelcomeActivationEmail(
 }
 
 export { logMailConfigOnStartup } from './mail.config.js'
+
+const RENEWAL_SUBJECT = 'Müvekkil Kasa Defteri — Lisansınız Yenilendi'
+
+export type SendLicenseRenewalEmailParams = {
+  to: string
+  buroAdi: string
+  lisansAnahtari: string | null
+  previousEndDate: string
+  newEndDate: string
+  renewalDays: number
+}
+
+export type LicenseRenewalEmailResult = { sent: boolean; error?: string }
+
+function buildRenewalEmailHtml(params: SendLicenseRenewalEmailParams): string {
+  const prev = formatDateTr(params.previousEndDate)
+  const next = formatDateTr(params.newEndDate)
+  const keyLine = params.lisansAnahtari?.trim()
+    ? `<strong style="color:#0f172a;">Lisans anahtarı:</strong> <code style="font-family:Consolas,monospace;font-size:13px;">${escapeHtml(params.lisansAnahtari.trim())}</code><br/>`
+    : ''
+  const year = new Date().getFullYear()
+
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head><meta charset="UTF-8" /><title>${RENEWAL_SUBJECT}</title></head>
+<body style="margin:0;padding:24px;background:#f3f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;">
+    <tr><td style="padding:28px 32px;">
+      <h1 style="margin:0 0 12px;font-size:20px;color:#0f172a;">Lisansınız Yenilendi</h1>
+      <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> bürosu için Müvekkil Kasa Defteri lisans süreniz uzatıldı.</p>
+      <p style="margin:0;font-size:14px;line-height:1.7;color:#475569;">
+        ${keyLine}
+        <strong>Eski bitiş:</strong> ${prev}<br/>
+        <strong>Yeni bitiş:</strong> ${next}<br/>
+        <strong>Yenilenen süre:</strong> ${params.renewalDays} gün
+      </p>
+      <p style="margin:20px 0 0;font-size:14px;color:#64748b;">Bizi tercih ettiğiniz için teşekkür ederiz.</p>
+    </td></tr>
+    <tr><td style="padding:16px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;text-align:center;">© ${year} Woontegra</td></tr>
+  </table>
+</body>
+</html>`
+}
+
+function buildRenewalEmailText(params: SendLicenseRenewalEmailParams): string {
+  const prev = formatDateTr(params.previousEndDate)
+  const next = formatDateTr(params.newEndDate)
+  const keyLine = params.lisansAnahtari?.trim() ? `Lisans anahtarı: ${params.lisansAnahtari.trim()}\n` : ''
+  return `Lisansınız Yenilendi
+
+${params.buroAdi} bürosu için Müvekkil Kasa Defteri lisans süreniz uzatıldı.
+
+${keyLine}Eski bitiş: ${prev}
+Yeni bitiş: ${next}
+Yenilenen süre: ${params.renewalDays} gün
+
+Bizi tercih ettiğiniz için teşekkür ederiz.
+`
+}
+
+export async function sendLicenseRenewalEmail(
+  params: SendLicenseRenewalEmailParams
+): Promise<LicenseRenewalEmailResult> {
+  const toMasked = maskEmail(params.to)
+  console.info('[mail] License renewal mail attempt — recipient:', toMasked)
+
+  const cfg = getResolvedMailTransport()
+  const tx = getTransporter()
+  const from = cfg.from ?? getMailFromAddress()
+
+  if (!tx || !from) {
+    const reason = describeWelcomeMailConfigError(cfg)
+    if (env.NODE_ENV === 'development') {
+      console.info('[DEV ONLY] Renewal mail skipped (SMTP not configured)')
+      return { sent: true }
+    }
+    console.error('[mail] License renewal mail FAILED —', reason)
+    return { sent: false, error: reason }
+  }
+
+  try {
+    await tx.sendMail({
+      from,
+      to: params.to,
+      subject: RENEWAL_SUBJECT,
+      text: buildRenewalEmailText(params),
+      html: buildRenewalEmailHtml(params)
+    })
+    console.info('[mail] License renewal mail sent — recipient:', toMasked)
+    return { sent: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[mail] License renewal mail FAILED —', msg)
+    return { sent: false, error: msg }
+  }
+}

@@ -4,6 +4,7 @@ import { slugifyBuroAdi } from '../lib/slug.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { writeAdminAuditLog } from '../admin/adminAudit.service.js'
+import { allocateUniqueSaasLicenseKey } from './allocateUniqueSaasLicenseKey.js'
 
 export type ProvisionTenantOwnerInput = {
   adSoyad: string
@@ -24,23 +25,30 @@ export type ProvisionTenantInput = {
   aktifMi?: boolean
   lisansBaslangicTarihi: Date
   lisansBitisTarihi: Date
-  lisansDurumu: 'DEMO' | 'AKTIF'
+  lisansDurumu: 'DEMO' | 'AKTIF' | 'PASIF' | 'SURESI_DOLDU'
   demoMu: boolean
   demoBitisTarihi: Date | null
   yillikUcret?: number | null
   sonOdemeTarihi?: Date | null
   lisansNotlari?: string | null
+  lisansAnahtari?: string | null
   externalOrderId?: string | null
   externalCustomerId?: string | null
   owner: ProvisionTenantOwnerInput
 }
 
-export type ProvisionAuditMeta = {
-  ipAddress?: string | null
-  userAgent?: string | null
-  adminId?: string | null
-  source: 'ADMIN' | 'PROVISIONING'
-}
+export type ProvisionAuditMeta =
+  | {
+      source: 'ADMIN'
+      adminId: string
+      ipAddress?: string | null
+      userAgent?: string | null
+    }
+  | {
+      source: 'WOONTEGRA_WEBSITE'
+      ipAddress?: string | null
+      userAgent?: string | null
+    }
 
 function strOrNull(s: string | undefined | null): string | null {
   const t = s?.trim()
@@ -73,7 +81,7 @@ async function assertUsernameAvailable(kullaniciAdi: string, excludeUserId?: str
 }
 
 /**
- * Tenant + büro sahibi oluşturma çekirdeği (admin panel ve merkezi provisioning ortak).
+ * Tenant + büro sahibi oluşturma çekirdeği (süper admin paneli).
  */
 export async function provisionTenantWithOwner(
   input: ProvisionTenantInput,
@@ -88,6 +96,8 @@ export async function provisionTenantWithOwner(
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      const lisansAnahtari = input.lisansAnahtari ?? (await allocateUniqueSaasLicenseKey(tx))
+
       const tenant = await tx.tenant.create({
         data: {
           buroAdi: input.buroAdi.trim(),
@@ -106,6 +116,7 @@ export async function provisionTenantWithOwner(
           yillikUcret: input.yillikUcret != null ? new Prisma.Decimal(input.yillikUcret) : null,
           sonOdemeTarihi: input.sonOdemeTarihi ?? null,
           lisansNotlari: strOrNull(input.lisansNotlari),
+          lisansAnahtari,
           externalOrderId: strOrNull(input.externalOrderId),
           externalCustomerId: strOrNull(input.externalCustomerId)
         }
@@ -127,7 +138,7 @@ export async function provisionTenantWithOwner(
       return { tenant, ownerUser }
     })
 
-    if (audit.source === 'ADMIN' && audit.adminId) {
+    if (audit.source === 'ADMIN') {
       await writeAdminAuditLog({
         adminId: audit.adminId,
         action: 'TENANT_CREATED_BY_ADMIN',
@@ -146,8 +157,10 @@ export async function provisionTenantWithOwner(
       })
     }
 
-    const officeAction = audit.source === 'PROVISIONING' ? 'OFFICE_CREATED_BY_PROVISIONING' : 'OFFICE_CREATED_BY_ADMIN'
-    const userAction = audit.source === 'PROVISIONING' ? 'USER_CREATED_BY_PROVISIONING' : 'USER_CREATED_BY_ADMIN'
+    const officeAction =
+      audit.source === 'WOONTEGRA_WEBSITE' ? 'TENANT_CREATED_FROM_WOONTEGRA_WEBSITE' : 'OFFICE_CREATED_BY_ADMIN'
+    const userAction =
+      audit.source === 'WOONTEGRA_WEBSITE' ? 'USER_CREATED_FROM_WOONTEGRA_WEBSITE' : 'USER_CREATED_BY_ADMIN'
 
     await writeAuditLog({
       tenantId: result.tenant.id,
@@ -158,8 +171,26 @@ export async function provisionTenantWithOwner(
       newValue: {
         slug: result.tenant.slug,
         externalOrderId: result.tenant.externalOrderId,
+        lisansAnahtari: result.tenant.lisansAnahtari,
         source: audit.source,
-        adminId: audit.adminId ?? null
+        ...(audit.source === 'ADMIN' ? { adminId: audit.adminId } : {})
+      },
+      ipAddress: audit.ipAddress,
+      userAgent: audit.userAgent
+    })
+
+    await writeAuditLog({
+      tenantId: result.tenant.id,
+      userId: null,
+      action: 'SAAS_LICENSE_CREATED',
+      entityType: 'Tenant',
+      entityId: result.tenant.id,
+      newValue: {
+        lisansAnahtari: result.tenant.lisansAnahtari,
+        lisansBaslangicTarihi: result.tenant.lisansBaslangicTarihi?.toISOString() ?? null,
+        lisansBitisTarihi: result.tenant.lisansBitisTarihi?.toISOString() ?? null,
+        lisansDurumu: result.tenant.lisansDurumu,
+        source: audit.source
       },
       ipAddress: audit.ipAddress,
       userAgent: audit.userAgent
@@ -174,7 +205,7 @@ export async function provisionTenantWithOwner(
       newValue: {
         kullaniciAdi: result.ownerUser.kullaniciAdi,
         source: audit.source,
-        adminId: audit.adminId ?? null
+        ...(audit.source === 'ADMIN' ? { adminId: audit.adminId } : {})
       },
       ipAddress: audit.ipAddress,
       userAgent: audit.userAgent

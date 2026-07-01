@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt'
 import type { Tenant, User } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { normalizeLoginIdentifier } from '../lib/normalizeKullaniciAdi.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { signAccessToken } from './jwt.js'
 import type { LoginBody } from './auth.schemas.js'
@@ -37,6 +38,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
   const meta = getRequestMeta(req)
   const raw = body.identifier.trim()
   const isEmail = raw.includes('@')
+  const identifier = isEmail ? raw.toLowerCase() : normalizeLoginIdentifier(raw)
 
   let user: (User & { tenant: Tenant }) | null = null
 
@@ -79,7 +81,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
   } else {
     user = await prisma.user.findFirst({
       where: {
-        kullaniciAdi: { equals: raw, mode: 'insensitive' },
+        kullaniciAdi: { equals: identifier, mode: 'insensitive' },
         aktifMi: true
       },
       include: { tenant: true }
@@ -89,7 +91,7 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
         tenantId: null,
         userId: null,
         action: 'AUTH_LOGIN_FAILED',
-        meta: { reason: 'USER_NOT_FOUND', kullaniciAdi: raw },
+        meta: { reason: 'USER_NOT_FOUND', kullaniciAdi: identifier },
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent
       })

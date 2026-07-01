@@ -40,6 +40,7 @@ import {
   adminListTenants,
   adminListTenantUsers,
   adminResetUserPassword,
+  adminResendWelcomeActivationEmail,
   adminSetTenantActive,
   adminUpdateTenant,
   adminUpdateUser
@@ -283,6 +284,17 @@ adminRouter.post(
     const id = z.string().uuid().parse(req.params.id)
     const updated = await adminSetTenantActive(id, false, req.adminAuth!.sub, req)
     res.json({ ok: true, tenant: serializeTenant(updated) })
+  })
+)
+
+adminRouter.post(
+  '/tenants/:id/resend-welcome-mail',
+  requireAdminAuth,
+  supportOrSuper,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const out = await adminResendWelcomeActivationEmail(id, req.adminAuth!.sub, req)
+    res.json({ ok: true, ...out })
   })
 )
 

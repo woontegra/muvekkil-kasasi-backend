@@ -18,12 +18,12 @@ import { licenseRouter } from '../license/license.routes.js'
 import { Permission } from '../permissions/roles.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
-import { internalRouter } from '../internal/internal.routes.js'
+import { woontegraWebsiteProvisionRouter } from '../integrations/woontegraWebsite/woontegraWebsiteProvision.routes.js'
 
 export const apiV1Router = Router()
 
 apiV1Router.use('/admin', adminRouter)
-apiV1Router.use('/internal', internalRouter)
+apiV1Router.use('/integrations/woontegra-website', woontegraWebsiteProvisionRouter)
 apiV1Router.use(tenantContext)
 apiV1Router.use('/auth', authRouter)
 apiV1Router.use('/muvekkiller', muvekkillerRouter)

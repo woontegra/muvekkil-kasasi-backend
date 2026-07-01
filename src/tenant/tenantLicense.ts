@@ -7,9 +7,46 @@ export type TenantLicenseContext = {
   writeAllowed: boolean
 }
 
+export const LICENSE_WRITE_DENIED_MESSAGE =
+  'Lisans süreniz sona ermiştir. İşlem yapabilmek için lisansınızı yenilemeniz gerekir.'
+
+function startOfTodayLocal(): Date {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
 function demoExpired(tenant: Tenant): boolean {
   if (!tenant.demoMu || !tenant.demoBitisTarihi) return false
   return tenant.demoBitisTarihi < new Date()
+}
+
+/** Demo ise demo bitişi, aksi halde lisans bitişi. */
+export function effectiveLicenseEnd(tenant: Tenant): Date | null {
+  if (tenant.lisansDurumu === 'DEMO' && tenant.demoMu && tenant.demoBitisTarihi) {
+    return tenant.demoBitisTarihi
+  }
+  return tenant.lisansBitisTarihi
+}
+
+/** Bitiş takvim günü bugünden önce mi (bugün dahil geçerli). */
+export function isLicenseEndDatePassed(tenant: Tenant): boolean {
+  const end = effectiveLicenseEnd(tenant)
+  if (!end) return false
+  const today = startOfTodayLocal()
+  const endDay = new Date(end)
+  endDay.setHours(0, 0, 0, 0)
+  return endDay.getTime() < today.getTime()
+}
+
+/**
+ * Yazma işlemleri engellenmeli mi (read-only).
+ * SURESI_DOLDU veya AKTIF + geçmiş lisansBitisTarihi.
+ */
+export function isTenantLicenseWriteBlocked(tenant: Tenant): boolean {
+  if (tenant.lisansDurumu === 'SURESI_DOLDU') return true
+  if (tenant.lisansDurumu === 'AKTIF' && isLicenseEndDatePassed(tenant)) return true
+  return false
 }
 
 /** Büro girişi ve tüm tenant API’leri için temel kontrol. */
@@ -30,8 +67,8 @@ export function assertTenantLoginAllowed(tenant: Tenant): void {
 }
 
 /**
- * Lisans okuma: PASIF lisans veya demo süresi dolmuş veya büro pasif → engelle.
- * Yazma: AKTIF veya (DEMO ve süresi geçerli). SURESI_DOLDU → yalnız GET/HEAD/OPTIONS.
+ * Lisans okuma: PASIF / demo süresi dolmuş / büro pasif → engelle.
+ * Yazma: SURESI_DOLDU veya (AKTIF + bitiş tarihi geçmiş) → yalnız GET/HEAD/OPTIONS.
  */
 export async function assertTenantApiLicense(tenantId: string, method: string): Promise<TenantLicenseContext> {
   const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } })
@@ -42,13 +79,9 @@ export async function assertTenantApiLicense(tenantId: string, method: string): 
 
   const readOnly = ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())
 
-  if (tenant.lisansDurumu === 'SURESI_DOLDU') {
+  if (isTenantLicenseWriteBlocked(tenant)) {
     if (!readOnly) {
-      throw new AppError(
-        403,
-        'Lisans süreniz sona erdi. Görüntüleme yapabilirsiniz; yeni kayıt ve düzenleme kapalıdır.',
-        'LICENSE_EXPIRED'
-      )
+      throw new AppError(403, LICENSE_WRITE_DENIED_MESSAGE, 'LICENSE_EXPIRED')
     }
     return { tenant, writeAllowed: false }
   }

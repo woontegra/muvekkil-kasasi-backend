@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { normalizeKullaniciAdi } from '../lib/normalizeKullaniciAdi.js'
 
 export const adminLoginBodySchema = z.object({
   identifier: z.string().min(1, 'Kullanıcı adı veya e-posta gerekli.'),
@@ -45,55 +46,95 @@ export const adminExtendLicenseBodySchema = z
 const tenantOwnerKullaniciAdiSchema = z
   .string()
   .trim()
-  .min(3, 'Kullanıcı adı en az 3 karakter.')
-  .max(64)
-  .transform((s) => s.toLowerCase())
-  .pipe(z.string().regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı yalnızca küçük harf, rakam, . _ - içerebilir.'))
+  .transform((s) => normalizeKullaniciAdi(s))
+  .pipe(
+    z
+      .string()
+      .min(3, 'Kullanıcı adı en az 3 karakter.')
+      .max(64)
+      .regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı küçük harf, rakam, nokta, alt çizgi ve tire içerebilir.')
+  )
 
 /** JSON bazen `null` gönderir; `undefined` ile eşle. */
 function jsonNullToUndefined<T extends z.ZodTypeAny>(schema: T) {
   return z.preprocess((v: unknown) => (v === null ? undefined : v), schema)
 }
 
-/** Woontegra admin panelinden manuel büro + ilk büro sahibi oluşturma (yalnız SUPER_ADMIN). */
+/** Super Admin manuel büro + owner + SaaS lisans oluşturma. */
 export const adminCreateTenantBodySchema = z
   .object({
     buroAdi: z.string().trim().min(1, 'Büro adı zorunlu.').max(500),
+    slug: jsonNullToUndefined(z.string().trim().max(80).optional()),
     telefon: jsonNullToUndefined(z.string().trim().max(80).optional().default('')),
     eposta: jsonNullToUndefined(z.string().trim().max(320).optional()),
     adres: jsonNullToUndefined(z.string().trim().max(4000).optional().default('')),
     vergiNo: jsonNullToUndefined(z.string().trim().max(64).optional().default('')),
     vergiDairesi: jsonNullToUndefined(z.string().trim().max(200).optional().default('')),
     ownerAdSoyad: z.string().trim().min(1, 'Ad soyad zorunlu.').max(300),
-    ownerKullaniciAdi: tenantOwnerKullaniciAdiSchema,
-    ownerEposta: jsonNullToUndefined(z.string().trim().max(320).optional()),
+    ownerKullaniciAdi: z.preprocess(
+      (v) => (typeof v === 'string' && !v.trim() ? undefined : v),
+      tenantOwnerKullaniciAdiSchema.optional()
+    ),
+    ownerEposta: z.string().trim().email('Geçerli sahip e-postası girin.').max(320),
     ownerTelefon: jsonNullToUndefined(z.string().trim().max(80).optional().default('')),
-    ownerSifre: z.string().min(8, 'Şifre en az 8 karakter.').max(200),
-    lisansTipi: z.enum(['DEMO', 'AKTIF']),
-    lisansSuresiMiktar: z.coerce.number().int().min(1),
-    lisansSuresiBirim: z.enum(['GUN', 'AY', 'YIL']),
+    parolaModu: z.enum(['AKTIVASYON_MAIL', 'MANUEL']).default('AKTIVASYON_MAIL'),
+    ownerSifre: z.string().min(8, 'Şifre en az 8 karakter.').max(200).optional(),
+    lisansPaketi: z.enum(['DEMO', 'AYLIK', 'UC_AY', 'ALTI_AY', 'YILLIK', 'OZEL']).optional(),
+    lisansDurumu: z.enum(['AKTIF', 'DEMO', 'PASIF']).optional(),
+    demoMu: z.boolean().optional(),
+    lisansBaslangicTarihi: z.coerce.date().optional(),
+    lisansBitisTarihi: z.coerce.date().optional(),
+    sonOdemeTarihi: z.coerce.date().nullable().optional(),
     yillikUcret: jsonNullToUndefined(z.coerce.number().finite().nonnegative().nullable().optional()),
-    notlar: jsonNullToUndefined(z.string().trim().max(8000).optional())
+    lisansNotlari: jsonNullToUndefined(z.string().trim().max(8000).optional()),
+    notlar: jsonNullToUndefined(z.string().trim().max(8000).optional()),
+    gonderAktivasyonMaili: z.boolean().default(true),
+    gonderHosgeldinMaili: z.boolean().default(true),
+    /** @deprecated Yeni istemciler lisansPaketi kullanır. */
+    lisansTipi: z.enum(['DEMO', 'AKTIF']).optional(),
+    lisansSuresiMiktar: z.coerce.number().int().min(1).optional(),
+    lisansSuresiBirim: z.enum(['GUN', 'AY', 'YIL']).optional()
   })
   .strict()
   .superRefine((b, ctx) => {
-    const m = b.lisansSuresiMiktar
-    if (b.lisansSuresiBirim === 'GUN' && m > 3650) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Gün en fazla 3650.', path: ['lisansSuresiMiktar'] })
+    if (b.parolaModu === 'MANUEL' && !b.ownerSifre?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Manuel parola modunda şifre zorunlu.', path: ['ownerSifre'] })
     }
-    if (b.lisansSuresiBirim === 'AY' && m > 120) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ay en fazla 120.', path: ['lisansSuresiMiktar'] })
+
+    const hasPaket = b.lisansPaketi != null
+    const hasLegacy = b.lisansTipi != null && b.lisansSuresiMiktar != null && b.lisansSuresiBirim != null
+    if (!hasPaket && !hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Lisans paketi veya süre bilgisi zorunlu.',
+        path: ['lisansPaketi']
+      })
     }
-    if (b.lisansSuresiBirim === 'YIL' && m > 10) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Yıl en fazla 10.', path: ['lisansSuresiMiktar'] })
+
+    if (b.lisansPaketi === 'OZEL' && !b.lisansBitisTarihi) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Özel tarih için lisans bitiş tarihi zorunlu.',
+        path: ['lisansBitisTarihi']
+      })
     }
+
+    if (hasLegacy && !hasPaket) {
+      const m = b.lisansSuresiMiktar!
+      if (b.lisansSuresiBirim === 'GUN' && m > 3650) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Gün en fazla 3650.', path: ['lisansSuresiMiktar'] })
+      }
+      if (b.lisansSuresiBirim === 'AY' && m > 120) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Ay en fazla 120.', path: ['lisansSuresiMiktar'] })
+      }
+      if (b.lisansSuresiBirim === 'YIL' && m > 10) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Yıl en fazla 10.', path: ['lisansSuresiMiktar'] })
+      }
+    }
+
     const te = b.eposta?.trim()
     if (te && !z.string().email().safeParse(te).success) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçerli büro e-postası girin.', path: ['eposta'] })
-    }
-    const oe = b.ownerEposta?.trim()
-    if (oe && !z.string().email().safeParse(oe).success) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçerli sahip e-postası girin.', path: ['ownerEposta'] })
     }
   })
 
@@ -133,9 +174,14 @@ export const adminResetPasswordBodySchema = z.object({
 const kullaniciAdiSchema = z
   .string()
   .trim()
-  .min(2, 'Kullanıcı adı en az 2 karakter.')
-  .max(80)
-  .regex(/^[a-z0-9._-]+$/i, 'Yalnız harf, rakam, nokta, alt çizgi ve tire.')
+  .transform((s) => normalizeKullaniciAdi(s))
+  .pipe(
+    z
+      .string()
+      .min(2, 'Kullanıcı adı en az 2 karakter.')
+      .max(80)
+      .regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı küçük harf, rakam, nokta, alt çizgi ve tire içerebilir.')
+  )
 
 export const adminSuperAdminCreateSchema = z.object({
   adSoyad: z.string().trim().min(1).max(300),
