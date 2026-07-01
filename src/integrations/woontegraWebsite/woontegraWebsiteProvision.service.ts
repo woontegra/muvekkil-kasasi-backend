@@ -9,6 +9,7 @@ import { getActivationTokenExpiresHours } from '../../config/env.js'
 import { AppError } from '../../middleware/errorHandler.js'
 import { generateTemporaryPassword } from '../../lib/temporaryPassword.js'
 import { sendWelcomeActivationEmail } from '../../mail/mail.service.js'
+import { getFrontendBaseUrl } from '../../mail/mail.config.js'
 import {
   findTenantOwner,
   provisionTenantWithOwner
@@ -28,6 +29,9 @@ export type WoontegraWebsiteProvisionCreatedResponse = {
   tenantSlug: string
   ownerUserId: string
   ownerEmail: string
+  ownerUsername: string
+  temporaryPassword: string
+  loginUrl: string
   licenseStartDate: string
   licenseEndDate: string
   licenseKey: string | null
@@ -41,6 +45,9 @@ export type WoontegraWebsiteProvisionExistsResponse = {
   tenantId: string
   tenantSlug: string
   ownerEmail: string
+  ownerUsername: string
+  temporaryPassword: string
+  loginUrl: string
   licenseStartDate: string
   licenseEndDate: string
   licenseKey: string | null
@@ -107,8 +114,11 @@ async function returnIdempotentProvision(
     userAgent: meta.userAgent
   })
 
-  await sendOwnerActivationEmail(existing, owner, mailFallback, meta)
-  return toExistsResponse(existing, ownerEmail)
+  const mail = await sendOwnerActivationEmail(existing, owner, mailFallback, meta)
+  return toExistsResponse(existing, ownerEmail, {
+    ownerUsername: mail.ownerUsername,
+    temporaryPassword: mail.temporaryPassword,
+  })
 }
 
 function resolveLicenseWindow(body: WoontegraWebsiteProvisionBody): {
@@ -125,6 +135,11 @@ function resolveLicenseWindow(body: WoontegraWebsiteProvisionBody): {
 function buildLicenseNotes(body: WoontegraWebsiteProvisionBody): string {
   const extra = body.notes?.trim()
   return extra ? `${DEFAULT_LICENSE_NOTE} ${extra}` : DEFAULT_LICENSE_NOTE
+}
+
+function buildMkLoginUrl(): string {
+  const base = getFrontendBaseUrl().replace(/\/$/, '')
+  return base.endsWith('/login') ? base : `${base}/login`
 }
 
 function maskEmail(email: string): string {
@@ -146,12 +161,13 @@ async function sendOwnerActivationEmail(
   fallback: { ownerEmail: string; licenseStart: string; licenseEnd: string },
   meta: { ipAddress: string | null; userAgent: string | null },
   geciciSifre?: string
-): Promise<{ mailSent: boolean; mailError?: string }> {
+): Promise<{ mailSent: boolean; mailError?: string; temporaryPassword: string; ownerUsername: string }> {
   const email = (owner.eposta?.trim() || fallback.ownerEmail).toLowerCase()
   const toMasked = maskEmail(email)
+  let passwordForMail = geciciSifre?.trim() || ''
 
   try {
-    const passwordForMail = geciciSifre?.trim() || (await issueOwnerTemporaryPassword(owner.id))
+    if (!passwordForMail) passwordForMail = await issueOwnerTemporaryPassword(owner.id)
     const { plainToken } = await issueActivationToken(owner.id)
     const result = await sendWelcomeActivationEmail({
       to: email,
@@ -182,7 +198,7 @@ async function sendOwnerActivationEmail(
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent
       })
-      return { mailSent: false, mailError: error }
+      return { mailSent: false, mailError: error, temporaryPassword: passwordForMail, ownerUsername: owner.kullaniciAdi }
     }
 
     console.info('[woontegra-website] welcome activation mail sent', {
@@ -198,7 +214,7 @@ async function sendOwnerActivationEmail(
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
-    return { mailSent: true }
+    return { mailSent: true, temporaryPassword: passwordForMail, ownerUsername: owner.kullaniciAdi }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[woontegra-website] welcome activation mail failed', {
@@ -216,7 +232,7 @@ async function sendOwnerActivationEmail(
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
-    return { mailSent: false, mailError: msg }
+    return { mailSent: false, mailError: msg, temporaryPassword: passwordForMail, ownerUsername: owner.kullaniciAdi }
   }
 }
 
@@ -228,7 +244,8 @@ function toExistsResponse(
     lisansBitisTarihi: Date | null
     lisansAnahtari: string | null
   },
-  ownerEmail: string
+  ownerEmail: string,
+  credentials: { ownerUsername: string; temporaryPassword: string }
 ): WoontegraWebsiteProvisionExistsResponse {
   return {
     ok: true,
@@ -236,6 +253,9 @@ function toExistsResponse(
     tenantId: tenant.id,
     tenantSlug: tenant.slug,
     ownerEmail,
+    ownerUsername: credentials.ownerUsername,
+    temporaryPassword: credentials.temporaryPassword,
+    loginUrl: buildMkLoginUrl(),
     licenseStartDate: tenant.lisansBaslangicTarihi?.toISOString() ?? '',
     licenseEndDate: tenant.lisansBitisTarihi?.toISOString() ?? '',
     licenseKey: tenant.lisansAnahtari
@@ -383,10 +403,13 @@ export async function provisionTenantFromWoontegraWebsite(
     tenantSlug: created.tenant.slug,
     ownerUserId: created.ownerUser.id,
     ownerEmail,
+    ownerUsername: mail.ownerUsername,
+    temporaryPassword: mail.temporaryPassword,
+    loginUrl: buildMkLoginUrl(),
     licenseStartDate: created.tenant.lisansBaslangicTarihi?.toISOString() ?? start.toISOString(),
     licenseEndDate: created.tenant.lisansBitisTarihi?.toISOString() ?? end.toISOString(),
     licenseKey: created.tenant.lisansAnahtari,
     mailSent: mail.mailSent,
-    ...(mail.mailSent ? {} : { mailError: mail.mailError })
+    ...(mail.mailSent ? {} : { mailError: mail.mailError }),
   }
 }
