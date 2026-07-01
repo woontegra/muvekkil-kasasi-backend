@@ -264,7 +264,8 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
           <tr>
             <td style="padding:28px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
               <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Hesabınız Hazır</h1>
-              <p style="margin:0;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> için Müvekkil Kasa Defteri hesabınız oluşturuldu.</p>
+              <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> için Müvekkil Kasa Defteri web tabanlı hesabınız oluşturuldu.</p>
+              <p style="margin:0;font-size:14px;line-height:1.65;color:#475569;">Program indirmeniz veya kurulum yapmanız gerekmez; tarayıcınızdan giriş yaparak kullanmaya başlayabilirsiniz.</p>
             </td>
           </tr>
           <tr>
@@ -325,7 +326,8 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
     '',
     'Hesabınız Hazır',
     '',
-    `${params.buroAdi} için Müvekkil Kasa Defteri hesabınız oluşturuldu.`,
+    `${params.buroAdi} için Müvekkil Kasa Defteri web tabanlı hesabınız oluşturuldu.`,
+    'Program indirmeniz veya kurulum yapmanız gerekmez; tarayıcınızdan giriş yaparak kullanmaya başlayabilirsiniz.',
     '',
     `Giriş adresi: ${loginUrl}`,
     `Kullanıcı adı: ${params.kullaniciAdi}`,
