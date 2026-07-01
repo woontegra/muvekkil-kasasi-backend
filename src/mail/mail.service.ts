@@ -13,7 +13,7 @@ export type SendPasswordResetEmailParams = {
   plainToken: string
 }
 
-const RESET_SUBJECT = 'Müvekkil Kasa Defteri Şifre Sıfırlama'
+const RESET_SUBJECT = 'Müvekkil Kasa Defteri — Şifre Sıfırlama'
 const TOKEN_EXPIRES_MINUTES = 30
 
 let transporter: Transporter | null = null

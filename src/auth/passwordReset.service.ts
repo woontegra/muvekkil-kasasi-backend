@@ -12,7 +12,10 @@ import { getRequestMeta } from './requestMeta.js'
 import { getActivationTokenExpiresHours } from '../config/env.js'
 
 export const FORGOT_PASSWORD_PUBLIC_MESSAGE =
-  'Bilgiler sistemde kayıtlıysa şifre sıfırlama bağlantısı gönderilecektir.'
+  'Bilgiler sistemde kayıtlıysa şifre sıfırlama bağlantısı e-posta adresinize gönderilecektir.'
+
+export const FORGOT_PASSWORD_SENT_MESSAGE =
+  'Şifre sıfırlama bağlantısı e-posta adresinize gönderildi.'
 
 const BCRYPT_ROUNDS = 12
 const RESET_TOKEN_EXPIRES_MIN = 30
@@ -132,7 +135,7 @@ export async function requestPasswordReset(body: ForgotPasswordBody, req: Reques
     userAgent: meta.userAgent
   })
 
-  return { message: FORGOT_PASSWORD_PUBLIC_MESSAGE }
+  return { message: FORGOT_PASSWORD_SENT_MESSAGE }
 }
 
 export type ActivationTokenResult = {
