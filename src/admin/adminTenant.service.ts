@@ -14,7 +14,7 @@ import {
   adminUserUpdateBodySchema,
   type AdminCreateTenantBody
 } from './admin.schemas.js'
-import crypto from 'node:crypto'
+import { generateTemporaryPassword } from '../lib/temporaryPassword.js'
 import { normalizeKullaniciAdi, isValidKullaniciAdi } from '../lib/normalizeKullaniciAdi.js'
 import {
   provisionTenantWithOwner
@@ -22,6 +22,7 @@ import {
 import { extendTenantLicense } from '../tenant/extendTenantLicense.js'
 import { effectiveLicenseEnd } from '../tenant/tenantLicense.js'
 import { issueActivationToken } from '../auth/passwordReset.service.js'
+import { issueOwnerTemporaryPassword } from '../auth/ownerTemporaryPassword.js'
 import { sendWelcomeActivationEmail } from '../mail/mail.service.js'
 import { getActivationTokenExpiresHours } from '../config/env.js'
 
@@ -530,7 +531,7 @@ export async function adminResetUserPassword(
   const u = await prisma.user.findFirst({ where: { id: userId, tenantId } })
   if (!u) throw new AppError(404, 'Kullanıcı bulunamadı.', 'NOT_FOUND')
 
-  const geciciSifre = plain?.trim() || crypto.randomBytes(12).toString('base64url').slice(0, 16)
+  const geciciSifre = plain?.trim() || generateTemporaryPassword()
   const sifreHash = await hashPassword(geciciSifre)
   const meta = getRequestMeta(req)
   await prisma.user.update({ where: { id: userId }, data: { sifreHash } })
@@ -720,8 +721,8 @@ export async function adminCreateTenantWithOwner(
     plainPassword = body.ownerSifre!.trim()
     sifreHash = await hashPassword(plainPassword)
   } else {
-    const randomSecret = crypto.randomBytes(32).toString('base64url')
-    sifreHash = await hashPassword(randomSecret)
+    plainPassword = generateTemporaryPassword()
+    sifreHash = await hashPassword(plainPassword)
   }
 
   const tenantAktif = license.lisansDurumu !== 'PASIF'
@@ -775,6 +776,7 @@ export async function adminCreateTenantWithOwner(
       plainToken,
       buroAdi: result.tenant.buroAdi,
       kullaniciAdi: result.ownerUser.kullaniciAdi,
+      geciciSifre: plainPassword ?? generateTemporaryPassword(),
       lisansBaslangic: result.tenant.lisansBaslangicTarihi?.toISOString() ?? license.baslangic.toISOString(),
       lisansBitis: result.tenant.lisansBitisTarihi?.toISOString() ?? license.bitis.toISOString(),
       lisansAnahtari: result.tenant.lisansAnahtari,
@@ -829,12 +831,14 @@ export async function adminResendWelcomeActivationEmail(
   const email = owner.eposta?.trim().toLowerCase()
   if (!email) throw new AppError(422, 'Büro sahibinin e-posta adresi yok.', 'VALIDATION_ERROR')
 
+  const geciciSifre = await issueOwnerTemporaryPassword(owner.id)
   const { plainToken } = await issueActivationToken(owner.id)
   const result = await sendWelcomeActivationEmail({
     to: email,
     plainToken,
     buroAdi: tenant.buroAdi,
     kullaniciAdi: owner.kullaniciAdi,
+    geciciSifre,
     lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? new Date().toISOString(),
     lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? new Date().toISOString(),
     lisansAnahtari: tenant.lisansAnahtari,

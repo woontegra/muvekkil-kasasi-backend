@@ -214,6 +214,7 @@ export type SendWelcomeActivationEmailParams = {
   plainToken: string
   buroAdi: string
   kullaniciAdi: string
+  geciciSifre: string
   lisansBaslangic: string
   lisansBitis: string
   lisansAnahtari?: string | null
@@ -228,6 +229,27 @@ function formatDateTr(iso: string): string {
   }
 }
 
+function welcomeInfoBox(title: string, rows: Array<{ label: string; value: string; mono?: boolean }>): string {
+  const lines = rows
+    .map(
+      (r) =>
+        `<tr><td style="padding:6px 0;font-size:13px;color:#64748b;width:42%;vertical-align:top;">${escapeHtml(r.label)}</td><td style="padding:6px 0;font-size:14px;color:#0f172a;${r.mono ? 'font-family:Consolas,Monaco,monospace;' : ''}">${r.value}</td></tr>`,
+    )
+    .join('')
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+    <tr><td style="padding:14px 16px 8px;font-family:'Segoe UI',Arial,sans-serif;">
+      <p style="margin:0 0 10px;font-size:13px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#475569;">${escapeHtml(title)}</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">${lines}</table>
+    </td></tr>
+  </table>`
+}
+
+function welcomeActionButton(href: string, label: string, bg: string): string {
+  const safeHref = escapeHtml(href)
+  const safeLabel = escapeHtml(label)
+  return `<a href="${safeHref}" target="_blank" style="display:inline-block;margin:0 8px 8px 0;padding:13px 28px;background:${bg};color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">${safeLabel}</a>`
+}
+
 function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string {
   const activationUrl = buildPasswordResetUrl(params.plainToken)
   const loginUrl = `${getFrontendBaseUrl()}/login`
@@ -236,9 +258,29 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
   const year = new Date().getFullYear()
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
-  const licenseKeyLine = params.lisansAnahtari?.trim()
-    ? `<strong style="color:#0f172a;">Lisans anahtarı:</strong> <code style="font-family:Consolas,monospace;font-size:13px;color:#0f172a;">${escapeHtml(params.lisansAnahtari.trim())}</code><br/>`
-    : ''
+  const ownerEmail = params.to.trim().toLowerCase()
+
+  const loginRows: Array<{ label: string; value: string; mono?: boolean }> = [
+    { label: 'Giriş adresi', value: `<a href="${safeLoginUrl}" style="color:#2563eb;word-break:break-all;">${safeLoginUrl}</a>` },
+    { label: 'E-posta', value: escapeHtml(ownerEmail) },
+    { label: 'Kullanıcı adı', value: escapeHtml(params.kullaniciAdi), mono: true },
+    { label: 'Geçici şifre', value: escapeHtml(params.geciciSifre), mono: true },
+  ]
+
+  const licenseRows: Array<{ label: string; value: string; mono?: boolean }> = [
+    { label: 'Büro adı', value: escapeHtml(params.buroAdi) },
+  ]
+  if (params.lisansAnahtari?.trim()) {
+    licenseRows.push({
+      label: 'Lisans anahtarı',
+      value: escapeHtml(params.lisansAnahtari.trim()),
+      mono: true,
+    })
+  }
+  licenseRows.push(
+    { label: 'Başlangıç tarihi', value: escapeHtml(baslangic) },
+    { label: 'Bitiş tarihi', value: escapeHtml(bitis) },
+  )
 
   return `<!DOCTYPE html>
 <html lang="tr" xmlns="http://www.w3.org/1999/xhtml">
@@ -263,39 +305,33 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
           </tr>
           <tr>
             <td style="padding:28px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
-              <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Hesabınız Hazır</h1>
-              <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> için Müvekkil Kasa Defteri web tabanlı hesabınız oluşturuldu.</p>
+              <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Müvekkil Kasa Defteri hesabınız oluşturuldu</h1>
+              <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> için web tabanlı Müvekkil Kasa hesabınız hazır.</p>
               <p style="margin:0;font-size:14px;line-height:1.65;color:#475569;">Program indirmeniz veya kurulum yapmanız gerekmez; tarayıcınızdan giriş yaparak kullanmaya başlayabilirsiniz.</p>
             </td>
           </tr>
           <tr>
-            <td style="padding:16px 40px;font-family:'Segoe UI',Arial,sans-serif;">
-              <table role="presentation" width="100%" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
-                <tr>
-                  <td style="padding:16px;font-size:14px;line-height:1.7;color:#475569;">
-                    <strong style="color:#0f172a;">Giriş adresi:</strong> <a href="${safeLoginUrl}" style="color:#2563eb;">${safeLoginUrl}</a><br/>
-                    <strong style="color:#0f172a;">Kullanıcı adı:</strong> ${escapeHtml(params.kullaniciAdi)}<br/>
-                    ${licenseKeyLine}
-                    <strong style="color:#0f172a;">Lisans:</strong> ${baslangic} — ${bitis}
-                  </td>
-                </tr>
-              </table>
+            <td style="padding:8px 40px;font-family:'Segoe UI',Arial,sans-serif;">
+              ${welcomeInfoBox('Giriş bilgileri', loginRows)}
+              ${welcomeInfoBox('Lisans bilgileri', licenseRows)}
             </td>
           </tr>
           <tr>
-            <td align="center" style="padding:24px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
-              <a href="${safeActivationUrl}" style="display:inline-block;padding:14px 36px;background:#2563eb;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;border-radius:8px;">Şifrenizi Belirleyin</a>
+            <td align="center" style="padding:8px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
+              ${welcomeActionButton(loginUrl, 'Giriş Yap', '#059669')}
+              ${welcomeActionButton(activationUrl, 'Şifrenizi Belirleyin', '#2563eb')}
             </td>
           </tr>
           <tr>
-            <td style="padding:16px 40px;font-family:'Segoe UI',Arial,sans-serif;">
-              <p style="margin:0;font-size:13px;line-height:1.55;color:#64748b;">Bu bağlantı <strong>${params.activationExpiresHours} saat</strong> geçerlidir. Süre dolduysa destek ile iletişime geçin.</p>
+            <td style="padding:12px 40px;font-family:'Segoe UI',Arial,sans-serif;">
+              <p style="margin:0;font-size:13px;line-height:1.55;color:#64748b;">Şifre belirleme bağlantısı <strong>${params.activationExpiresHours} saat</strong> geçerlidir. Süre dolduysa geçici şifrenizle giriş yapıp şifremi unuttum adımını kullanabilirsiniz.</p>
               <p style="margin:12px 0 0;font-size:12px;line-height:1.5;color:#94a3b8;word-break:break-all;">${safeActivationUrl}</p>
             </td>
           </tr>
           <tr>
             <td style="padding:8px 40px 32px;font-family:'Segoe UI',Arial,sans-serif;">
-              <p style="margin:0;font-size:13px;line-height:1.6;color:#64748b;">Güvenliğiniz için şifrenizi kimseyle paylaşmayın. Bu hesabı siz oluşturmadıysanız <a href="mailto:destek@woontegra.com" style="color:#2563eb;">destek@woontegra.com</a> adresine yazın.</p>
+              <p style="margin:0 0 12px;font-size:13px;line-height:1.65;color:#475569;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;">Woontegra müşteri paneli şifreniz ile değil, bu e-postadaki Müvekkil Kasa giriş bilgileriyle giriş yapabilirsiniz. İlk girişten sonra şifrenizi değiştirmeniz önerilir.</p>
+              <p style="margin:0;font-size:13px;line-height:1.6;color:#64748b;">Güvenliğiniz için giriş bilgilerinizi kimseyle paylaşmayın. Bu hesabı siz oluşturmadıysanız <a href="mailto:destek@woontegra.com" style="color:#2563eb;">destek@woontegra.com</a> adresine yazın.</p>
             </td>
           </tr>
           <tr>
@@ -317,32 +353,42 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
   const loginUrl = `${getFrontendBaseUrl()}/login`
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
+  const ownerEmail = params.to.trim().toLowerCase()
   const licenseKeyLine = params.lisansAnahtari?.trim()
     ? `Lisans anahtarı: ${params.lisansAnahtari.trim()}`
-  : null
+    : null
 
   return [
     'WOONTEGRA — Müvekkil Kasa Defteri',
     '',
-    'Hesabınız Hazır',
+    'Müvekkil Kasa Defteri hesabınız oluşturuldu',
     '',
-    `${params.buroAdi} için Müvekkil Kasa Defteri web tabanlı hesabınız oluşturuldu.`,
-    'Program indirmeniz veya kurulum yapmanız gerekmez; tarayıcınızdan giriş yaparak kullanmaya başlayabilirsiniz.',
+    `${params.buroAdi} için web tabanlı Müvekkil Kasa hesabınız hazır.`,
+    'Program indirmeniz veya kurulum yapmanız gerekmez.',
     '',
+    'Giriş bilgileri',
     `Giriş adresi: ${loginUrl}`,
+    `E-posta: ${ownerEmail}`,
     `Kullanıcı adı: ${params.kullaniciAdi}`,
+    `Geçici şifre: ${params.geciciSifre}`,
+    '',
+    'Lisans bilgileri',
+    `Büro adı: ${params.buroAdi}`,
     ...(licenseKeyLine ? [licenseKeyLine] : []),
-    `Lisans: ${baslangic} — ${bitis}`,
+    `Başlangıç tarihi: ${baslangic}`,
+    `Bitiş tarihi: ${bitis}`,
     '',
-    `Şifrenizi belirlemek için bağlantı (${params.activationExpiresHours} saat geçerli):`,
-    activationUrl,
+    `Giriş: ${loginUrl}`,
+    `Şifrenizi belirlemek için (${params.activationExpiresHours} saat geçerli): ${activationUrl}`,
     '',
-    'Güvenliğiniz için şifrenizi kimseyle paylaşmayın.',
+    'Woontegra müşteri paneli şifreniz ile değil, bu e-postadaki Müvekkil Kasa giriş bilgileriyle giriş yapabilirsiniz.',
+    'İlk girişten sonra şifrenizi değiştirmeniz önerilir.',
+    '',
     'Destek: destek@woontegra.com',
     '',
     '—',
     'Woontegra Teknoloji Yazılım ve Dijital Hizmetler Ltd. Şti.',
-    `© ${new Date().getFullYear()} Woontegra`
+    `© ${new Date().getFullYear()} Woontegra`,
   ].join('\n')
 }
 

@@ -1,12 +1,13 @@
-import crypto from 'node:crypto'
 import type { Request } from 'express'
 import { prisma } from '../../lib/prisma.js'
 import { writeAuditLog } from '../../audit/auditService.js'
 import { hashPassword } from '../../admin/adminAuth.service.js'
 import { issueActivationToken } from '../../auth/passwordReset.service.js'
+import { issueOwnerTemporaryPassword } from '../../auth/ownerTemporaryPassword.js'
 import { getRequestMeta } from '../../auth/requestMeta.js'
 import { getActivationTokenExpiresHours } from '../../config/env.js'
 import { AppError } from '../../middleware/errorHandler.js'
+import { generateTemporaryPassword } from '../../lib/temporaryPassword.js'
 import { sendWelcomeActivationEmail } from '../../mail/mail.service.js'
 import {
   findTenantOwner,
@@ -143,18 +144,21 @@ async function sendOwnerActivationEmail(
   },
   owner: { id: string; kullaniciAdi: string; eposta: string | null },
   fallback: { ownerEmail: string; licenseStart: string; licenseEnd: string },
-  meta: { ipAddress: string | null; userAgent: string | null }
+  meta: { ipAddress: string | null; userAgent: string | null },
+  geciciSifre?: string
 ): Promise<{ mailSent: boolean; mailError?: string }> {
   const email = (owner.eposta?.trim() || fallback.ownerEmail).toLowerCase()
   const toMasked = maskEmail(email)
 
   try {
+    const passwordForMail = geciciSifre?.trim() || (await issueOwnerTemporaryPassword(owner.id))
     const { plainToken } = await issueActivationToken(owner.id)
     const result = await sendWelcomeActivationEmail({
       to: email,
       plainToken,
       buroAdi: tenant.buroAdi,
       kullaniciAdi: owner.kullaniciAdi,
+      geciciSifre: passwordForMail,
       lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? fallback.licenseStart,
       lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? fallback.licenseEnd,
       lisansAnahtari: tenant.lisansAnahtari,
@@ -306,8 +310,8 @@ export async function provisionTenantFromWoontegraWebsite(
   mailFallback.licenseEnd = end.toISOString()
 
   const kullaniciAdi = await resolveAvailableOwnerUsername(body)
-  const randomSecret = crypto.randomBytes(32).toString('base64url')
-  const sifreHash = await hashPassword(randomSecret)
+  const geciciSifre = generateTemporaryPassword()
+  const sifreHash = await hashPassword(geciciSifre)
   const now = new Date()
   const paidAt = body.billing?.paidAt ?? now
 
@@ -369,7 +373,7 @@ export async function provisionTenantFromWoontegraWebsite(
     throw e
   }
 
-  const mail = await sendOwnerActivationEmail(created.tenant, created.ownerUser, mailFallback, meta)
+  const mail = await sendOwnerActivationEmail(created.tenant, created.ownerUser, mailFallback, meta, geciciSifre)
   const ownerEmail = created.ownerUser.eposta?.trim().toLowerCase() || mailFallback.ownerEmail
 
   return {
