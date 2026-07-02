@@ -1,4 +1,4 @@
-import type { OfisKasaHareketi, Prisma } from '@prisma/client'
+import type { OfisKasaHareketi, Prisma, UserRole } from '@prisma/client'
 import {
   OfisKasaIslemTipi,
   OfisKasaOnayDurumu,
@@ -15,8 +15,13 @@ import type {
   ListOfisKasaHareketleriQuery
 } from './ofisKasa.schemas.js'
 import { isDigerGelir, isDigerGider } from './ofisKasa.schemas.js'
+import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
 
 export const OFIS_KASA_DUZELTME_KATEGORI = 'Düzeltme'
+
+export const OFIS_KASA_KAYNAK_ICRA_TAHSILAT = 'ICRA_TAHSILAT'
+export const OFIS_KASA_KAYNAK_VEKALET_TAHSILATI = 'VEKALET_TAHSILATI'
+export const OFIS_KASA_KATEGORI_VEKALET_TAHSILATI = 'Vekalet Ücreti Tahsilatı'
 
 export type OfisKasaHareketiWithOrijinal = OfisKasaHareketi & {
   orijinalHareket?: { id: string; belgeNo: string } | null
@@ -45,6 +50,10 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
     orijinalHareketId: h.orijinalHareketId,
     orijinalBelgeNo: h.orijinalHareket?.belgeNo ?? null,
     otomatikOnayMi: h.otomatikOnayMi,
+    tahsilatiYapanUserId: h.tahsilatiYapanUserId,
+    tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
+    kaynakTipi: h.kaynakTipi,
+    kaynakId: h.kaynakId,
     createdById: h.createdById,
     updatedById: h.updatedById,
     createdAt: h.createdAt.toISOString(),
@@ -197,6 +206,7 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
 export async function createOfisKasaHareketi(
   tenantId: string,
   userId: string,
+  actorRole: UserRole,
   body: CreateOfisKasaHareketiBody,
   req: Request
 ): Promise<OfisKasaHareketi> {
@@ -209,6 +219,11 @@ export async function createOfisKasaHareketi(
         : null
 
   const tutar = new PrismaClient.Decimal(body.tutar)
+
+  const tahsilati =
+    body.islemTipi === OfisKasaIslemTipi.GELIR
+      ? await resolveTahsilatiYapanPersonel(tenantId, userId, actorRole, body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId)
+      : null
 
   let attempts = 0
   while (attempts < 5) {
@@ -228,6 +243,8 @@ export async function createOfisKasaHareketi(
             odemeYontemi: body.odemeYontemi,
             belgeNo,
             onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
+            tahsilatiYapanPersonelId: tahsilati?.personelId ?? null,
+            tahsilatiYapanUserId: tahsilati?.bagliUserId ?? null,
             createdById: userId
           }
         })
@@ -252,6 +269,49 @@ export async function createOfisKasaHareketi(
     }
   }
   throw new AppError(409, 'Belge numarası üretilemedi, tekrar deneyin.', 'BELGE_NO_CONFLICT')
+}
+
+/** İcra tahsilat vb. kaynaklı gelir — çift kayıt kaynakTipi+kaynakId ile engellenir. */
+export async function createOfisKasaGelirFromKaynakInTx(
+  tx: Prisma.TransactionClient,
+  opts: {
+    tenantId: string
+    userId: string
+    tarih: Date
+    kategori: string
+    aciklama: string | null
+    tutar: Prisma.Decimal
+    odemeYontemi: import('@prisma/client').OfisKasaOdemeYontemi
+    tahsilatiYapanPersonelId: string | null
+    tahsilatiYapanUserId: string | null
+    kaynakTipi: string
+    kaynakId: string
+  }
+): Promise<OfisKasaHareketi> {
+  const existing = await tx.ofisKasaHareketi.findFirst({
+    where: { tenantId: opts.tenantId, kaynakTipi: opts.kaynakTipi, kaynakId: opts.kaynakId }
+  })
+  if (existing) return existing
+
+  const belgeNo = await nextBelgeNo(tx, opts.tenantId, OfisKasaIslemTipi.GELIR, opts.tarih)
+  return tx.ofisKasaHareketi.create({
+    data: {
+      tenantId: opts.tenantId,
+      islemTipi: OfisKasaIslemTipi.GELIR,
+      tarih: opts.tarih,
+      kategori: opts.kategori,
+      aciklama: opts.aciklama,
+      tutar: opts.tutar,
+      odemeYontemi: opts.odemeYontemi,
+      belgeNo,
+      onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
+      tahsilatiYapanPersonelId: opts.tahsilatiYapanPersonelId,
+      tahsilatiYapanUserId: opts.tahsilatiYapanUserId,
+      kaynakTipi: opts.kaynakTipi,
+      kaynakId: opts.kaynakId,
+      createdById: opts.userId
+    }
+  })
 }
 
 export async function approveOfisKasaHareketi(

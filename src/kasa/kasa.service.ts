@@ -1,4 +1,4 @@
-import type { Dosya, KasaHareketi, Prisma } from '@prisma/client'
+import type { Dosya, KasaHareketi, Prisma, UserRole } from '@prisma/client'
 import { KasaHareketTipi, KasaOnayDurumu, Prisma as PrismaClient } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
@@ -7,6 +7,7 @@ import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import type { CreateDuzeltmeBody, CreateKasaHareketiBody, ListKasaHareketleriQuery } from './kasa.schemas.js'
 import { isDigerMasraf } from './kasa.schemas.js'
+import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
 
 export type KasaHareketiWithOrijinal = KasaHareketi & {
   orijinalHareket?: { id: string; belgeNo: string } | null
@@ -38,6 +39,8 @@ export function serializeKasaHareketi(h: KasaHareketiWithOrijinal): Record<strin
     orijinalHareketId: h.orijinalHareketId,
     orijinalBelgeNo: h.orijinalHareket?.belgeNo ?? null,
     otomatikOnayMi: h.otomatikOnayMi,
+    tahsilatiYapanUserId: h.tahsilatiYapanUserId,
+    tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
     createdById: h.createdById,
     updatedById: h.updatedById,
     createdAt: h.createdAt.toISOString(),
@@ -261,6 +264,7 @@ export async function getKasaOzet(tenantId: string, dosyaId: string): Promise<{
 export async function createKasaHareketi(
   tenantId: string,
   userId: string,
+  actorRole: UserRole,
   dosyaId: string,
   body: CreateKasaHareketiBody,
   req: Request
@@ -281,6 +285,11 @@ export async function createKasaHareketi(
     body.tip === KasaHareketTipi.MASRAF ? (body.masrafiYapanKisi?.trim() ?? null) : null
 
   const tutar = new PrismaClient.Decimal(body.tutar)
+
+  const tahsilati =
+    body.tip === KasaHareketTipi.AVANS_GIRISI
+      ? await resolveTahsilatiYapanPersonel(tenantId, userId, actorRole, body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId)
+      : null
 
   let attempts = 0
   while (attempts < 5) {
@@ -303,6 +312,8 @@ export async function createKasaHareketi(
             masrafiYapanKisi,
             belgeNo,
             onayDurumu: KasaOnayDurumu.ONAYSIZ,
+            tahsilatiYapanPersonelId: tahsilati?.personelId ?? null,
+            tahsilatiYapanUserId: tahsilati?.bagliUserId ?? null,
             createdById: userId
           }
         })

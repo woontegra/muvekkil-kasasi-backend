@@ -1,13 +1,18 @@
 import { UserRole } from '@prisma/client'
 import { z } from 'zod'
+import { normalizeKullaniciAdi } from '../lib/normalizeKullaniciAdi.js'
 
 const kullaniciAdiSchema = z
   .string()
   .trim()
-  .min(3, 'Kullanıcı adı en az 3 karakter olmalıdır.')
-  .max(64)
-  .transform((s) => s.toLowerCase())
-  .pipe(z.string().regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı yalnızca küçük harf, rakam, . _ - içerebilir.'))
+  .transform((s) => normalizeKullaniciAdi(s))
+  .pipe(
+    z
+      .string()
+      .min(3, 'Kullanıcı adı en az 3 karakter olmalıdır.')
+      .max(64)
+      .regex(/^[a-z0-9._-]+$/, 'Kullanıcı adı küçük harf, rakam, nokta, alt çizgi ve tire içerebilir.')
+  )
 
 const epostaOptionalSchema = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),

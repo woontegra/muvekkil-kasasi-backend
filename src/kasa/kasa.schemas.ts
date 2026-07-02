@@ -49,7 +49,11 @@ export const createKasaHareketiBodySchema = z
     tutar: tutarPositive,
     /** İsteğe bağlı; dosya kasası formlarında kullanılmıyor. */
     odemeYontemi: z.nativeEnum(OdemeYontemi).optional().nullable(),
-    masrafiYapanKisi: z.string().trim().max(200).optional().nullable()
+    masrafiYapanKisi: z.string().trim().max(200).optional().nullable(),
+    /** Yalnızca AVANS_GIRISI — prim hesabı için tahsilatı yapan personel. */
+    tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
+    /** @deprecated geriye uyumluluk */
+    tahsilatiYapanUserId: z.string().uuid().optional().nullable()
   })
   .superRefine((data, ctx) => {
     if (data.tip === KasaHareketTipi.MASRAF) {

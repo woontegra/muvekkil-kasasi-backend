@@ -29,9 +29,10 @@ function buildCounts(db: import('better-sqlite3').Database): ImportJsonCounts {
 
 function staticPreviewWarnings(): string[] {
   return [
-    'SaaS şemasında müvekkil için ek alanlar (mudur*, muhasebe*) masaüstünde yoksa boş aktarılır.',
-    'Masaüstü office_settings içindeki SaaS’ta karşılığı olmayan sütunlar yok sayılır.',
-    'Dosya kasası ve ofis kasasında belge numarası kiracıda mevcutsa otomatik yeniden üretilir ve uyarı üretilir.'
+    'Masaüstünde tanımlı müvekkil ek alanları (mudur, muhasebe vb.) SaaS\'ta yoksa boş aktarılır.',
+    'Belge numarası boş olan kayıtlar aktarım sırasında otomatik benzersiz numarayla oluşturulur; çakışma sayılmaz.',
+    'Mevcut SaaS kayıtlarıyla aynı belge numarası varsa aktarım sırasında yeni numara üretilir.',
+    'Avukat adı, baro bilgisi ve logo gibi bazı ofis ayarlarının SaaS karşılığı yoktur.'
   ]
 }
 
@@ -65,7 +66,11 @@ async function collectBelgeOverlapWarnings(
   ])
   const hits = [...kHit, ...oHit].map((x) => x.belgeNo)
   if (!hits.length) return []
-  return [`Belge no çakışma riski (mevcut SaaS kayıtlarıyla örtüşen): ${hits.join(', ')}`]
+  const shown = hits.slice(0, 5).join(', ')
+  const more = hits.length > 5 ? ` (+${hits.length - 5} kayıt daha)` : ''
+  return [
+    `Mevcut büronuzda aynı belge numaralı kayıtlar var; aktarım sırasında yeni numara üretilecek: ${shown}${more}.`
+  ]
 }
 
 export type DesktopPreviewResult = {

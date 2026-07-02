@@ -53,7 +53,30 @@ export const createVekaletTaksitOdemeBodySchema = z.object({
   odemeTarihi: z.coerce.date().optional(),
   odemeYontemi: z.nativeEnum(OdemeYontemi),
   aciklama: z.string().trim().max(4000).optional().nullable(),
-  smmKesildiMi: z.boolean().optional().default(false)
+  smmKesildiMi: z.boolean().optional().default(false),
+  tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
+  tahsilatiYapanUserId: z.string().uuid().optional().nullable()
 })
 
 export type CreateVekaletTaksitOdemeBody = z.infer<typeof createVekaletTaksitOdemeBodySchema>
+
+export const createVekaletPesinOdemeBodySchema = createVekaletTaksitOdemeBodySchema
+
+export type CreateVekaletPesinOdemeBody = z.infer<typeof createVekaletPesinOdemeBodySchema>
+
+export const createVekaletTaksitPlaniBodySchema = z.object({
+  taksitSayisi: z.coerce.number().int().min(1).max(120),
+  ilkVadeTarihi: z.coerce.date(),
+  taksitTutari: tutarPositive,
+  aciklama: z.string().trim().max(4000).optional().nullable()
+})
+
+export type CreateVekaletTaksitPlaniBody = z.infer<typeof createVekaletTaksitPlaniBodySchema>
+
+export const createTekVekaletTaksitiBodySchema = z.object({
+  vadeTarihi: z.coerce.date(),
+  tutar: tutarPositive.optional(),
+  aciklama: z.string().trim().max(4000).optional().nullable()
+})
+
+export type CreateTekVekaletTaksitiBody = z.infer<typeof createTekVekaletTaksitiBodySchema>

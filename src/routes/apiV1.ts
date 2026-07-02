@@ -15,6 +15,10 @@ import { smmRouter } from '../smm/smm.routes.js'
 import { desktopImportRouter } from '../import/desktopImport.routes.js'
 import { usersRouter } from '../users/users.routes.js'
 import { licenseRouter } from '../license/license.routes.js'
+import { icraTahsilatRouter } from '../icraTahsilat/icraTahsilat.routes.js'
+import { primRouter } from '../prim/prim.routes.js'
+import { primPersonelRouter } from '../primPersonel/primPersonel.routes.js'
+import { reportsRouter } from '../reports/reports.routes.js'
 import { Permission } from '../permissions/roles.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
@@ -32,6 +36,10 @@ apiV1Router.use('/kasa-hareketleri', kasaHareketleriRouter)
 apiV1Router.use('/vekalet-taksitleri', vekaletTaksitleriRouter)
 apiV1Router.use('/vekalet-taksit-odemeleri', vekaletTaksitOdemeleriRouter)
 apiV1Router.use('/ofis-kasasi', ofisKasasiRouter)
+apiV1Router.use('/icra-tahsilat', icraTahsilatRouter)
+apiV1Router.use('/prim', primRouter)
+apiV1Router.use('/prim-personel', primPersonelRouter)
+apiV1Router.use('/reports', reportsRouter)
 apiV1Router.use('/dashboard', dashboardRouter)
 apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)

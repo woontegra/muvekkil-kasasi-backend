@@ -7,6 +7,8 @@ import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import type {
   CreateVekaletTaksitiBody,
+  CreateVekaletTaksitPlaniBody,
+  CreateTekVekaletTaksitiBody,
   MarkTaksitPaidBody,
   MarkTaksitSmmBody,
   UpdateVekaletTaksitiBody,
@@ -198,6 +200,65 @@ export function serializeVekaletTaksiti(t: {
     createdAt: t.createdAt.toISOString(),
     updatedAt: t.updatedAt.toISOString()
   }
+}
+
+function sumTaksitTutarlari(
+  taksitler: { tutar: Prisma.Decimal; odemeDurumu: VekaletTaksitOdemeDurumu }[]
+): number {
+  return taksitler
+    .filter((t) => t.odemeDurumu !== 'IPTAL')
+    .reduce((s, t) => s + Number(t.tutar), 0)
+}
+
+export function kalanTaksitlendirmeTutari(
+  anlasilan: Prisma.Decimal,
+  taksitler: { tutar: Prisma.Decimal; odemeDurumu: VekaletTaksitOdemeDurumu }[]
+): number {
+  return Math.max(0, Number(anlasilan) - sumTaksitTutarlari(taksitler))
+}
+
+function kalanVekaletTutari(
+  anlasilan: Prisma.Decimal,
+  taksitler: {
+    odemeDurumu: VekaletTaksitOdemeDurumu
+    odemeler: { tutar: Prisma.Decimal }[]
+  }[]
+): number {
+  let odenen = 0
+  for (const t of taksitler) {
+    if (t.odemeDurumu === 'IPTAL') continue
+    odenen += sumOdemeTutar(t.odemeler)
+  }
+  return Math.max(0, Number(anlasilan) - odenen)
+}
+
+function hasAcikVekaletTaksiti(
+  taksitler: { odemeDurumu: VekaletTaksitOdemeDurumu }[]
+): boolean {
+  return taksitler.some(
+    (t) => t.odemeDurumu === 'ODENMEDI' || t.odemeDurumu === 'KISMI_ODENDI'
+  )
+}
+
+function vadeEkleAy(base: Date, ayOffset: number): Date {
+  const d = new Date(base)
+  d.setMonth(d.getMonth() + ayOffset)
+  return d
+}
+
+function hesaplaSabitTaksitPlani(taksitTutari: number, adet: number): number[] | null {
+  if (!Number.isFinite(taksitTutari) || taksitTutari <= 0) return null
+  if (!Number.isFinite(adet) || adet < 1 || adet > 120) return null
+  const tutar = Math.round(taksitTutari * 100) / 100
+  return Array.from({ length: adet }, () => tutar)
+}
+
+async function nextTaksitNo(tx: Prisma.TransactionClient, vekaletUcretiId: string): Promise<number> {
+  const max = await tx.vekaletTaksiti.aggregate({
+    where: { vekaletUcretiId },
+    _max: { taksitNo: true }
+  })
+  return (max._max.taksitNo ?? 0) + 1
 }
 
 function computeOzet(
@@ -451,6 +512,205 @@ export async function createVekaletTaksiti(
   }
 }
 
+export async function createTekVekaletTaksiti(
+  tenantId: string,
+  userId: string,
+  dosyaId: string,
+  body: CreateTekVekaletTaksitiBody,
+  req: Request
+): Promise<Record<string, unknown>> {
+  const dosya = await assertDosyaForVekalet(tenantId, dosyaId)
+  if (!dosya) {
+    throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
+  }
+  const vekalet = await prisma.vekaletUcreti.findUnique({
+    where: { dosyaId },
+    include: {
+      taksitler: {
+        where: { odemeDurumu: { not: 'IPTAL' } },
+        include: { odemeler: true }
+      }
+    }
+  })
+  if (!vekalet) {
+    throw new AppError(400, 'Önce vekalet ücreti tanımlanmalıdır.', 'VEKALET_REQUIRED')
+  }
+
+  const kalanPlan = kalanTaksitlendirmeTutari(vekalet.toplamTutar, vekalet.taksitler)
+  if (kalanPlan <= 0.0001) {
+    throw new AppError(400, 'Taksitlendirilebilir kalan tutar yok.', 'NO_REMAINING')
+  }
+
+  const kalanVekalet = kalanVekaletTutari(vekalet.toplamTutar, vekalet.taksitler)
+  if (kalanVekalet <= 0.0001) {
+    throw new AppError(400, 'Kalan vekalet tutarı yok.', 'NO_REMAINING_VEKALET')
+  }
+
+  if (hasAcikVekaletTaksiti(vekalet.taksitler)) {
+    throw new AppError(
+      409,
+      'Açık taksitler var. Tek taksit oluşturmak için önce mevcut açık taksitleri silin veya düzenleyin.',
+      'OPEN_TAKSIT_CONFLICT'
+    )
+  }
+
+  const maxTutar = Math.min(kalanPlan, kalanVekalet)
+  const tutarNum = body.tutar ?? maxTutar
+  if (tutarNum <= 0 || tutarNum > maxTutar + 0.0001) {
+    throw new AppError(400, 'Taksit tutarı geçersiz veya kalan vekalet tutarını aşıyor.', 'INVALID_AMOUNT')
+  }
+
+  const meta = getRequestMeta(req)
+  const row = await prisma.$transaction(async (tx) => {
+    const taksitNo = await nextTaksitNo(tx, vekalet.id)
+    return tx.vekaletTaksiti.create({
+      data: {
+        tenantId,
+        dosyaId,
+        muvekkilId: dosya.muvekkilId,
+        vekaletUcretiId: vekalet.id,
+        taksitNo,
+        vadeTarihi: body.vadeTarihi,
+        tutar: new PrismaNamespace.Decimal(tutarNum),
+        aciklama: body.aciklama?.trim() || null,
+        createdById: userId
+      }
+    })
+  })
+
+  await writeAuditLog({
+    tenantId,
+    userId,
+    action: 'VEKALET_TAKSIT_CREATED',
+    entityType: 'VekaletTaksiti',
+    entityId: row.id,
+    newValue: serializeVekaletTaksiti(row),
+    meta: { dosyaId, tekTaksit: true },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+  return serializeVekaletTaksitiWithOzet(row, [])
+}
+
+export async function createVekaletTaksitPlani(
+  tenantId: string,
+  userId: string,
+  dosyaId: string,
+  body: CreateVekaletTaksitPlaniBody,
+  req: Request
+): Promise<Record<string, unknown>> {
+  const dosya = await assertDosyaForVekalet(tenantId, dosyaId)
+  if (!dosya) {
+    throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
+  }
+  const vekalet = await prisma.vekaletUcreti.findUnique({
+    where: { dosyaId },
+    include: { taksitler: { where: { odemeDurumu: { not: 'IPTAL' } } } }
+  })
+  if (!vekalet) {
+    throw new AppError(400, 'Önce vekalet ücreti tanımlanmalıdır.', 'VEKALET_REQUIRED')
+  }
+
+  const kalanPlan = kalanTaksitlendirmeTutari(vekalet.toplamTutar, vekalet.taksitler)
+  if (kalanPlan <= 0.0001) {
+    throw new AppError(400, 'Taksitlendirilebilir kalan tutar yok.', 'NO_REMAINING')
+  }
+
+  if (hasAcikVekaletTaksiti(vekalet.taksitler)) {
+    throw new AppError(
+      409,
+      'Açık taksitler var. Taksit planı oluşturmak için önce mevcut açık taksitleri silin veya düzenleyin.',
+      'OPEN_TAKSIT_CONFLICT'
+    )
+  }
+
+  const tutarlar = hesaplaSabitTaksitPlani(Number(body.taksitTutari), body.taksitSayisi)
+  if (!tutarlar || tutarlar.length === 0) {
+    throw new AppError(400, 'Geçerli bir taksit planı oluşturulamadı.', 'INVALID_PLAN')
+  }
+  const planToplam = Math.round(tutarlar.reduce((s, t) => s + t, 0) * 100) / 100
+  if (planToplam > kalanPlan + 0.005) {
+    throw new AppError(
+      400,
+      `Plan toplamı (${planToplam.toFixed(2)}) kalan taksitlendirilebilir tutarı (${kalanPlan.toFixed(2)}) aşıyor.`,
+      'PLAN_EXCEEDS_REMAINING'
+    )
+  }
+
+  const meta = getRequestMeta(req)
+  const created: VekaletTaksiti[] = []
+  await prisma.$transaction(async (tx) => {
+    let taksitNo = await nextTaksitNo(tx, vekalet.id)
+    for (let i = 0; i < tutarlar.length; i++) {
+      const row = await tx.vekaletTaksiti.create({
+        data: {
+          tenantId,
+          dosyaId,
+          muvekkilId: dosya.muvekkilId,
+          vekaletUcretiId: vekalet.id,
+          taksitNo,
+          vadeTarihi: vadeEkleAy(body.ilkVadeTarihi, i),
+          tutar: new PrismaNamespace.Decimal(tutarlar[i]),
+          aciklama: body.aciklama?.trim() || null,
+          createdById: userId
+        }
+      })
+      created.push(row)
+      taksitNo += 1
+    }
+  })
+
+  for (const row of created) {
+    await writeAuditLog({
+      tenantId,
+      userId,
+      action: 'VEKALET_TAKSIT_CREATED',
+      entityType: 'VekaletTaksiti',
+      entityId: row.id,
+      newValue: serializeVekaletTaksiti(row),
+      meta: { dosyaId, taksitPlani: true },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent
+    })
+  }
+
+  const pack = await getDosyaVekaletPackage(tenantId, dosyaId)
+  return { ok: true, taksitler: pack?.taksitler ?? [], ozet: pack?.ozet }
+}
+
+export async function deleteVekaletTaksiti(
+  tenantId: string,
+  userId: string,
+  taksitId: string,
+  req: Request
+): Promise<{ ok: true }> {
+  const existing = await prisma.vekaletTaksiti.findFirst({
+    where: { id: taksitId, tenantId },
+    include: { odemeler: { select: { id: true } } }
+  })
+  if (!existing) {
+    throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
+  }
+  if (existing.odemeler.length > 0) {
+    throw new AppError(400, 'Ödeme kaydı olan taksit silinemez.', 'HAS_PAYMENTS')
+  }
+
+  const meta = getRequestMeta(req)
+  await prisma.vekaletTaksiti.delete({ where: { id: existing.id } })
+
+  await writeAuditLog({
+    tenantId,
+    userId,
+    action: 'VEKALET_TAKSIT_DELETED',
+    entityType: 'VekaletTaksiti',
+    entityId: existing.id,
+    oldValue: serializeVekaletTaksiti(existing),
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+  return { ok: true }
+}
+
 async function getTaksitForTenant(tenantId: string, taksitId: string) {
   return prisma.vekaletTaksiti.findFirst({
     where: { id: taksitId, tenantId }
@@ -472,6 +732,18 @@ export async function updateVekaletTaksiti(
   const existing = await getTaksitForTenant(tenantId, taksitId)
   if (!existing) {
     throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
+  }
+
+  const odemeler = await prisma.vekaletTaksitOdeme.findMany({ where: { taksitId: existing.id } })
+  const odenen = sumOdemeTutar(odemeler)
+
+  if (body.tutar != null) {
+    if (Number(body.tutar) < odenen - 0.0001) {
+      throw new AppError(400, 'Taksit tutarı ödenen tutardan küçük olamaz.', 'INVALID_AMOUNT')
+    }
+    if (existing.odemeDurumu === 'ODENDI' && Math.abs(Number(body.tutar) - Number(existing.tutar)) > 0.0001) {
+      throw new AppError(400, 'Tam ödenmiş taksitte tutar değiştirilemez.', 'INVALID_STATE')
+    }
   }
 
   const meta = getRequestMeta(req)
@@ -552,6 +824,7 @@ export async function updateVekaletTaksiti(
 export async function markVekaletTaksitPaid(
   tenantId: string,
   userId: string,
+  actorRole: UserRole,
   taksitId: string,
   body: MarkTaksitPaidBody,
   req: Request
@@ -575,6 +848,7 @@ export async function markVekaletTaksitPaid(
   return createVekaletTaksitOdeme(
     tenantId,
     userId,
+    actorRole,
     taksitId,
     {
       tutar: kalan,

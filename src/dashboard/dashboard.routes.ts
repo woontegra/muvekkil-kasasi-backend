@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { Router } from 'express'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { getDashboardSummaryForTenant } from './dashboard.service.js'
+import { getTaksitUyarilariForTenant } from './taksitUyari.service.js'
 
 export const dashboardRouter = Router()
 
@@ -18,5 +19,15 @@ dashboardRouter.get(
     const tenantId = req.auth!.tenantId
     const summary = await getDashboardSummaryForTenant(tenantId)
     res.json({ ok: true, ...summary })
+  })
+)
+
+dashboardRouter.get(
+  '/taksit-uyarilari',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const tenantId = req.auth!.tenantId
+    const data = await getTaksitUyarilariForTenant(tenantId)
+    res.json({ ok: true, ...data })
   })
 )

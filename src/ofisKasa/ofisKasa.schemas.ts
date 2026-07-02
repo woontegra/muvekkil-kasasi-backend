@@ -3,8 +3,11 @@ import { z } from 'zod'
 
 export const OFIS_KASA_GELIR_KATEGORILERI = [
   'Vekalet ücreti dışı gelir',
+  'Vekalet Ücreti Tahsilatı',
   'Danışmanlık geliri',
   'İade alınan ödeme',
+  'Karşı Taraf Vekalet Ücreti',
+  'İcra Vekalet Ücreti',
   'Diğer gelir'
 ] as const
 
@@ -57,7 +60,10 @@ export const createOfisKasaHareketiBodySchema = z
     ozelKategoriAdi: z.string().trim().max(200).optional().nullable(),
     aciklama: z.string().trim().max(4000).optional().nullable(),
     tutar: tutarPositive,
-    odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi)
+    odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
+    /** Yalnızca GELIR — prim hesabı için tahsilatı yapan personel. */
+    tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
+    tahsilatiYapanUserId: z.string().uuid().optional().nullable()
   })
   .superRefine((data, ctx) => {
     if (data.islemTipi === OfisKasaIslemTipi.GELIR) {

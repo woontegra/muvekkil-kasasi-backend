@@ -1,7 +1,7 @@
-import { KasaOnayDurumu, OfisKasaOnayDurumu, VekaletTaksitOdemeDurumu } from '@prisma/client'
+import { KasaOnayDurumu, OfisKasaOnayDurumu } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { getOfisKasaOzet } from '../ofisKasa/ofisKasa.service.js'
-import { countSmmBekleyenlerForTenant } from '../smm/smm.service.js'
+import { getTaksitUyarilariForTenant } from './taksitUyari.service.js'
 
 export type DashboardSummaryPayload = {
   onayBekleyenToplam: number
@@ -16,43 +16,26 @@ export type DashboardSummaryPayload = {
 
 /** Kiracıya özet uyarı ve sayım metrikleri (JWT tenantId). */
 export async function getDashboardSummaryForTenant(tenantId: string): Promise<DashboardSummaryPayload> {
-  const startOfToday = new Date()
-  startOfToday.setHours(0, 0, 0, 0)
-
-  const [
-    dosyaKasaOnayBekleyen,
-    ofisKasaOnayBekleyen,
-    smmBekleyen,
-    vadesiGecmisTaksit,
-    toplamMuvekkil,
-    aktifDosya,
-    ozet
-  ] = await Promise.all([
-    prisma.kasaHareketi.count({
-      where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ }
-    }),
-    prisma.ofisKasaHareketi.count({
-      where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ }
-    }),
-    countSmmBekleyenlerForTenant(tenantId),
-    prisma.vekaletTaksiti.count({
-      where: {
-        tenantId,
-        odemeDurumu: { in: [VekaletTaksitOdemeDurumu.ODENMEDI, VekaletTaksitOdemeDurumu.KISMI_ODENDI] },
-        vadeTarihi: { lt: startOfToday }
-      }
-    }),
-    prisma.muvekkil.count({ where: { tenantId, aktifMi: true } }),
-    prisma.dosya.count({ where: { tenantId, aktifMi: true } }),
-    getOfisKasaOzet(tenantId)
-  ])
+  const [dosyaKasaOnayBekleyen, ofisKasaOnayBekleyen, taksitUyarilari, toplamMuvekkil, aktifDosya, ozet] =
+    await Promise.all([
+      prisma.kasaHareketi.count({
+        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ }
+      }),
+      prisma.ofisKasaHareketi.count({
+        where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ }
+      }),
+      getTaksitUyarilariForTenant(tenantId),
+      prisma.muvekkil.count({ where: { tenantId, aktifMi: true } }),
+      prisma.dosya.count({ where: { tenantId, aktifMi: true } }),
+      getOfisKasaOzet(tenantId)
+    ])
 
   return {
     onayBekleyenToplam: dosyaKasaOnayBekleyen + ofisKasaOnayBekleyen,
     dosyaKasaOnayBekleyen,
     ofisKasaOnayBekleyen,
-    smmBekleyen,
-    vadesiGecmisTaksit,
+    smmBekleyen: taksitUyarilari.smmBekleyenCount,
+    vadesiGecmisTaksit: taksitUyarilari.vadesiGecmisCount,
     ofisKasaBakiyesi: ozet.kasaBakiyesi,
     toplamMuvekkil,
     aktifDosya

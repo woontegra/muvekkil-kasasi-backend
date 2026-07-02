@@ -74,7 +74,7 @@ ofisKasasiRouter.post(
     const body = createOfisKasaHareketiBodySchema.parse(req.body)
     const tenantId = req.auth!.tenantId
     const userId = req.auth!.sub
-    const created = await createOfisKasaHareketi(tenantId, userId, body, req)
+    const created = await createOfisKasaHareketi(tenantId, userId, req.auth!.role, body, req)
     const row = await prisma.ofisKasaHareketi.findFirst({
       where: { id: created.id, tenantId },
       include: { orijinalHareket: { select: { id: true, belgeNo: true } } }

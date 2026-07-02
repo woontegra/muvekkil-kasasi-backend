@@ -41,31 +41,9 @@ import { sha256File } from './fileFingerprint.js'
 import { assertNoCommittedDuplicate } from './importDuplicateGuard.js'
 import type { ImportJsonCounts } from './desktopImportPreview.js'
 import { validateDesktopRows } from './desktopImportValidate.js'
+import { createBelgeNoAllocator } from './belgeNoAllocator.js'
 
 type Tx = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$extends'>
-
-function makeBelgeAllocator(
-  reserved: Set<string>,
-  batchShort: string
-): (wanted: string | null | undefined) => { belgeNo: string; warning?: string } {
-  return (wanted) => {
-    let b = (wanted ?? '').trim()
-    if (!b) b = `IMP-${batchShort}-EMPTY`
-    if (!reserved.has(b)) {
-      reserved.add(b)
-      return { belgeNo: b }
-    }
-    const safe = b.replace(/[^\w.-]/g, '_').slice(0, 80)
-    let alt = `IMP-${batchShort}-${safe}`
-    let n = 0
-    while (reserved.has(alt)) {
-      n += 1
-      alt = `IMP-${batchShort}-${safe}-${n}`
-    }
-    reserved.add(alt)
-    return { belgeNo: alt, warning: `Belge no çakışması: "${b}" → "${alt}"` }
-  }
-}
 
 async function loadBelgeReserved(tx: Tx, tenantId: string): Promise<Set<string>> {
   const [k, o] = await Promise.all([
@@ -88,7 +66,7 @@ function readOfficeSettingsPatch(row: Record<string, unknown> | undefined): {
 } {
   if (!row) return {}
   const patch: Record<string, unknown> = {}
-  const buro = pickStr(row, 'buro_adi', 'buroAdi', 'office_name', 'name')
+  const buro = pickStr(row, 'ofis_adi', 'buro_adi', 'buroAdi', 'office_name', 'name')
   if (buro?.trim()) patch.buroAdi = buro.trim()
   const tel = pickStr(row, 'telefon', 'phone')
   if (tel?.trim()) patch.telefon = tel.trim()
@@ -108,6 +86,17 @@ function readOfficeSettingsPatch(row: Record<string, unknown> | undefined): {
     vergiNo?: string | null
     vergiDairesi?: string | null
   }
+}
+
+function officeSettingsImportWarnings(row: Record<string, unknown> | undefined): string[] {
+  if (!row) return []
+  const hasUnmapped =
+    !!pickStr(row, 'avukat_adi_soyadi', 'avukatAdiSoyadi')?.trim() ||
+    !!pickStr(row, 'baro_adi', 'baroAdi')?.trim() ||
+    !!pickStr(row, 'baro_sicil_no', 'baroSicilNo')?.trim() ||
+    !!pickStr(row, 'logo_path', 'logoPath')?.trim()
+  if (!hasUnmapped) return []
+  return ['Bazı ofis ayarları SaaS\'ta karşılığı olmadığı için aktarılmadı.']
 }
 
 function isOfisDuzeltme(r: Record<string, unknown>): boolean {
@@ -179,44 +168,13 @@ export async function runDesktopImportCommit(params: {
       await prisma.$transaction(
         async (tx) => {
           const reservedBelge = await loadBelgeReserved(tx, tenantId)
-          const allocKasa = makeBelgeAllocator(reservedBelge, batchShort)
-          const allocOfis = makeBelgeAllocator(reservedBelge, batchShort)
+          const belgeAlloc = createBelgeNoAllocator(reservedBelge, batchShort)
 
           const tenant = await tx.tenant.findFirst({ where: { id: tenantId, aktifMi: true } })
           if (!tenant) throw new Error('Tenant bulunamadı.')
 
           const officePatch = readOfficeSettingsPatch(officeRows[0])
-          if (officeRows[0]) {
-            const known = new Set([
-              'id',
-              'buro_adi',
-              'buroAdi',
-              'office_name',
-              'name',
-              'telefon',
-              'phone',
-              'eposta',
-              'email',
-              'e_posta',
-              'adres',
-              'address',
-              'vergi_no',
-              'vergiNo',
-              'vergi_dairesi',
-              'vergiDairesi',
-              'created_at',
-              'updated_at',
-              'createdAt',
-              'updatedAt'
-            ])
-            const unknownOfficeCols = Object.keys(officeRows[0]).filter((k) => !known.has(k))
-            if (unknownOfficeCols.length) {
-              commitWarnings.push(
-                `Bazı masaüstü ofis ayarları SaaS tarafında henüz kullanılmadığı için aktarılmadı.` +
-                  (unknownOfficeCols.length ? ` (${unknownOfficeCols.join(', ')})` : '')
-              )
-            }
-          }
+          commitWarnings.push(...officeSettingsImportWarnings(officeRows[0]))
 
           await tx.tenant.update({
             where: { id: tenantId },
@@ -387,8 +345,7 @@ export async function runDesktopImportCommit(params: {
             const tutarStr = pickStr(r, 'tutar') ?? '0'
             const tutar = new Prisma.Decimal(tutarStr.replace(',', '.'))
             const rawBelge = pickStr(r, 'belge_no', 'belgeNo', 'belge')
-            const { belgeNo, warning } = allocKasa(rawBelge)
-            if (warning) commitWarnings.push(warning)
+            const belgeNo = belgeAlloc.allocate(rawBelge, 'DK', oldId)
 
             const onayDurumu = mapKasaOnay(pickStr(r, 'onay_durumu', 'onayDurumu'))
             const nid = randomUUID()
@@ -439,8 +396,7 @@ export async function runDesktopImportCommit(params: {
             const tutarStr = pickStr(r, 'tutar') ?? '0'
             const tutar = new Prisma.Decimal(tutarStr.replace(',', '.'))
             const rawBelge = pickStr(r, 'belge_no', 'belgeNo', 'belge')
-            const { belgeNo, warning } = allocKasa(rawBelge)
-            if (warning) commitWarnings.push(warning)
+            const belgeNo = belgeAlloc.allocate(rawBelge, 'DK', oldId)
             const onayDurumu = mapKasaOnay(pickStr(r, 'onay_durumu', 'onayDurumu'))
             const nid = randomUUID()
             await tx.kasaHareketi.create({
@@ -484,8 +440,7 @@ export async function runDesktopImportCommit(params: {
             const tutarStr = pickStr(r, 'tutar') ?? '0'
             const tutar = new Prisma.Decimal(tutarStr.replace(',', '.'))
             const rawBelge = pickStr(r, 'belge_no', 'belgeNo', 'belge')
-            const { belgeNo, warning } = allocOfis(rawBelge)
-            if (warning) commitWarnings.push(warning)
+            const belgeNo = belgeAlloc.allocate(rawBelge, 'OK', oldId)
             const onayDurumu = mapOfisOnay(pickStr(r, 'onay_durumu', 'onayDurumu'))
             const nid = randomUUID()
             await tx.ofisKasaHareketi.create({
@@ -523,8 +478,7 @@ export async function runDesktopImportCommit(params: {
             const tutarStr = pickStr(r, 'tutar') ?? '0'
             const tutar = new Prisma.Decimal(tutarStr.replace(',', '.'))
             const rawBelge = pickStr(r, 'belge_no', 'belgeNo', 'belge')
-            const { belgeNo, warning } = allocOfis(rawBelge)
-            if (warning) commitWarnings.push(warning)
+            const belgeNo = belgeAlloc.allocate(rawBelge, 'OK', oldId)
             const onayDurumu = mapOfisOnay(pickStr(r, 'onay_durumu', 'onayDurumu'))
             const nid = randomUUID()
             await tx.ofisKasaHareketi.create({
@@ -551,6 +505,8 @@ export async function runDesktopImportCommit(params: {
             ofisIdMap.set(oldId, nid)
             inserted.ofis_kasa_hareketleri += 1
           }
+
+          commitWarnings.push(...belgeAlloc.summaryWarnings())
 
           await tx.importBatch.update({
             where: { id: importBatchId },

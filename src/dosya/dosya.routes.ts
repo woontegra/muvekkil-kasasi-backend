@@ -19,13 +19,19 @@ import {
 } from '../kasa/kasa.service.js'
 import {
   upsertVekaletUcretiBodySchema,
-  createVekaletTaksitiBodySchema
+  createVekaletTaksitiBodySchema,
+  createVekaletPesinOdemeBodySchema,
+  createVekaletTaksitPlaniBodySchema,
+  createTekVekaletTaksitiBodySchema
 } from '../vekalet/vekalet.schemas.js'
 import {
+  createTekVekaletTaksiti,
+  createVekaletTaksitPlani,
   createVekaletTaksiti,
   getDosyaVekaletPackage,
   upsertVekaletUcreti
 } from '../vekalet/vekalet.service.js'
+import { createVekaletPesinOdeme } from '../vekalet/vekaletTaksitOdeme.service.js'
 
 export const dosyalarRouter = Router()
 
@@ -74,7 +80,7 @@ dosyalarRouter.post(
     const tenantId = req.auth!.tenantId
     const userId = req.auth!.sub
     const body = createKasaHareketiBodySchema.parse(req.body)
-    const created = await createKasaHareketi(tenantId, userId, dosyaId, body, req)
+    const created = await createKasaHareketi(tenantId, userId, req.auth!.role, dosyaId, body, req)
     res.status(201).json({ ok: true, kasaHareketi: serializeKasaHareketi({ ...created, orijinalHareket: null }) })
   })
 )
@@ -119,6 +125,48 @@ dosyalarRouter.post(
     const body = createVekaletTaksitiBodySchema.parse(req.body)
     const taksit = await createVekaletTaksiti(tenantId, userId, dosyaId, body, req)
     res.status(201).json({ ok: true, taksit })
+  })
+)
+
+dosyalarRouter.post(
+  '/:id/vekalet/tek-taksit',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id: dosyaId } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const body = createTekVekaletTaksitiBodySchema.parse(req.body)
+    const taksit = await createTekVekaletTaksiti(tenantId, userId, dosyaId, body, req)
+    res.status(201).json({ ok: true, taksit })
+  })
+)
+
+dosyalarRouter.post(
+  '/:id/vekalet/taksit-plani',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id: dosyaId } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const body = createVekaletTaksitPlaniBodySchema.parse(req.body)
+    const result = await createVekaletTaksitPlani(tenantId, userId, dosyaId, body, req)
+    res.status(201).json(result)
+  })
+)
+
+dosyalarRouter.post(
+  '/:id/vekalet/pesin-odeme',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id: dosyaId } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const body = createVekaletPesinOdemeBodySchema.parse(req.body)
+    const result = await createVekaletPesinOdeme(tenantId, userId, req.auth!.role, dosyaId, body, req)
+    res.status(201).json(result)
   })
 )
 

@@ -35,6 +35,24 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
   // eslint-disable-next-line no-console
   console.error('[errorHandler]', err)
+
+  const errMessage = String(err?.message ?? err)
+  const isDbUnreachable =
+    err?.errorCode === 'P1001' ||
+    /Can't reach database server|P1001|ECONNREFUSED.*5432/i.test(errMessage)
+
+  if (isDbUnreachable) {
+    res.status(503).json({
+      ok: false,
+      error: 'DATABASE_UNAVAILABLE',
+      message:
+        env.NODE_ENV === 'production'
+          ? 'Veritabanına şu an ulaşılamıyor.'
+          : 'Veritabanına ulaşılamıyor. DATABASE_URL ve PostgreSQL bağlantısını kontrol edin.'
+    })
+    return
+  }
+
   res.status(500).json({
     ok: false,
     error: 'INTERNAL_ERROR',
