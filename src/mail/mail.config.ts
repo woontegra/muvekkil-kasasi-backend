@@ -164,9 +164,14 @@ export function frontendUrlLooksLocalOrPrivate(raw: string): boolean {
 }
 
 function normalizeFrontendBase(raw: string): string | null {
-  let base = raw.replace(/\/$/, '')
+  // Env değeri virgülle ayrılmış liste veya sonda virgül/boşluk içerebilir ("https://x,");
+  // ilk geçerli segmenti al ve baştaki/sondaki noktalama/boşlukları temizle.
+  let base = (raw.split(',')[0] ?? '').trim()
+  base = base.replace(/[\s,;]+$/, '')
+  base = base.replace(/\/$/, '')
   base = base.replace(/\/reset-password\/?$/, '')
   base = base.replace(/\/login\/?$/, '')
+  base = base.replace(/[\s,;]+$/, '')
   if (!base || base === 'undefined' || base.includes('null')) return null
   if (isProductionEnv() && frontendUrlLooksLocalOrPrivate(base)) return null
   return base
