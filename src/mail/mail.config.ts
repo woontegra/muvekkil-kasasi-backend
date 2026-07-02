@@ -142,22 +142,81 @@ export function getSmtpConfigStatus(): ResolvedMailTransport {
   return getResolvedMailTransport()
 }
 
+const PRODUCTION_MK_FRONTEND_FALLBACK = 'https://app.muvekkilkasasi.com'
+
+function isProductionEnv(): boolean {
+  return env.NODE_ENV === 'production'
+}
+
+/** Production mail/linklerinde localhost veya özel ağ adresi kullanılmamalı. */
+export function frontendUrlLooksLocalOrPrivate(raw: string): boolean {
+  const t = raw.trim().toLowerCase()
+  if (!t) return true
+  return (
+    t.includes('localhost') ||
+    t.includes('127.0.0.1') ||
+    t.includes('0.0.0.0') ||
+    t.includes('[::1]') ||
+    /^https?:\/\/192\.168\./.test(t) ||
+    /^https?:\/\/10\./.test(t) ||
+    /^https?:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\./.test(t)
+  )
+}
+
+function normalizeFrontendBase(raw: string): string | null {
+  let base = raw.replace(/\/$/, '')
+  base = base.replace(/\/reset-password\/?$/, '')
+  base = base.replace(/\/login\/?$/, '')
+  if (!base || base === 'undefined' || base.includes('null')) return null
+  if (isProductionEnv() && frontendUrlLooksLocalOrPrivate(base)) return null
+  return base
+}
+
+function pickFrontendBase(candidates: Array<string | undefined>): string | null {
+  for (const raw of candidates) {
+    const trimmed = optionalTrim(raw)
+    if (!trimmed) continue
+    const base = normalizeFrontendBase(trimmed)
+    if (base) return base
+  }
+  return null
+}
+
 /** Şifre sıfırlama linki kökü (frontend). */
 export function getFrontendBaseUrl(): string {
-  const candidates = [
+  const base = pickFrontendBase([
     optionalTrim(env.RESET_PASSWORD_URL),
     optionalTrim(env.FRONTEND_URL),
     optionalTrim(env.PUBLIC_APP_URL),
     optionalTrim(env.APP_URL),
-    optionalTrim(env.CORS_ORIGIN)
-  ]
-  for (const raw of candidates) {
-    if (!raw) continue
-    let base = raw.replace(/\/$/, '')
-    base = base.replace(/\/reset-password\/?$/, '')
-    if (base && base !== 'undefined' && !base.includes('null')) return base
+    ...(isProductionEnv() ? [] : [optionalTrim(env.CORS_ORIGIN)]),
+  ])
+  if (base) return base
+
+  if (isProductionEnv()) {
+    console.error(
+      '[mail] Production FRONTEND_URL (veya eşdeğeri) eksik veya localhost; güvenli fallback kullanılıyor:',
+      PRODUCTION_MK_FRONTEND_FALLBACK,
+    )
+    return PRODUCTION_MK_FRONTEND_FALLBACK
   }
-  return 'http://localhost:5173'
+
+  return optionalTrim(env.CORS_ORIGIN) ?? 'http://localhost:5173'
+}
+
+/** Müvekkil Kasa giriş ekranı URL’si; öncelik FRONTEND_URL. */
+export function getMkLoginUrl(): string {
+  const base =
+    pickFrontendBase([
+      optionalTrim(env.FRONTEND_URL),
+      optionalTrim(env.PUBLIC_APP_URL),
+      optionalTrim(env.APP_URL),
+      optionalTrim(env.RESET_PASSWORD_URL),
+      ...(isProductionEnv() ? [] : [optionalTrim(env.CORS_ORIGIN)]),
+    ]) ?? (isProductionEnv() ? PRODUCTION_MK_FRONTEND_FALLBACK : optionalTrim(env.CORS_ORIGIN) ?? 'http://localhost:5173')
+
+  const clean = base.replace(/\/$/, '')
+  return clean.endsWith('/login') ? clean : `${clean}/login`
 }
 
 export function buildPasswordResetUrl(plainToken: string): string {

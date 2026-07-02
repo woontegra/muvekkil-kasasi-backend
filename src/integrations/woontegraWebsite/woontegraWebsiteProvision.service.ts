@@ -3,13 +3,12 @@ import { prisma } from '../../lib/prisma.js'
 import { writeAuditLog } from '../../audit/auditService.js'
 import { hashPassword } from '../../admin/adminAuth.service.js'
 import { issueActivationToken } from '../../auth/passwordReset.service.js'
-import { issueOwnerTemporaryPassword } from '../../auth/ownerTemporaryPassword.js'
 import { getRequestMeta } from '../../auth/requestMeta.js'
 import { getActivationTokenExpiresHours } from '../../config/env.js'
 import { AppError } from '../../middleware/errorHandler.js'
 import { generateTemporaryPassword } from '../../lib/temporaryPassword.js'
 import { sendWelcomeActivationEmail } from '../../mail/mail.service.js'
-import { getFrontendBaseUrl } from '../../mail/mail.config.js'
+import { getMkLoginUrl } from '../../mail/mail.config.js'
 import {
   findTenantOwner,
   provisionTenantWithOwner
@@ -114,10 +113,10 @@ async function returnIdempotentProvision(
     userAgent: meta.userAgent
   })
 
-  const mail = await sendOwnerActivationEmail(existing, owner, mailFallback, meta)
+  // Idempotent çağrıda şifre yenilenmez; maildeki geçici şifre ile DB hash uyumunu korur.
   return toExistsResponse(existing, ownerEmail, {
-    ownerUsername: mail.ownerUsername,
-    temporaryPassword: mail.temporaryPassword,
+    ownerUsername: owner.kullaniciAdi,
+    temporaryPassword: '',
   })
 }
 
@@ -138,8 +137,7 @@ function buildLicenseNotes(body: WoontegraWebsiteProvisionBody): string {
 }
 
 function buildMkLoginUrl(): string {
-  const base = getFrontendBaseUrl().replace(/\/$/, '')
-  return base.endsWith('/login') ? base : `${base}/login`
+  return getMkLoginUrl()
 }
 
 function maskEmail(email: string): string {
@@ -167,7 +165,19 @@ async function sendOwnerActivationEmail(
   let passwordForMail = geciciSifre?.trim() || ''
 
   try {
-    if (!passwordForMail) passwordForMail = await issueOwnerTemporaryPassword(owner.id)
+    if (!passwordForMail) {
+      console.info('[woontegra-website] welcome activation mail skipped — plain password missing (idempotent resend)', {
+        tenantId: tenant.id,
+        recipient: toMasked
+      })
+      return {
+        mailSent: false,
+        mailError: 'IDEMPOTENT_NO_PASSWORD_RESEND',
+        temporaryPassword: '',
+        ownerUsername: owner.kullaniciAdi
+      }
+    }
+
     const { plainToken } = await issueActivationToken(owner.id)
     const result = await sendWelcomeActivationEmail({
       to: email,

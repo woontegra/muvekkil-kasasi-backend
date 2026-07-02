@@ -3,7 +3,7 @@ import type { Transporter } from 'nodemailer'
 import { env } from '../config/env.js'
 import {
   buildPasswordResetUrl,
-  getFrontendBaseUrl,
+  getMkLoginUrl,
   getMailFromAddress,
   getResolvedMailTransport
 } from './mail.config.js'
@@ -247,12 +247,18 @@ function welcomeInfoBox(title: string, rows: Array<{ label: string; value: strin
 function welcomeActionButton(href: string, label: string, bg: string): string {
   const safeHref = escapeHtml(href)
   const safeLabel = escapeHtml(label)
-  return `<a href="${safeHref}" target="_blank" style="display:inline-block;margin:0 8px 8px 0;padding:13px 28px;background:${bg};color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;">${safeLabel}</a>`
+  return `<table role="presentation" cellspacing="0" cellpadding="0" style="display:inline-table;margin:0 8px 8px 0;vertical-align:top;">
+  <tr>
+    <td align="center" style="border-radius:8px;background:${bg};">
+      <a href="${safeHref}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:8px;">${safeLabel}</a>
+    </td>
+  </tr>
+</table>`
 }
 
 function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string {
   const activationUrl = buildPasswordResetUrl(params.plainToken)
-  const loginUrl = `${getFrontendBaseUrl()}/login`
+  const loginUrl = getMkLoginUrl()
   const safeActivationUrl = escapeHtml(activationUrl)
   const safeLoginUrl = escapeHtml(loginUrl)
   const year = new Date().getFullYear()
@@ -261,14 +267,16 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
   const ownerEmail = params.to.trim().toLowerCase()
 
   const loginRows: Array<{ label: string; value: string; mono?: boolean }> = [
-    { label: 'Giriş adresi', value: `<a href="${safeLoginUrl}" style="color:#2563eb;word-break:break-all;">${safeLoginUrl}</a>` },
-    { label: 'E-posta', value: escapeHtml(ownerEmail) },
-    { label: 'Kullanıcı adı', value: escapeHtml(params.kullaniciAdi), mono: true },
+    {
+      label: 'Müvekkil Kasa giriş adresi',
+      value: `<a href="${safeLoginUrl}" style="color:#2563eb;word-break:break-all;">${safeLoginUrl}</a>`,
+    },
+    { label: 'Kullanıcı adı', value: escapeHtml(ownerEmail) },
     { label: 'Geçici şifre', value: escapeHtml(params.geciciSifre), mono: true },
   ]
 
   const licenseRows: Array<{ label: string; value: string; mono?: boolean }> = [
-    { label: 'Büro adı', value: escapeHtml(params.buroAdi) },
+    { label: 'Büro', value: escapeHtml(params.buroAdi) },
   ]
   if (params.lisansAnahtari?.trim()) {
     licenseRows.push({
@@ -350,7 +358,7 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
 
 function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string {
   const activationUrl = buildPasswordResetUrl(params.plainToken)
-  const loginUrl = `${getFrontendBaseUrl()}/login`
+  const loginUrl = getMkLoginUrl()
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
   const ownerEmail = params.to.trim().toLowerCase()
@@ -367,13 +375,12 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
     'Program indirmeniz veya kurulum yapmanız gerekmez.',
     '',
     'Giriş bilgileri',
-    `Giriş adresi: ${loginUrl}`,
-    `E-posta: ${ownerEmail}`,
-    `Kullanıcı adı: ${params.kullaniciAdi}`,
+    `Müvekkil Kasa giriş adresi: ${loginUrl}`,
+    `Kullanıcı adı: ${ownerEmail}`,
     `Geçici şifre: ${params.geciciSifre}`,
     '',
     'Lisans bilgileri',
-    `Büro adı: ${params.buroAdi}`,
+    `Büro: ${params.buroAdi}`,
     ...(licenseKeyLine ? [licenseKeyLine] : []),
     `Başlangıç tarihi: ${baslangic}`,
     `Bitiş tarihi: ${bitis}`,
