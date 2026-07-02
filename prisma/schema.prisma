@@ -37,6 +37,8 @@ model Tenant {
   lisansNotlari         String?               @map("lisans_notlari")
   /// SaaS lisans anahtarı (kiracı başına; Woontegra Website veya süper admin oluşturma).
   lisansAnahtari        String?               @unique @map("lisans_anahtari")
+  /// Müşteriye gösterilen benzersiz sayısal müşteri numarası (6-7 hane). Destek referansı.
+  musteriNo             String?               @unique @map("musteri_no")
 
   /// Woontegra Website ödeme sonrası teslimat idempotency: website sipariş kimliği (unique).
   externalOrderId    String? @unique @map("external_order_id")
@@ -113,6 +115,10 @@ model User {
   role             UserRole
   aktifMi          Boolean   @default(true) @map("aktif_mi")
   sonGirisTarihi   DateTime? @map("son_giris_tarihi")
+  /// İlk girişte geçici şifre sonrası zorunlu şifre değişimi (Website provision / aktivasyon maili).
+  mustChangePassword Boolean @default(false) @map("must_change_password")
+  /// Büro sahibi lisans anahtarını ilk girişte doğruladığında set edilir.
+  licenseActivatedAt DateTime? @map("license_activated_at")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 

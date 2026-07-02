@@ -9,11 +9,12 @@ import { AppError } from '../middleware/errorHandler.js'
 import type { Request } from 'express'
 import { getRequestMeta } from './requestMeta.js'
 import { assertTenantLoginAllowed } from '../tenant/tenantLicense.js'
+import { getUserOnboardingFlags } from './authOnboarding.service.js'
 
 const BCRYPT_ROUNDS = 12
 
 export type PublicUser = Omit<User, 'sifreHash'>
-export type PublicTenant = Omit<Tenant, 'yillikUcret'> & { yillikUcret: string | null }
+export type PublicTenant = Omit<Tenant, 'yillikUcret' | 'lisansAnahtari'> & { yillikUcret: string | null }
 
 export function serializeUser(u: User & { tenant?: Tenant }): PublicUser {
   const { sifreHash: _, tenant: __, ...rest } = u
@@ -21,14 +22,19 @@ export function serializeUser(u: User & { tenant?: Tenant }): PublicUser {
 }
 
 export function serializeTenant(t: Tenant): PublicTenant {
-  const { yillikUcret, ...rest } = t
+  const { yillikUcret, lisansAnahtari: _, ...rest } = t
   return {
     ...rest,
     yillikUcret: yillikUcret == null ? null : yillikUcret.toFixed(2)
   }
 }
 
-export type AuthSuccessPayload = {
+export type AuthOnboardingPayload = {
+  requiresLicenseActivation: boolean
+  mustChangePassword: boolean
+}
+
+export type AuthSuccessPayload = AuthOnboardingPayload & {
   accessToken: string
   user: PublicUser
   tenant: PublicTenant
@@ -137,10 +143,14 @@ export async function login(body: LoginBody, req: Request): Promise<AuthSuccessP
     kullaniciAdi: updated.kullaniciAdi
   })
 
+  const onboarding = getUserOnboardingFlags(updated, updated.tenant)
+
   return {
     accessToken,
     user: serializeUser(updated),
-    tenant: serializeTenant(updated.tenant)
+    tenant: serializeTenant(updated.tenant),
+    requiresLicenseActivation: onboarding.requiresLicenseActivation,
+    mustChangePassword: onboarding.mustChangePassword
   }
 }
 

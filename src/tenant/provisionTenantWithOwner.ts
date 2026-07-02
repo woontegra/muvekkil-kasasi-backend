@@ -5,6 +5,7 @@ import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { writeAdminAuditLog } from '../admin/adminAudit.service.js'
 import { allocateUniqueSaasLicenseKey } from './allocateUniqueSaasLicenseKey.js'
+import { generateUniqueMusteriNo } from '../lib/musteriNo.js'
 
 export type ProvisionTenantOwnerInput = {
   adSoyad: string
@@ -12,6 +13,8 @@ export type ProvisionTenantOwnerInput = {
   eposta?: string | null
   telefon?: string | null
   sifreHash: string
+  mustChangePassword?: boolean
+  licenseActivatedAt?: Date | null
 }
 
 export type ProvisionTenantInput = {
@@ -97,11 +100,13 @@ export async function provisionTenantWithOwner(
   try {
     const result = await prisma.$transaction(async (tx) => {
       const lisansAnahtari = input.lisansAnahtari ?? (await allocateUniqueSaasLicenseKey(tx))
+      const musteriNo = await generateUniqueMusteriNo(tx)
 
       const tenant = await tx.tenant.create({
         data: {
           buroAdi: input.buroAdi.trim(),
           slug,
+          musteriNo,
           telefon: strOrNull(input.telefon),
           eposta: tenantEposta,
           adres: strOrNull(input.adres),
@@ -131,7 +136,9 @@ export async function provisionTenantWithOwner(
           telefon: strOrNull(input.owner.telefon),
           sifreHash: input.owner.sifreHash,
           role: 'BURO_SAHIBI',
-          aktifMi: true
+          aktifMi: true,
+          mustChangePassword: input.owner.mustChangePassword ?? false,
+          licenseActivatedAt: input.owner.licenseActivatedAt ?? undefined
         }
       })
 

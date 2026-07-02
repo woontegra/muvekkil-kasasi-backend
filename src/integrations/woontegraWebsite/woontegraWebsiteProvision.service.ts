@@ -34,6 +34,7 @@ export type WoontegraWebsiteProvisionCreatedResponse = {
   licenseStartDate: string
   licenseEndDate: string
   licenseKey: string | null
+  musteriNo: string | null
   mailSent: boolean
   mailError?: string
 }
@@ -50,6 +51,7 @@ export type WoontegraWebsiteProvisionExistsResponse = {
   licenseStartDate: string
   licenseEndDate: string
   licenseKey: string | null
+  musteriNo: string | null
 }
 
 export type WoontegraWebsiteProvisionResponse =
@@ -91,6 +93,7 @@ async function returnIdempotentProvision(
     lisansBaslangicTarihi: Date | null
     lisansBitisTarihi: Date | null
     lisansAnahtari: string | null
+    musteriNo: string | null
   },
   owner: { id: string; kullaniciAdi: string; eposta: string | null },
   body: WoontegraWebsiteProvisionBody,
@@ -154,6 +157,7 @@ async function sendOwnerActivationEmail(
     lisansBaslangicTarihi: Date | null
     lisansBitisTarihi: Date | null
     lisansAnahtari: string | null
+    musteriNo: string | null
   },
   owner: { id: string; kullaniciAdi: string; eposta: string | null },
   fallback: { ownerEmail: string; licenseStart: string; licenseEnd: string },
@@ -188,6 +192,7 @@ async function sendOwnerActivationEmail(
       lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? fallback.licenseStart,
       lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? fallback.licenseEnd,
       lisansAnahtari: tenant.lisansAnahtari,
+      musteriNo: tenant.musteriNo,
       activationExpiresHours: getActivationTokenExpiresHours()
     })
 
@@ -253,6 +258,7 @@ function toExistsResponse(
     lisansBaslangicTarihi: Date | null
     lisansBitisTarihi: Date | null
     lisansAnahtari: string | null
+    musteriNo: string | null
   },
   ownerEmail: string,
   credentials: { ownerUsername: string; temporaryPassword: string }
@@ -268,7 +274,8 @@ function toExistsResponse(
     loginUrl: buildMkLoginUrl(),
     licenseStartDate: tenant.lisansBaslangicTarihi?.toISOString() ?? '',
     licenseEndDate: tenant.lisansBitisTarihi?.toISOString() ?? '',
-    licenseKey: tenant.lisansAnahtari
+    licenseKey: tenant.lisansAnahtari,
+    musteriNo: tenant.musteriNo
   }
 }
 
@@ -372,7 +379,9 @@ export async function provisionTenantFromWoontegraWebsite(
           kullaniciAdi,
           eposta: body.customer.email.trim().toLowerCase(),
           telefon: body.customer.phone ?? null,
-          sifreHash
+          sifreHash,
+          mustChangePassword: true,
+          licenseActivatedAt: null
         }
       },
       {
@@ -419,6 +428,7 @@ export async function provisionTenantFromWoontegraWebsite(
     licenseStartDate: created.tenant.lisansBaslangicTarihi?.toISOString() ?? start.toISOString(),
     licenseEndDate: created.tenant.lisansBitisTarihi?.toISOString() ?? end.toISOString(),
     licenseKey: created.tenant.lisansAnahtari,
+    musteriNo: created.tenant.musteriNo,
     mailSent: mail.mailSent,
     ...(mail.mailSent ? {} : { mailError: mail.mailError }),
   }

@@ -29,5 +29,14 @@ const LICENSE_KEY_REGEX =
   /^[A-Z][0-9]{2}[A-Z]-[0-9]{3}[A-Z]-[0-9]{2}[A-Z]{2}-[A-Z]{2}[0-9]{2}$/
 
 export function isValidSaasLicenseKeyFormat(licenseKey: string): boolean {
-  return LICENSE_KEY_REGEX.test(licenseKey)
+  return LICENSE_KEY_REGEX.test(normalizeSaasLicenseKey(licenseKey))
+}
+
+/** Karşılaştırma için lisans anahtarını normalize eder (boşluk/tire farklarını tolere etmez, büyük harf). */
+export function normalizeSaasLicenseKey(raw: string): string {
+  return raw.trim().toUpperCase()
+}
+
+export function saasLicenseKeysMatch(a: string, b: string): boolean {
+  return normalizeSaasLicenseKey(a) === normalizeSaasLicenseKey(b)
 }

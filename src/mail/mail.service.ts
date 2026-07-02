@@ -207,7 +207,7 @@ export async function sendPasswordResetEmail(params: SendPasswordResetEmailParam
   }
 }
 
-const WELCOME_SUBJECT = 'Müvekkil Kasa Defteri — Hesabınız Hazır'
+const WELCOME_SUBJECT = 'Müvekkil Kasa üyeliğiniz aktif edildi'
 
 export type SendWelcomeActivationEmailParams = {
   to: string
@@ -218,6 +218,7 @@ export type SendWelcomeActivationEmailParams = {
   lisansBaslangic: string
   lisansBitis: string
   lisansAnahtari?: string | null
+  musteriNo?: string | null
   activationExpiresHours: number
 }
 
@@ -257,9 +258,7 @@ function welcomeActionButton(href: string, label: string, bg: string): string {
 }
 
 function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string {
-  const activationUrl = buildPasswordResetUrl(params.plainToken)
   const loginUrl = getMkLoginUrl()
-  const safeActivationUrl = escapeHtml(activationUrl)
   const safeLoginUrl = escapeHtml(loginUrl)
   const year = new Date().getFullYear()
   const baslangic = formatDateTr(params.lisansBaslangic)
@@ -274,6 +273,9 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
     { label: 'Kullanıcı adı', value: escapeHtml(ownerEmail) },
     { label: 'Geçici şifre', value: escapeHtml(params.geciciSifre), mono: true },
   ]
+  if (params.musteriNo?.trim()) {
+    loginRows.push({ label: 'Müşteri No', value: escapeHtml(params.musteriNo.trim()), mono: true })
+  }
 
   const licenseRows: Array<{ label: string; value: string; mono?: boolean }> = [
     { label: 'Büro', value: escapeHtml(params.buroAdi) },
@@ -313,9 +315,9 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
           </tr>
           <tr>
             <td style="padding:28px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
-              <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Müvekkil Kasa Defteri hesabınız oluşturuldu</h1>
+              <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Müvekkil Kasa üyeliğiniz aktif edildi</h1>
               <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> için web tabanlı Müvekkil Kasa hesabınız hazır.</p>
-              <p style="margin:0;font-size:14px;line-height:1.65;color:#475569;">Program indirmeniz veya kurulum yapmanız gerekmez; tarayıcınızdan giriş yaparak kullanmaya başlayabilirsiniz.</p>
+              <p style="margin:0;font-size:14px;line-height:1.65;color:#475569;">Aşağıdaki bilgilerle giriş yapın; ilk girişte lisans anahtarınızı doğrulayıp şifrenizi güncellemeniz istenecektir.</p>
             </td>
           </tr>
           <tr>
@@ -327,13 +329,11 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
           <tr>
             <td align="center" style="padding:8px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
               ${welcomeActionButton(loginUrl, 'Giriş Yap', '#059669')}
-              ${welcomeActionButton(activationUrl, 'Şifrenizi Belirleyin', '#2563eb')}
             </td>
           </tr>
           <tr>
             <td style="padding:12px 40px;font-family:'Segoe UI',Arial,sans-serif;">
-              <p style="margin:0;font-size:13px;line-height:1.55;color:#64748b;">Şifre belirleme bağlantısı <strong>${params.activationExpiresHours} saat</strong> geçerlidir. Süre dolduysa geçici şifrenizle giriş yapıp şifremi unuttum adımını kullanabilirsiniz.</p>
-              <p style="margin:12px 0 0;font-size:12px;line-height:1.5;color:#94a3b8;word-break:break-all;">${safeActivationUrl}</p>
+              <p style="margin:0;font-size:13px;line-height:1.55;color:#64748b;">İlk girişte lisans anahtarınızı doğrulayıp kalıcı şifrenizi belirlemeniz istenecektir.</p>
             </td>
           </tr>
           <tr>
@@ -357,7 +357,6 @@ function buildWelcomeEmailHtml(params: SendWelcomeActivationEmailParams): string
 }
 
 function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string {
-  const activationUrl = buildPasswordResetUrl(params.plainToken)
   const loginUrl = getMkLoginUrl()
   const baslangic = formatDateTr(params.lisansBaslangic)
   const bitis = formatDateTr(params.lisansBitis)
@@ -369,15 +368,16 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
   return [
     'WOONTEGRA — Müvekkil Kasa Defteri',
     '',
-    'Müvekkil Kasa Defteri hesabınız oluşturuldu',
+    'Müvekkil Kasa üyeliğiniz aktif edildi',
     '',
     `${params.buroAdi} için web tabanlı Müvekkil Kasa hesabınız hazır.`,
-    'Program indirmeniz veya kurulum yapmanız gerekmez.',
+    'İlk girişte lisans anahtarınızı doğrulayıp kalıcı şifrenizi belirlemeniz istenecektir.',
     '',
     'Giriş bilgileri',
     `Müvekkil Kasa giriş adresi: ${loginUrl}`,
     `Kullanıcı adı: ${ownerEmail}`,
     `Geçici şifre: ${params.geciciSifre}`,
+    ...(params.musteriNo?.trim() ? [`Müşteri No: ${params.musteriNo.trim()}`] : []),
     '',
     'Lisans bilgileri',
     `Büro: ${params.buroAdi}`,
@@ -386,10 +386,8 @@ function buildWelcomeEmailText(params: SendWelcomeActivationEmailParams): string
     `Bitiş tarihi: ${bitis}`,
     '',
     `Giriş: ${loginUrl}`,
-    `Şifrenizi belirlemek için (${params.activationExpiresHours} saat geçerli): ${activationUrl}`,
     '',
     'Woontegra müşteri paneli şifreniz ile değil, bu e-postadaki Müvekkil Kasa giriş bilgileriyle giriş yapabilirsiniz.',
-    'İlk girişten sonra şifrenizi değiştirmeniz önerilir.',
     '',
     'Destek: destek@woontegra.com',
     '',

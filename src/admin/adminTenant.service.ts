@@ -15,6 +15,7 @@ import {
   type AdminCreateTenantBody
 } from './admin.schemas.js'
 import { generateTemporaryPassword } from '../lib/temporaryPassword.js'
+import { generateUniqueMusteriNo } from '../lib/musteriNo.js'
 import { normalizeKullaniciAdi, isValidKullaniciAdi } from '../lib/normalizeKullaniciAdi.js'
 import {
   provisionTenantWithOwner
@@ -98,6 +99,7 @@ export async function adminListTenants(params: {
       { slug: { contains: q, mode: 'insensitive' } },
       { eposta: { contains: q, mode: 'insensitive' } },
       { lisansAnahtari: { contains: q, mode: 'insensitive' } },
+      { musteriNo: { contains: q, mode: 'insensitive' } },
       {
         users: {
           some: {
@@ -156,6 +158,7 @@ export async function adminListTenants(params: {
       lisansBaslangicTarihi: t.lisansBaslangicTarihi?.toISOString() ?? null,
       lisansBitisTarihi: t.lisansBitisTarihi?.toISOString() ?? null,
       lisansAnahtari: t.lisansAnahtari,
+      musteriNo: t.musteriNo,
       demoMu: t.demoMu,
       demoBitisTarihi: t.demoBitisTarihi?.toISOString() ?? null,
       sahipAdSoyad: owner?.adSoyad ?? null,
@@ -202,6 +205,17 @@ export async function adminGetTenant(id: string) {
   })
   if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
 
+  // Eski tenantlarda müşteri no boşsa görüntülemede tek seferlik üret.
+  let musteriNo = t.musteriNo
+  if (!musteriNo) {
+    try {
+      musteriNo = await generateUniqueMusteriNo(prisma)
+      await prisma.tenant.update({ where: { id }, data: { musteriNo } })
+    } catch {
+      musteriNo = null
+    }
+  }
+
   const [auditLogs, kasaCount, licenseRenewals] = await Promise.all([
     prisma.auditLog.findMany({
       where: { tenantId: id },
@@ -243,6 +257,7 @@ export async function adminGetTenant(id: string) {
       yillikUcret: dec(t.yillikUcret),
       lisansNotlari: t.lisansNotlari,
       lisansAnahtari: t.lisansAnahtari,
+      musteriNo,
       createdAt: t.createdAt.toISOString(),
       updatedAt: t.updatedAt.toISOString()
     },
@@ -780,6 +795,10 @@ export async function adminCreateTenantWithOwner(
 
   const tenantAktif = license.lisansDurumu !== 'PASIF'
 
+  const shouldSendMail =
+    body.parolaModu === 'AKTIVASYON_MAIL' && (body.gonderAktivasyonMaili || body.gonderHosgeldinMaili)
+  const requiresFirstLoginOnboarding = body.parolaModu === 'AKTIVASYON_MAIL'
+
   const result = await provisionTenantWithOwner(
     {
       buroAdi: body.buroAdi,
@@ -803,7 +822,9 @@ export async function adminCreateTenantWithOwner(
         kullaniciAdi: ownerLower,
         eposta: ownerEmail,
         telefon: body.ownerTelefon,
-        sifreHash
+        sifreHash,
+        mustChangePassword: requiresFirstLoginOnboarding,
+        licenseActivatedAt: requiresFirstLoginOnboarding ? null : new Date()
       }
     },
     {
@@ -819,9 +840,6 @@ export async function adminCreateTenantWithOwner(
   let aktivasyonMailiGonderildi = false
   let hosgeldinMailiGonderildi = false
 
-  const shouldSendMail =
-    body.parolaModu === 'AKTIVASYON_MAIL' && (body.gonderAktivasyonMaili || body.gonderHosgeldinMaili)
-
   if (shouldSendMail) {
     const { plainToken } = await issueActivationToken(result.ownerUser.id)
     const mailResult = await sendWelcomeActivationEmail({
@@ -833,6 +851,7 @@ export async function adminCreateTenantWithOwner(
       lisansBaslangic: result.tenant.lisansBaslangicTarihi?.toISOString() ?? license.baslangic.toISOString(),
       lisansBitis: result.tenant.lisansBitisTarihi?.toISOString() ?? license.bitis.toISOString(),
       lisansAnahtari: result.tenant.lisansAnahtari,
+      musteriNo: result.tenant.musteriNo,
       activationExpiresHours: getActivationTokenExpiresHours()
     })
     mailSent = mailResult.sent
@@ -884,6 +903,16 @@ export async function adminResendWelcomeActivationEmail(
   const email = owner.eposta?.trim().toLowerCase()
   if (!email) throw new AppError(422, 'Büro sahibinin e-posta adresi yok.', 'VALIDATION_ERROR')
 
+  let musteriNo = tenant.musteriNo
+  if (!musteriNo) {
+    try {
+      musteriNo = await generateUniqueMusteriNo(prisma)
+      await prisma.tenant.update({ where: { id: tenantId }, data: { musteriNo } })
+    } catch {
+      musteriNo = null
+    }
+  }
+
   const geciciSifre = await issueOwnerTemporaryPassword(owner.id)
   const { plainToken } = await issueActivationToken(owner.id)
   const result = await sendWelcomeActivationEmail({
@@ -895,6 +924,7 @@ export async function adminResendWelcomeActivationEmail(
     lisansBaslangic: tenant.lisansBaslangicTarihi?.toISOString() ?? new Date().toISOString(),
     lisansBitis: tenant.lisansBitisTarihi?.toISOString() ?? new Date().toISOString(),
     lisansAnahtari: tenant.lisansAnahtari,
+    musteriNo,
     activationExpiresHours: getActivationTokenExpiresHours()
   })
 
