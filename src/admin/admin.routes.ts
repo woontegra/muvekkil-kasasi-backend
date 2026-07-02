@@ -34,6 +34,7 @@ import {
 } from './adminSuperAdmin.service.js'
 import {
   adminCreateTenantWithOwner,
+  adminDeleteTenant,
   adminExtendTenantLicense,
   adminGetTenant,
   adminListExpiringTenants,
@@ -284,6 +285,17 @@ adminRouter.post(
     const id = z.string().uuid().parse(req.params.id)
     const updated = await adminSetTenantActive(id, false, req.adminAuth!.sub, req)
     res.json({ ok: true, tenant: serializeTenant(updated) })
+  })
+)
+
+adminRouter.delete(
+  '/tenants/:id',
+  requireAdminAuth,
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    await adminDeleteTenant(id, req.adminAuth!.sub, req)
+    res.json({ ok: true })
   })
 )
 

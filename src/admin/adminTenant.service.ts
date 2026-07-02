@@ -452,6 +452,59 @@ export async function adminSetTenantActive(id: string, aktif: boolean, adminId: 
   return updated
 }
 
+export async function adminDeleteTenant(id: string, adminId: string, req: Request): Promise<void> {
+  const t = await prisma.tenant.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      buroAdi: true,
+      slug: true,
+      eposta: true,
+      lisansAnahtari: true,
+      externalOrderId: true,
+      aktifMi: true,
+      lisansDurumu: true,
+      _count: { select: { users: true, muvekkiller: true, dosyalar: true } }
+    }
+  })
+  if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
+
+  const meta = getRequestMeta(req)
+  await writeAdminAuditLog({
+    adminId,
+    action: 'TENANT_DELETED',
+    entityType: 'Tenant',
+    entityId: id,
+    oldValue: {
+      buroAdi: t.buroAdi,
+      slug: t.slug,
+      eposta: t.eposta,
+      lisansAnahtari: t.lisansAnahtari,
+      externalOrderId: t.externalOrderId,
+      aktifMi: t.aktifMi,
+      lisansDurumu: t.lisansDurumu,
+      kullaniciSayisi: t._count.users,
+      muvekkilSayisi: t._count.muvekkiller,
+      dosyaSayisi: t._count.dosyalar
+    } as unknown as Prisma.InputJsonValue,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  try {
+    await prisma.tenant.delete({ where: { id } })
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+      throw new AppError(
+        409,
+        'Büro silinemedi; bağlı kayıtlar nedeniyle işlem tamamlanamadı.',
+        'TENANT_DELETE_BLOCKED'
+      )
+    }
+    throw e
+  }
+}
+
 export async function adminListTenantUsers(tenantId: string) {
   const t = await prisma.tenant.findUnique({ where: { id: tenantId } })
   if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
