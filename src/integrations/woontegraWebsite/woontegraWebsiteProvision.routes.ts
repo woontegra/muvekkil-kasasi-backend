@@ -5,6 +5,7 @@ import { parseWoontegraWebsiteProvisionBody } from './woontegraWebsiteProvision.
 import { provisionTenantFromWoontegraWebsite } from './woontegraWebsiteProvision.service.js'
 import { parseWoontegraWebsiteRenewBody } from './woontegraWebsiteRenew.schemas.js'
 import { renewTenantFromWoontegraWebsite } from './woontegraWebsiteRenew.service.js'
+import { lookupTenantsByOwnerEmail } from './woontegraWebsiteLookup.service.js'
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -23,6 +24,20 @@ woontegraWebsiteProvisionRouter.post(
     const status = result.status === 'created' ? 201 : 200
     res.status(status).json(result)
   })
+)
+
+woontegraWebsiteProvisionRouter.get(
+  '/tenants/lookup-by-email',
+  requireWoontegraWebsiteProvisionAuth,
+  asyncHandler(async (req, res) => {
+    const email = typeof req.query.email === 'string' ? req.query.email.trim() : ''
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ ok: false, message: 'Geçerli e-posta gerekli.' })
+      return
+    }
+    const result = await lookupTenantsByOwnerEmail(email)
+    res.status(200).json(result)
+  }),
 )
 
 woontegraWebsiteProvisionRouter.post(
