@@ -194,6 +194,7 @@ model Muvekkil {
   sirketUnvani      String?     @map("sirket_unvani")
   telefon           String?
   eposta            String?
+  adres             String?
   notMetni          String?     @map("not_metni")
   yetkiliAdSoyad    String      @default("") @map("yetkili_ad_soyad")
   yetkiliTelefon    String      @default("") @map("yetkili_telefon")

@@ -9,6 +9,8 @@ const emptyToNull = (v: unknown): string | null => {
 
 const optionalNote = z.preprocess(emptyToNull, z.string().max(8000).nullable())
 
+const optionalAdres = z.preprocess(emptyToNull, z.string().max(4000).nullable())
+
 const optionalNullableString = z.preprocess(emptyToNull, z.string().max(500).nullable())
 
 function emailCheck(val: string | null | undefined, ctx: z.RefinementCtx, path: (string | number)[]): void {
@@ -23,6 +25,7 @@ const muvekkilWriteBase = z.object({
   sirketUnvani: optionalNullableString,
   telefon: z.string().trim().default(''),
   eposta: optionalNullableString,
+  adres: optionalAdres,
   not: optionalNote,
   yetkiliAdSoyad: z.string().trim().default(''),
   yetkiliTelefon: z.string().trim().default(''),

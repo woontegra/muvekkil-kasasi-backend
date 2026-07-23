@@ -1,24 +1,14 @@
 import { KasaHareketTipi, KasaOnayDurumu, OdemeYontemi } from '@prisma/client'
 import { z } from 'zod'
 
-/** Masaüstü ile uyumlu masraf türleri listesi. */
+/** Masaüstü `MASRAF_TURLERI` ile aynı sıra ve etiketler. */
 export const MASRAF_TURU_VALUES = [
-  'Gider avansı',
-  'Keşif harcı',
-  'Keşif avansı',
-  'Mahkeme harcı',
-  'Peşin harç',
-  'Karar harcı',
-  'İstinaf harcı',
-  'Temyiz harcı',
-  'Ofis içi kırtasiye',
-  'Yol masrafı',
-  'Yemek masrafı',
-  'Baro pulu',
-  'Vekalet harcı',
-  'İhtarname masrafı',
-  'Bilirkişi ücreti',
-  'Diğer masraf'
+  'Harç',
+  'Gider Avansı',
+  'Bilirkişi Ücreti',
+  'Keşif-İcra, Haciz vs.',
+  'Yol-Yemek vs.',
+  'Diğer'
 ] as const
 
 export type MasrafTuruValue = (typeof MASRAF_TURU_VALUES)[number]
@@ -26,7 +16,8 @@ export type MasrafTuruValue = (typeof MASRAF_TURU_VALUES)[number]
 export const masrafTuruSchema = z.enum(MASRAF_TURU_VALUES)
 
 export function isDigerMasraf(s: string): boolean {
-  return s === 'Diğer masraf' || s === 'DİĞER'
+  // Yeni etiket: Diğer; eski SaaS kayıtları: Diğer masraf
+  return s === 'Diğer' || s === 'Diğer masraf' || s === 'DİĞER'
 }
 
 const tutarPositive = z.preprocess(
@@ -71,7 +62,7 @@ export const createKasaHareketiBodySchema = z
         if (oz.length < 2) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'Diğer masraf için özel ad zorunludur.',
+            message: 'Diğer masraf adı zorunludur.',
             path: ['ozelMasrafAdi']
           })
         }

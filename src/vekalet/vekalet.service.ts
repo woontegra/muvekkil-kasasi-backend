@@ -232,14 +232,6 @@ function kalanVekaletTutari(
   return Math.max(0, Number(anlasilan) - odenen)
 }
 
-function hasAcikVekaletTaksiti(
-  taksitler: { odemeDurumu: VekaletTaksitOdemeDurumu }[]
-): boolean {
-  return taksitler.some(
-    (t) => t.odemeDurumu === 'ODENMEDI' || t.odemeDurumu === 'KISMI_ODENDI'
-  )
-}
-
 function vadeEkleAy(base: Date, ayOffset: number): Date {
   const d = new Date(base)
   d.setMonth(d.getMonth() + ayOffset)
@@ -251,6 +243,18 @@ function hesaplaSabitTaksitPlani(taksitTutari: number, adet: number): number[] |
   if (!Number.isFinite(adet) || adet < 1 || adet > 120) return null
   const tutar = Math.round(taksitTutari * 100) / 100
   return Array.from({ length: adet }, () => tutar)
+}
+
+const TAKSIT_PLANI_TOLERANS = 0.005
+
+function yuvarlaTaksitToplam(tutarlar: number[]): number {
+  return Math.round(tutarlar.reduce((s, t) => s + t, 0) * 100) / 100
+}
+
+function taksitPlaniToplamUygunMu(kalan: number, toplam: number): boolean {
+  if (!Number.isFinite(toplam) || toplam <= 0) return false
+  const fark = Math.round((toplam - kalan) * 100) / 100
+  return Math.abs(fark) <= TAKSIT_PLANI_TOLERANS
 }
 
 async function nextTaksitNo(tx: Prisma.TransactionClient, vekaletUcretiId: string): Promise<number> {
@@ -546,14 +550,6 @@ export async function createTekVekaletTaksiti(
     throw new AppError(400, 'Kalan vekalet tutarı yok.', 'NO_REMAINING_VEKALET')
   }
 
-  if (hasAcikVekaletTaksiti(vekalet.taksitler)) {
-    throw new AppError(
-      409,
-      'Açık taksitler var. Tek taksit oluşturmak için önce mevcut açık taksitleri silin veya düzenleyin.',
-      'OPEN_TAKSIT_CONFLICT'
-    )
-  }
-
   const maxTutar = Math.min(kalanPlan, kalanVekalet)
   const tutarNum = body.tutar ?? maxTutar
   if (tutarNum <= 0 || tutarNum > maxTutar + 0.0001) {
@@ -616,32 +612,63 @@ export async function createVekaletTaksitPlani(
     throw new AppError(400, 'Taksitlendirilebilir kalan tutar yok.', 'NO_REMAINING')
   }
 
-  if (hasAcikVekaletTaksiti(vekalet.taksitler)) {
-    throw new AppError(
-      409,
-      'Açık taksitler var. Taksit planı oluşturmak için önce mevcut açık taksitleri silin veya düzenleyin.',
-      'OPEN_TAKSIT_CONFLICT'
-    )
-  }
+  type PlanSatir = { tutar: number; vadeTarihi: Date; aciklama: string | null }
+  let kayitlar: PlanSatir[] = []
 
-  const tutarlar = hesaplaSabitTaksitPlani(Number(body.taksitTutari), body.taksitSayisi)
-  if (!tutarlar || tutarlar.length === 0) {
-    throw new AppError(400, 'Geçerli bir taksit planı oluşturulamadı.', 'INVALID_PLAN')
-  }
-  const planToplam = Math.round(tutarlar.reduce((s, t) => s + t, 0) * 100) / 100
-  if (planToplam > kalanPlan + 0.005) {
-    throw new AppError(
-      400,
-      `Plan toplamı (${planToplam.toFixed(2)}) kalan taksitlendirilebilir tutarı (${kalanPlan.toFixed(2)}) aşıyor.`,
-      'PLAN_EXCEEDS_REMAINING'
-    )
+  if (body.tip === 'OZEL') {
+    const satirlar = body.satirlar ?? []
+    if (satirlar.length < 1 || satirlar.length > 120) {
+      throw new AppError(400, 'Geçerli bir taksit planı oluşturulamadı.', 'INVALID_PLAN')
+    }
+    const tutarlar = satirlar.map((s) => Number(s.tutar))
+    const planToplam = yuvarlaTaksitToplam(tutarlar)
+    if (planToplam > kalanPlan + TAKSIT_PLANI_TOLERANS) {
+      throw new AppError(
+        400,
+        `Plan toplamı (${planToplam.toFixed(2)}) kalan taksitlendirilebilir tutarı (${kalanPlan.toFixed(2)}) aşıyor.`,
+        'PLAN_EXCEEDS_REMAINING'
+      )
+    }
+    if (!taksitPlaniToplamUygunMu(kalanPlan, planToplam)) {
+      throw new AppError(
+        400,
+        'Taksit toplamı kalan vekalet tutarıyla eşleşmiyor.',
+        'PLAN_TOTAL_MISMATCH'
+      )
+    }
+    kayitlar = satirlar.map((s) => ({
+      tutar: Number(s.tutar),
+      vadeTarihi: s.vadeTarihi,
+      aciklama: s.aciklama?.trim() || null
+    }))
+  } else {
+    if (body.taksitTutari == null || body.taksitSayisi == null || body.ilkVadeTarihi == null) {
+      throw new AppError(400, 'Eşit plan için tutar, adet ve vade zorunludur.', 'VALIDATION_ERROR')
+    }
+    const tutarlar = hesaplaSabitTaksitPlani(Number(body.taksitTutari), body.taksitSayisi)
+    if (!tutarlar || tutarlar.length === 0) {
+      throw new AppError(400, 'Geçerli bir taksit planı oluşturulamadı.', 'INVALID_PLAN')
+    }
+    const planToplam = yuvarlaTaksitToplam(tutarlar)
+    if (planToplam > kalanPlan + TAKSIT_PLANI_TOLERANS) {
+      throw new AppError(
+        400,
+        `Plan toplamı (${planToplam.toFixed(2)}) kalan taksitlendirilebilir tutarı (${kalanPlan.toFixed(2)}) aşıyor.`,
+        'PLAN_EXCEEDS_REMAINING'
+      )
+    }
+    kayitlar = tutarlar.map((tutar, i) => ({
+      tutar,
+      vadeTarihi: vadeEkleAy(body.ilkVadeTarihi!, i),
+      aciklama: body.aciklama?.trim() || null
+    }))
   }
 
   const meta = getRequestMeta(req)
   const created: VekaletTaksiti[] = []
   await prisma.$transaction(async (tx) => {
     let taksitNo = await nextTaksitNo(tx, vekalet.id)
-    for (let i = 0; i < tutarlar.length; i++) {
+    for (const satir of kayitlar) {
       const row = await tx.vekaletTaksiti.create({
         data: {
           tenantId,
@@ -649,9 +676,9 @@ export async function createVekaletTaksitPlani(
           muvekkilId: dosya.muvekkilId,
           vekaletUcretiId: vekalet.id,
           taksitNo,
-          vadeTarihi: vadeEkleAy(body.ilkVadeTarihi, i),
-          tutar: new PrismaNamespace.Decimal(tutarlar[i]),
-          aciklama: body.aciklama?.trim() || null,
+          vadeTarihi: satir.vadeTarihi,
+          tutar: new PrismaNamespace.Decimal(satir.tutar),
+          aciklama: satir.aciklama,
           createdById: userId
         }
       })

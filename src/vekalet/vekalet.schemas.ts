@@ -64,12 +64,42 @@ export const createVekaletPesinOdemeBodySchema = createVekaletTaksitOdemeBodySch
 
 export type CreateVekaletPesinOdemeBody = z.infer<typeof createVekaletPesinOdemeBodySchema>
 
-export const createVekaletTaksitPlaniBodySchema = z.object({
-  taksitSayisi: z.coerce.number().int().min(1).max(120),
-  ilkVadeTarihi: z.coerce.date(),
-  taksitTutari: tutarPositive,
-  aciklama: z.string().trim().max(4000).optional().nullable()
-})
+export const createVekaletTaksitPlaniBodySchema = z
+  .object({
+    tip: z.enum(['ESIT', 'OZEL']).default('ESIT'),
+    taksitSayisi: z.coerce.number().int().min(1).max(120).optional(),
+    ilkVadeTarihi: z.coerce.date().optional(),
+    taksitTutari: tutarPositive.optional(),
+    aciklama: z.string().trim().max(4000).optional().nullable(),
+    satirlar: z
+      .array(
+        z.object({
+          tutar: tutarPositive,
+          vadeTarihi: z.coerce.date(),
+          aciklama: z.string().trim().max(4000).optional().nullable()
+        })
+      )
+      .min(1)
+      .max(120)
+      .optional()
+  })
+  .superRefine((data, ctx) => {
+    if (data.tip === 'OZEL') {
+      if (!data.satirlar || data.satirlar.length < 1) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Özel plan için en az bir satır gerekir.', path: ['satirlar'] })
+      }
+      return
+    }
+    if (data.taksitSayisi == null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Taksit sayısı zorunludur.', path: ['taksitSayisi'] })
+    }
+    if (data.ilkVadeTarihi == null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'İlk vade tarihi zorunludur.', path: ['ilkVadeTarihi'] })
+    }
+    if (data.taksitTutari == null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Taksit tutarı zorunludur.', path: ['taksitTutari'] })
+    }
+  })
 
 export type CreateVekaletTaksitPlaniBody = z.infer<typeof createVekaletTaksitPlaniBodySchema>
 

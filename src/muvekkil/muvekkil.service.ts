@@ -22,6 +22,7 @@ export function serializeMuvekkil(m: Muvekkil): Record<string, unknown> {
     sirketUnvani: m.sirketUnvani,
     telefon: m.telefon,
     eposta: m.eposta,
+    adres: m.adres,
     not: m.notMetni,
     yetkiliAdSoyad: m.yetkiliAdSoyad,
     yetkiliTelefon: m.yetkiliTelefon,
@@ -46,6 +47,7 @@ function buildMuvekkilUncheckedFields(body: CreateMuvekkilBody): Omit<Prisma.Muv
     sirketUnvani: body.sirketUnvani,
     telefon: body.telefon.trim() || null,
     eposta: body.eposta,
+    adres: body.adres,
     notMetni: body.not,
     yetkiliAdSoyad: body.yetkiliAdSoyad.trim(),
     yetkiliTelefon: body.yetkiliTelefon.trim(),
@@ -72,7 +74,8 @@ export async function listMuvekkiller(tenantId: string, query: ListMuvekkilQuery
             { adSoyad: { contains: q, mode: 'insensitive' } },
             { sirketUnvani: { contains: q, mode: 'insensitive' } },
             { telefon: { contains: q, mode: 'insensitive' } },
-            { eposta: { contains: q, mode: 'insensitive' } }
+            { eposta: { contains: q, mode: 'insensitive' } },
+            { adres: { contains: q, mode: 'insensitive' } }
           ]
         }
       : {})

@@ -210,6 +210,7 @@ export async function runDesktopImportCommit(params: {
                 sirketUnvani: sirket?.trim() || null,
                 telefon: pickStr(r, 'telefon', 'phone')?.trim() || null,
                 eposta: pickStr(r, 'eposta', 'email')?.trim() || null,
+                adres: pickStr(r, 'adres', 'address')?.trim() || null,
                 notMetni: pickStr(r, 'not_metni', 'not', 'notMetni')?.trim() || null,
                 yetkiliAdSoyad: pickStr(r, 'yetkili_ad_soyad', 'yetkiliAdSoyad')?.trim() ?? '',
                 yetkiliTelefon: pickStr(r, 'yetkili_telefon', 'yetkiliTelefon')?.trim() ?? '',
