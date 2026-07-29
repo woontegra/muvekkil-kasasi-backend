@@ -1,11 +1,15 @@
 import type { OdemeYontemi, OfisKasaOdemeYontemi, Prisma, UserRole } from '@prisma/client'
-import { Prisma as PrismaNamespace } from '@prisma/client'
+import { OfisKasaOnayDurumu, Prisma as PrismaNamespace } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
-import type { CreateVekaletPesinOdemeBody, CreateVekaletTaksitOdemeBody } from './vekalet.schemas.js'
+import type {
+  CreateVekaletPesinOdemeBody,
+  CreateVekaletTaksitOdemeBody,
+  UpdateVekaletTaksitOdemeBody
+} from './vekalet.schemas.js'
 import { serializeTenant } from '../auth/auth.service.js'
 import { serializeMuvekkil } from '../muvekkil/muvekkil.service.js'
 import { serializeDosya } from '../dosya/dosya.service.js'
@@ -20,6 +24,7 @@ import {
   OFIS_KASA_KATEGORI_VEKALET_TAHSILATI,
   OFIS_KASA_KAYNAK_VEKALET_TAHSILATI
 } from '../ofisKasa/ofisKasa.service.js'
+import { onTaksitOdemeChanged } from '../tahsilatBildirim/sync.service.js'
 
 export type TaksitDurumApi = 'ODENMEDI' | 'KISMI_ODENDI' | 'ODENDI' | 'GECIKTI'
 export type SmmDurumApi = 'YOK' | 'BEKLIYOR' | 'KESILDI'
@@ -257,6 +262,8 @@ export async function createVekaletTaksitOdeme(
     throw new AppError(500, 'Taksit güncellenemedi.', 'INTERNAL')
   }
 
+  void onTaksitOdemeChanged(tenantId, taksitId).catch(() => {})
+
   return serializeVekaletTaksitiWithOzet(fresh, fresh.odemeler)
 }
 
@@ -384,6 +391,164 @@ export async function listVekaletTaksitOdemeler(
   return rows.map(serializeVekaletTaksitOdeme)
 }
 
+export async function updateVekaletTaksitOdeme(
+  tenantId: string,
+  userId: string,
+  odemeId: string,
+  body: UpdateVekaletTaksitOdemeBody,
+  req: Request
+): Promise<Record<string, unknown>> {
+  const existing = await prisma.vekaletTaksitOdeme.findFirst({
+    where: { id: odemeId, tenantId },
+    include: {
+      taksit: {
+        include: {
+          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] }
+        }
+      },
+      ofisKasaHareket: true
+    }
+  })
+  if (!existing) {
+    throw new AppError(404, 'Ödeme kaydı bulunamadı.', 'NOT_FOUND')
+  }
+  if (existing.taksit.odemeDurumu === 'IPTAL') {
+    throw new AppError(400, 'İptal edilmiş taksit ödemesi düzenlenemez.', 'INVALID_STATE')
+  }
+
+  const otherSum = sumOdemeler(existing.taksit.odemeler.filter((o) => o.id !== existing.id))
+  const taksitTutari = Number(existing.taksit.tutar)
+  const maxAllowed = Math.max(0, taksitTutari - otherSum)
+  const newTutar = body.tutar != null ? Number(body.tutar) : Number(existing.tutar)
+
+  if (newTutar > maxAllowed + 0.0001) {
+    throw new AppError(
+      400,
+      'Ödeme tutarı kalan taksit tutarını aşamaz.',
+      'TAKSIT_OVERPAYMENT'
+    )
+  }
+
+  const meta = getRequestMeta(req)
+  const odemeTarihi = body.odemeTarihi ?? existing.odemeTarihi
+  const odemeYontemi = body.odemeYontemi ?? existing.odemeYontemi
+  const aciklama =
+    body.aciklama === undefined ? existing.aciklama : body.aciklama?.trim() || null
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.vekaletTaksitOdeme.update({
+      where: { id: existing.id },
+      data: {
+        tutar: new PrismaNamespace.Decimal(newTutar),
+        odemeTarihi,
+        odemeYontemi,
+        aciklama
+      }
+    })
+
+    if (existing.ofisKasaHareketId) {
+      await tx.ofisKasaHareketi.update({
+        where: { id: existing.ofisKasaHareketId },
+        data: {
+          tutar: new PrismaNamespace.Decimal(newTutar),
+          tarih: odemeTarihi,
+          odemeYontemi: toOfisOdemeYontemi(odemeYontemi),
+          updatedById: userId
+        }
+      })
+    }
+
+    await syncTaksitOdemeDurumu(tx, existing.taksitId, userId)
+    return row
+  })
+
+  await writeAuditLog({
+    tenantId,
+    userId,
+    action: 'VEKALET_TAKSIT_ODEME_UPDATED',
+    entityType: 'VekaletTaksitOdeme',
+    entityId: updated.id,
+    oldValue: serializeVekaletTaksitOdeme(existing),
+    newValue: serializeVekaletTaksitOdeme(updated),
+    meta: { taksitId: existing.taksitId },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  void onTaksitOdemeChanged(tenantId, existing.taksitId).catch(() => {})
+
+  return serializeVekaletTaksitOdeme(updated)
+}
+
+export async function deleteVekaletTaksitOdeme(
+  tenantId: string,
+  userId: string,
+  odemeId: string,
+  req: Request
+): Promise<{ ok: true; taksitId: string }> {
+  const existing = await prisma.vekaletTaksitOdeme.findFirst({
+    where: { id: odemeId, tenantId },
+    include: { ofisKasaHareket: true }
+  })
+  if (!existing) {
+    throw new AppError(404, 'Ödeme kaydı bulunamadı.', 'NOT_FOUND')
+  }
+
+  const ofisId = existing.ofisKasaHareketId
+
+  if (existing.ofisKasaHareket?.onayDurumu === OfisKasaOnayDurumu.ONAYLI) {
+    throw new AppError(
+      400,
+      'Onaylı ofis kasa hareketi olan tahsilat silinemez. Önce ofis kasasında ilgili kaydı geri alın.',
+      'OFIS_KASA_APPROVED'
+    )
+  }
+
+  if (ofisId) {
+    const linkedDuzeltme = await prisma.ofisKasaHareketi.count({
+      where: { tenantId, orijinalHareketId: ofisId }
+    })
+    if (linkedDuzeltme > 0) {
+      throw new AppError(
+        400,
+        'Bu tahsilata bağlı ofis kasa düzeltmesi bulunduğu için silinemez.',
+        'OFIS_KASA_HAS_DUZELTME'
+      )
+    }
+  }
+
+  const meta = getRequestMeta(req)
+  const taksitId = existing.taksitId
+
+  await prisma.$transaction(async (tx) => {
+    await tx.vekaletTaksitOdeme.update({
+      where: { id: existing.id },
+      data: { ofisKasaHareketId: null }
+    })
+    if (ofisId) {
+      await tx.ofisKasaHareketi.delete({ where: { id: ofisId } })
+    }
+    await tx.vekaletTaksitOdeme.delete({ where: { id: existing.id } })
+    await syncTaksitOdemeDurumu(tx, taksitId, userId)
+  })
+
+  await writeAuditLog({
+    tenantId,
+    userId,
+    action: 'VEKALET_TAKSIT_ODEME_DELETED',
+    entityType: 'VekaletTaksitOdeme',
+    entityId: odemeId,
+    oldValue: serializeVekaletTaksitOdeme(existing),
+    meta: { taksitId },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  void onTaksitOdemeChanged(tenantId, taksitId).catch(() => {})
+
+  return { ok: true, taksitId }
+}
+
 export async function markVekaletTaksitOdemeSmm(
   tenantId: string,
   userId: string,
@@ -442,6 +607,12 @@ export async function getVekaletTaksitOdemeMakbuz(
 
   const pack = await getDosyaVekaletPackage(tenantId, odeme.dosyaId)
   const taksitOzet = pack?.taksitler.find((t) => t.id === odeme.taksitId) ?? null
+  const taksitOdenen =
+    typeof taksitOzet?.odenenToplam === 'string' ? taksitOzet.odenenToplam : '0.00'
+  const taksitKalan =
+    typeof taksitOzet?.kalanTutar === 'string' ? taksitOzet.kalanTutar : '0.00'
+  const taksitDurum =
+    typeof taksitOzet?.durum === 'string' ? taksitOzet.durum : null
 
   return {
     buro: serializeTenant(odeme.tenant),
@@ -451,6 +622,9 @@ export async function getVekaletTaksitOdemeMakbuz(
     dosyaNo: odeme.dosya.dosyaNo,
     taksitNo: odeme.taksit.taksitNo,
     taksitTutari: decimalStr(odeme.taksit.tutar),
+    taksitOdenenToplam: taksitOdenen,
+    taksitKalanTutar: taksitKalan,
+    taksitDurum,
     odemeTarihi: odeme.odemeTarihi.toISOString(),
     odemeYontemi: odeme.odemeYontemi,
     tahsilatTutari: decimalStr(odeme.tutar),

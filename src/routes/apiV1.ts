@@ -19,6 +19,10 @@ import { icraTahsilatRouter } from '../icraTahsilat/icraTahsilat.routes.js'
 import { primRouter } from '../prim/prim.routes.js'
 import { primPersonelRouter } from '../primPersonel/primPersonel.routes.js'
 import { reportsRouter } from '../reports/reports.routes.js'
+import { maliKontrolRouter } from '../maliKontrol/maliKontrol.routes.js'
+import { tahsilatMerkeziRouter } from '../tahsilatMerkezi/tahsilatMerkezi.routes.js'
+import { tahsilatBildirimRouter } from '../tahsilatBildirim/tahsilatBildirim.routes.js'
+import { whatsappWebhookRouter } from '../tahsilatBildirim/webhook.routes.js'
 import { Permission } from '../permissions/roles.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
@@ -28,6 +32,7 @@ export const apiV1Router = Router()
 
 apiV1Router.use('/admin', adminRouter)
 apiV1Router.use('/integrations/woontegra-website', woontegraWebsiteProvisionRouter)
+apiV1Router.use('/integrations/whatsapp', whatsappWebhookRouter)
 apiV1Router.use(tenantContext)
 apiV1Router.use('/auth', authRouter)
 apiV1Router.use('/muvekkiller', muvekkillerRouter)
@@ -40,6 +45,9 @@ apiV1Router.use('/icra-tahsilat', icraTahsilatRouter)
 apiV1Router.use('/prim', primRouter)
 apiV1Router.use('/prim-personel', primPersonelRouter)
 apiV1Router.use('/reports', reportsRouter)
+apiV1Router.use('/mali-kontrol', maliKontrolRouter)
+apiV1Router.use('/tahsilat-merkezi', tahsilatMerkeziRouter)
+apiV1Router.use('/tahsilat-bildirim', tahsilatBildirimRouter)
 apiV1Router.use('/dashboard', dashboardRouter)
 apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)

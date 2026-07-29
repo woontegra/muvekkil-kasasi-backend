@@ -3,7 +3,7 @@ import { MuvekkilTur } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
-import type { CreateMuvekkilBody, ListMuvekkilQuery } from './muvekkil.schemas.js'
+import type { CreateMuvekkilBody, ListMuvekkilQuery, UpdateMuvekkilBody } from './muvekkil.schemas.js'
 import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
 
@@ -30,6 +30,7 @@ export function serializeMuvekkil(m: Muvekkil): Record<string, unknown> {
     mudurTelefon: m.mudurTelefon,
     muhasebeAdSoyad: m.muhasebeAdSoyad,
     muhasebeTelefon: m.muhasebeTelefon,
+    otomatikBildirimIzni: m.otomatikBildirimIzni,
     aktifMi: m.aktifMi,
     createdById: m.createdById,
     updatedById: m.updatedById,
@@ -135,7 +136,7 @@ export async function updateMuvekkil(
   tenantId: string,
   userId: string,
   id: string,
-  body: CreateMuvekkilBody,
+  body: UpdateMuvekkilBody,
   req: Request
 ): Promise<Muvekkil> {
   const meta = getRequestMeta(req)
@@ -150,6 +151,9 @@ export async function updateMuvekkil(
     where: { id },
     data: {
       ...data,
+      ...(body.otomatikBildirimIzni !== undefined
+        ? { otomatikBildirimIzni: body.otomatikBildirimIzni }
+        : {}),
       updatedById: userId
     }
   })

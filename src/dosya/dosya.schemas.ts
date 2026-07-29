@@ -22,7 +22,9 @@ const dosyaWriteFields = z.object({
 export const createDosyaBodySchema = dosyaWriteFields
 export type CreateDosyaBody = z.infer<typeof createDosyaBodySchema>
 
-export const updateDosyaBodySchema = dosyaWriteFields
+export const updateDosyaBodySchema = dosyaWriteFields.extend({
+  otomatikBildirimAktif: z.boolean().optional()
+})
 export type UpdateDosyaBody = z.infer<typeof updateDosyaBodySchema>
 
 export const listDosyaForMuvekkilQuerySchema = z.object({

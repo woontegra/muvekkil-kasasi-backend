@@ -15,6 +15,7 @@ import {
 } from './muvekkil.service.js'
 import { createDosyaBodySchema, listDosyaForMuvekkilQuerySchema } from '../dosya/dosya.schemas.js'
 import { createDosya, listDosyalarForMuvekkil, serializeDosya } from '../dosya/dosya.service.js'
+import { getMuvekkilKarlilik } from '../dosya/dosyaMaliOzet.service.js'
 
 export const muvekkillerRouter = Router()
 
@@ -130,6 +131,21 @@ muvekkillerRouter.put(
     const userId = req.auth!.sub
     const updated = await updateMuvekkil(tenantId, userId, id, body, req)
     res.json({ ok: true, muvekkil: serializeMuvekkil(updated) })
+  })
+)
+
+muvekkillerRouter.get(
+  '/:id/karlilik',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const data = await getMuvekkilKarlilik(tenantId, id)
+    if (!data) {
+      res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Müvekkil bulunamadı.' })
+      return
+    }
+    res.json({ ok: true, ...data })
   })
 )
 

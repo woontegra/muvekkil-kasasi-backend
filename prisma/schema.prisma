@@ -15,6 +15,11 @@ enum TenantLicenseStatus {
   PASIF
 }
 
+enum HesapDonemiModu {
+  MONTHLY
+  YEARLY
+}
+
 /// Hukuk bürosu / kiracı
 model Tenant {
   id           String   @id @default(uuid())
@@ -26,6 +31,7 @@ model Tenant {
   vergiNo      String?  @map("vergi_no")
   vergiDairesi String?  @map("vergi_dairesi")
   aktifMi      Boolean  @default(true) @map("aktif_mi")
+  hesapDonemiModu HesapDonemiModu @default(MONTHLY) @map("hesap_donemi_modu")
 
   lisansBaslangicTarihi DateTime?             @map("lisans_baslangic")
   lisansBitisTarihi     DateTime?             @map("lisans_bitis")
@@ -66,6 +72,12 @@ model Tenant {
   icraTahsilatTaksitleri IcraTahsilatTaksit[]
   icraTahsilatOdemeleri  IcraTahsilatOdeme[]
   licenseRenewals        TenantLicenseRenewal[]
+  tahsilatBildirimAyar   TahsilatBildirimAyar?
+  tahsilatBildirimKurallari TahsilatBildirimKurali[]
+  tahsilatBildirimSablonlari TahsilatBildirimSablonu[]
+  tahsilatBildirimIsleri TahsilatBildirimIsi[]
+  tahsilatBildirimDenemeleri TahsilatBildirimDeneme[]
+  whatsAppBaglanti       WhatsAppBaglanti?
 
   @@map("tenant")
 }
@@ -202,6 +214,8 @@ model Muvekkil {
   mudurTelefon      String      @default("") @map("mudur_telefon")
   muhasebeAdSoyad   String      @default("") @map("muhasebe_ad_soyad")
   muhasebeTelefon   String      @default("") @map("muhasebe_telefon")
+  /// Otomatik tahsilat bildirimi için açık rıza. Varsayılan kapalı (güvenli).
+  otomatikBildirimIzni Boolean  @default(false) @map("otomatik_bildirim_izni")
   aktifMi           Boolean     @default(true) @map("aktif_mi")
   createdById       String      @map("created_by_id")
   createdBy         User        @relation("MuvekkilCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
@@ -215,6 +229,7 @@ model Muvekkil {
   vekaletTaksitleri  VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
+  tahsilatBildirimIsleri TahsilatBildirimIsi[]
 
   @@index([tenantId, aktifMi])
   @@index([tenantId, gorunenAd])
@@ -248,6 +263,8 @@ model Dosya {
   dosyaTuru    DosyaTuru    @map("dosya_turu")
   durum        DosyaDurumu
   aciklama     String?
+  /// Dosya düzeyinde otomatik tahsilat bildirimi. Varsayılan açık; kapatılabilir.
+  otomatikBildirimAktif Boolean @default(true) @map("otomatik_bildirim_aktif")
   aktifMi      Boolean      @default(true) @map("aktif_mi")
   createdById  String       @map("created_by_id")
   createdBy    User         @relation("DosyaCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
@@ -260,6 +277,7 @@ model Dosya {
   vekaletTaksitleri VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
+  tahsilatBildirimIsleri TahsilatBildirimIsi[]
 
   @@index([tenantId, muvekkilId, aktifMi])
   @@index([tenantId, aktifMi])
@@ -457,6 +475,7 @@ model VekaletTaksiti {
   createdAt       DateTime                 @default(now()) @map("created_at")
   updatedAt       DateTime                 @updatedAt @map("updated_at")
   odemeler        VekaletTaksitOdeme[]
+  tahsilatBildirimIsleri TahsilatBildirimIsi[]
 
   @@unique([vekaletUcretiId, taksitNo])
   @@index([tenantId, dosyaId])
@@ -765,6 +784,163 @@ model ImportBatch {
   @@index([tenantId, sourceFingerprint])
   @@index([tenantId, status])
   @@map("import_batch")
+}
+
+/// Otomatik tahsilat bildirimi — Faz 1 altyapısı
+enum BildirimKanali {
+  WHATSAPP
+}
+
+enum BildirimKuralTuru {
+  VADEDEN_ONCE
+  VADE_GUNU
+  VADE_SONRASI
+}
+
+enum BildirimIsDurumu {
+  PLANLANDI
+  KUYRUKTA
+  SIMULASYON_TAMAMLANDI
+  GONDERILDI
+  TESLIM_EDILDI
+  OKUNDU
+  BASARISIZ
+  IPTAL_EDILDI
+  ATLANDI
+}
+
+enum WhatsAppBaglantiDurumu {
+  BAGLI_DEGIL
+  ONAY_BEKLIYOR
+  BAGLI
+  HATA
+}
+
+/// Tenant bazlı otomatik tahsilat bildirim ayarları. Varsayılan: kapalı + test modu.
+model TahsilatBildirimAyar {
+  id                    String   @id @default(uuid())
+  tenantId              String   @unique @map("tenant_id")
+  tenant                Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Büro otomasyonu genel anahtar. Varsayılan kapalı.
+  otomasyonAktif        Boolean  @default(false) @map("otomasyon_aktif")
+  /// Faz 1: gerçek gönderim yok; simülasyon. Meta onayı sonrası Faz 2'de kapatılabilir.
+  testModu              Boolean  @default(true) @map("test_modu")
+  /// Europe/Istanbul saat diliminde izin verilen gönderim penceresi (dakika 0–1439).
+  izinliSaatBaslangic   Int      @default(600) @map("izinli_saat_baslangic")
+  izinliSaatBitis       Int      @default(1200) @map("izinli_saat_bitis")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("tahsilat_bildirim_ayar")
+}
+
+model TahsilatBildirimKurali {
+  id              String            @id @default(uuid())
+  tenantId        String            @map("tenant_id")
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kuralTuru       BildirimKuralTuru @map("kural_turu")
+  aktifMi         Boolean           @default(false) @map("aktif_mi")
+  /// VADEDEN_ONCE / VADE_SONRASI için gün sayısı; VADE_GUNU için 0.
+  gunOffset       Int               @map("gun_offset")
+  /// Gönderim saati (Europe/Istanbul), dakika cinsinden. Varsayılan 10:00 = 600.
+  gonderimSaatiDk Int               @default(600) @map("gonderim_saati_dk")
+  kanal           BildirimKanali    @default(WHATSAPP)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  @@unique([tenantId, kuralTuru, kanal])
+  @@index([tenantId, aktifMi])
+  @@map("tahsilat_bildirim_kurali")
+}
+
+model TahsilatBildirimSablonu {
+  id         String            @id @default(uuid())
+  tenantId   String            @map("tenant_id")
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kuralTuru  BildirimKuralTuru @map("kural_turu")
+  kanal      BildirimKanali    @default(WHATSAPP)
+  /// Yerel önizleme şablonu (Meta şablonu değil). Değişkenler: {muvekkilAdi} vb.
+  metin      String
+  createdAt  DateTime          @default(now()) @map("created_at")
+  updatedAt  DateTime          @updatedAt @map("updated_at")
+
+  @@unique([tenantId, kuralTuru, kanal])
+  @@map("tahsilat_bildirim_sablonu")
+}
+
+model TahsilatBildirimIsi {
+  id                 String           @id @default(uuid())
+  tenantId           String           @map("tenant_id")
+  tenant             Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  muvekkilId         String           @map("muvekkil_id")
+  muvekkil           Muvekkil         @relation(fields: [muvekkilId], references: [id], onDelete: Cascade)
+  dosyaId            String           @map("dosya_id")
+  dosya              Dosya            @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  taksitId           String           @map("taksit_id")
+  taksit             VekaletTaksiti   @relation(fields: [taksitId], references: [id], onDelete: Cascade)
+  kanal              BildirimKanali   @default(WHATSAPP)
+  kuralTuru          BildirimKuralTuru @map("kural_turu")
+  planlananAt        DateTime         @map("planlanan_at")
+  /// Planlama anındaki kalan tutar anlık görüntüsü (gönderilmiş işlerde korunur).
+  kalanTutarSnapshot Decimal          @db.Decimal(14, 2) @map("kalan_tutar_snapshot")
+  durum              BildirimIsDurumu @default(PLANLANDI)
+  iptalNedeni        String?          @map("iptal_nedeni")
+  atlamaNedeni       String?          @map("atlama_nedeni")
+  hataOzeti          String?          @map("hata_ozeti")
+  denemeSayisi       Int              @default(0) @map("deneme_sayisi")
+  sonDenemeAt        DateTime?        @map("son_deneme_at")
+  /// tenant|taksit|kural|kanal|planYmd — DB unique mükerrerlik
+  idempotencyKey     String           @unique @map("idempotency_key")
+  lockedAt           DateTime?        @map("locked_at")
+  lockedBy           String?          @map("locked_by")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  denemeler          TahsilatBildirimDeneme[]
+
+  @@index([tenantId, durum, planlananAt])
+  @@index([tenantId, taksitId, durum])
+  @@index([durum, planlananAt])
+  @@map("tahsilat_bildirim_isi")
+}
+
+model TahsilatBildirimDeneme {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isId            String   @map("is_id")
+  is              TahsilatBildirimIsi @relation(fields: [isId], references: [id], onDelete: Cascade)
+  /// MOCK_SIMULATION | META_DISABLED | ...
+  provider        String
+  basariliMi      Boolean  @map("basarili_mi")
+  /// Maskelenmiş telefon (tam numara saklanmaz).
+  telefonMaskeli  String?  @map("telefon_maskeli")
+  sablonOzeti     String?  @map("sablon_ozeti")
+  mesajOzeti      String?  @map("mesaj_ozeti")
+  sonucKodu       String?  @map("sonuc_kodu")
+  sonucMesaji     String?  @map("sonuc_mesaji")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@index([isId, createdAt])
+  @@map("tahsilat_bildirim_deneme")
+}
+
+/// Tenant WhatsApp bağlantı durumu. Faz 1: gerçek token kaydı kapalı.
+model WhatsAppBaglanti {
+  id                    String                 @id @default(uuid())
+  tenantId              String                 @unique @map("tenant_id")
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  durum                 WhatsAppBaglantiDurumu @default(BAGLI_DEGIL)
+  /// Faz 2: yalnızca şifrelenmiş değer. Faz 1'de null bırakılır; düz metin token kabul edilmez.
+  /// Teknik not: projede henüz secret encryption yok; gerçek token kaydı Faz 2'ye kapalı.
+  accessTokenEncrypted  String?                @map("access_token_encrypted")
+  wabaIdMasked          String?                @map("waba_id_masked")
+  phoneNumberIdMasked   String?                @map("phone_number_id_masked")
+  sonHataOzeti          String?                @map("son_hata_ozeti")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+
+  @@map("whatsapp_baglanti")
 }
 
 /// Woontegra platform yöneticisi (büro kullanıcısı değildir).

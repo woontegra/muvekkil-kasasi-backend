@@ -64,6 +64,16 @@ export const createVekaletPesinOdemeBodySchema = createVekaletTaksitOdemeBodySch
 
 export type CreateVekaletPesinOdemeBody = z.infer<typeof createVekaletPesinOdemeBodySchema>
 
+/** Kısmi/tam tahsilat kaydını düzenleme — tutar kalan borç + bu kaydın eski tutarını aşamaz. */
+export const updateVekaletTaksitOdemeBodySchema = z.object({
+  tutar: tutarPositive.optional(),
+  odemeTarihi: z.coerce.date().optional(),
+  odemeYontemi: z.nativeEnum(OdemeYontemi).optional(),
+  aciklama: z.string().trim().max(4000).optional().nullable()
+})
+
+export type UpdateVekaletTaksitOdemeBody = z.infer<typeof updateVekaletTaksitOdemeBodySchema>
+
 export const createVekaletTaksitPlaniBodySchema = z
   .object({
     tip: z.enum(['ESIT', 'OZEL']).default('ESIT'),

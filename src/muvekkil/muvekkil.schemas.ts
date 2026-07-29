@@ -67,7 +67,13 @@ export const createMuvekkilBodySchema = muvekkilWriteBase
 
 export type CreateMuvekkilBody = z.infer<typeof createMuvekkilBodySchema>
 
-export const updateMuvekkilBodySchema = createMuvekkilBodySchema
+export const updateMuvekkilBodySchema = createMuvekkilBodySchema.and(
+  z.object({
+    otomatikBildirimIzni: z.boolean().optional()
+  })
+)
+
+export type UpdateMuvekkilBody = z.infer<typeof updateMuvekkilBodySchema>
 
 export const listMuvekkilQuerySchema = z.object({
   q: z.string().trim().optional().default(''),

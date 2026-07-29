@@ -4,11 +4,14 @@ import { UserRole } from '@prisma/client'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireRole } from '../middleware/requireRole.js'
+import { updateVekaletTaksitOdemeBodySchema } from './vekalet.schemas.js'
 import {
   createVekaletTaksitOdeme,
+  deleteVekaletTaksitOdeme,
   getVekaletTaksitOdemeMakbuz,
   listVekaletTaksitOdemeler,
-  markVekaletTaksitOdemeSmm
+  markVekaletTaksitOdemeSmm,
+  updateVekaletTaksitOdeme
 } from './vekaletTaksitOdeme.service.js'
 
 export const vekaletTaksitOdemeleriRouter = Router()
@@ -22,6 +25,33 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
     void fn(req, res, next).catch(next)
   }
 }
+
+vekaletTaksitOdemeleriRouter.put(
+  '/:id',
+  requireAuth,
+  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const body = updateVekaletTaksitOdemeBodySchema.parse(req.body)
+    const odeme = await updateVekaletTaksitOdeme(tenantId, userId, id, body, req)
+    res.json({ ok: true, odeme })
+  })
+)
+
+vekaletTaksitOdemeleriRouter.delete(
+  '/:id',
+  requireAuth,
+  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const result = await deleteVekaletTaksitOdeme(tenantId, userId, id, req)
+    res.json(result)
+  })
+)
 
 vekaletTaksitOdemeleriRouter.post(
   '/:id/smm-kesildi',

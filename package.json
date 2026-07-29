@@ -11,7 +11,11 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "seed:admin": "tsx src/admin/seedAdmin.ts",
-    "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts"
+    "e2e:provision": "tsx scripts/e2e-provision-test-tenant.ts",
+    "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts",
+    "test:vekalet-kismi": "tsx scripts/test-vekalet-kismi-odeme.ts",
+    "bildirim:scheduler": "tsx scripts/tahsilat-bildirim-scheduler.ts",
+    "bildirim:worker": "tsx scripts/tahsilat-bildirim-worker.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

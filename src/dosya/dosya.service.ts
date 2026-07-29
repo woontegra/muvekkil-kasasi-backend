@@ -23,6 +23,7 @@ export function serializeDosya(d: Dosya): Record<string, unknown> {
     dosyaTuru: d.dosyaTuru,
     durum: d.durum,
     aciklama: d.aciklama,
+    otomatikBildirimAktif: d.otomatikBildirimAktif,
     aktifMi: d.aktifMi,
     createdById: d.createdById,
     updatedById: d.updatedById,
@@ -52,7 +53,10 @@ function buildDosyaUpdateFields(body: UpdateDosyaBody): Prisma.DosyaUncheckedUpd
     dosyaNo: body.dosyaNo,
     dosyaTuru: body.dosyaTuru,
     durum: body.durum,
-    aciklama: body.aciklama
+    aciklama: body.aciklama,
+    ...(body.otomatikBildirimAktif !== undefined
+      ? { otomatikBildirimAktif: body.otomatikBildirimAktif }
+      : {})
   }
 }
 

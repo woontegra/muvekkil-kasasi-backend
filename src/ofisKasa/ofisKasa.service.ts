@@ -16,6 +16,13 @@ import type {
 } from './ofisKasa.schemas.js'
 import { isDigerGelir, isDigerGider } from './ofisKasa.schemas.js'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
+import {
+  type AccountingPeriodMode,
+  getAccountingPeriod,
+  toLocalYmd,
+  isCurrentAccountingPeriod,
+  canGoToNextAccountingPeriod
+} from '../lib/accountingPeriod.js'
 
 export const OFIS_KASA_DUZELTME_KATEGORI = 'Düzeltme'
 
@@ -201,6 +208,108 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
     buAyGelir: f(buAyGelir),
     buAyGider: f(buAyGider)
   }
+}
+
+/**
+ * Hesap dönemi bazlı anasayfa özeti — mevcut getOfisKasaOzet'e dokunmaz.
+ * Tarih sınırlarında Türkiye yerel günü esas alınır (YYYY-MM-DD karşılaştırma).
+ * Yalnızca ONAYLI hareketler dahil; REDDEDILDI/ONAYSIZ hariç tutulur.
+ */
+export async function getOfisKasaAnaSayfaOzet(
+  tenantId: string,
+  referenceDate?: string
+): Promise<{
+  mode: string
+  period: { bas: string; bit: string; etiket: string }
+  isCurrent: boolean
+  canGoNext: boolean
+  devredenBakiye: string
+  donemGelir: string
+  donemGider: string
+  donemDuzeltmeEtkisi: string
+  donemNetSonucu: string
+  kasaBakiyesi: string
+  bugunGider: string
+}> {
+  const tenant = await prisma.tenant.findUniqueOrThrow({
+    where: { id: tenantId },
+    select: { hesapDonemiModu: true }
+  })
+  const mode = tenant.hesapDonemiModu as AccountingPeriodMode
+  const ref = referenceDate?.slice(0, 10) ?? toLocalYmd()
+  const period = getAccountingPeriod(mode, ref)
+
+  const periodStartDate = new Date(`${period.bas}T00:00:00+03:00`)
+  const nextDayAfterEnd = new Date(`${period.bit}T00:00:00+03:00`)
+  nextDayAfterEnd.setDate(nextDayAfterEnd.getDate() + 1)
+
+  const approvedWhere = {
+    tenantId,
+    onayDurumu: OfisKasaOnayDurumu.ONAYLI
+  } as const
+
+  const [allBeforePeriod, periodRows, lifetimeGelir, lifetimeGider, lifetimeDuzeltme] =
+    await Promise.all([
+      prisma.ofisKasaHareketi.findMany({
+        where: { ...approvedWhere, tarih: { lt: periodStartDate } },
+        select: { islemTipi: true, tutar: true }
+      }),
+      prisma.ofisKasaHareketi.findMany({
+        where: { ...approvedWhere, tarih: { gte: periodStartDate, lt: nextDayAfterEnd } },
+        select: { islemTipi: true, tutar: true, tarih: true }
+      }),
+      sumApprovedByTip(tenantId, OfisKasaIslemTipi.GELIR),
+      sumApprovedByTip(tenantId, OfisKasaIslemTipi.GIDER),
+      sumApprovedByTip(tenantId, OfisKasaIslemTipi.DUZELTME)
+    ])
+
+  let devGelir = 0, devGider = 0, devDuz = 0
+  for (const r of allBeforePeriod) {
+    const t = Number(r.tutar)
+    if (r.islemTipi === 'GELIR') devGelir += t
+    else if (r.islemTipi === 'GIDER') devGider += t
+    else if (r.islemTipi === 'DUZELTME') devDuz += t
+  }
+  const devredenBakiye = devGelir - devGider + devDuz
+
+  let donemGelir = 0, donemGider = 0, donemDuz = 0, bugunGider = 0
+  const bugun = toLocalYmd()
+  for (const r of periodRows) {
+    const t = Number(r.tutar)
+    const tarihYmd = r.tarih.toISOString().slice(0, 10)
+    if (r.islemTipi === 'GELIR') donemGelir += t
+    else if (r.islemTipi === 'GIDER') {
+      donemGider += t
+      if (tarihYmd === bugun) bugunGider += t
+    } else if (r.islemTipi === 'DUZELTME') donemDuz += t
+  }
+  const donemNet = donemGelir - donemGider + donemDuz
+  const kasaBakiyesi = lifetimeGelir - lifetimeGider + lifetimeDuzeltme
+
+  const f = (n: number) => n.toFixed(2)
+  return {
+    mode,
+    period: { bas: period.bas, bit: period.bit, etiket: period.etiket },
+    isCurrent: isCurrentAccountingPeriod(period),
+    canGoNext: canGoToNextAccountingPeriod(period),
+    devredenBakiye: f(devredenBakiye),
+    donemGelir: f(donemGelir),
+    donemGider: f(donemGider),
+    donemDuzeltmeEtkisi: f(donemDuz),
+    donemNetSonucu: f(donemNet),
+    kasaBakiyesi: f(kasaBakiyesi),
+    bugunGider: f(bugunGider)
+  }
+}
+
+export async function updateHesapDonemiModu(
+  tenantId: string,
+  modu: 'MONTHLY' | 'YEARLY'
+): Promise<void> {
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { hesapDonemiModu: modu }
+  })
 }
 
 export async function createOfisKasaHareketi(

@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireRole } from '../middleware/requireRole.js'
 import { updateDosyaBodySchema } from './dosya.schemas.js'
 import { deactivateDosya, getDosyaHesapOzetiForTenant, getDosyaMakbuzlariForTenant, getDosyaWithMuvekkilForTenant, serializeDosya, updateDosya } from './dosya.service.js'
+import { getDosyaMaliOzet } from './dosyaMaliOzet.service.js'
 import { serializeMuvekkil } from '../muvekkil/muvekkil.service.js'
 import {
   createKasaHareketiBodySchema,
@@ -32,8 +33,11 @@ import {
   upsertVekaletUcreti
 } from '../vekalet/vekalet.service.js'
 import { createVekaletPesinOdeme } from '../vekalet/vekaletTaksitOdeme.service.js'
+import { muvekkilEkstreRouter } from '../muvekkilEkstre/muvekkilEkstre.routes.js'
 
 export const dosyalarRouter = Router()
+
+dosyalarRouter.use('/:id/muvekkil-ekstresi', muvekkilEkstreRouter)
 
 const idParamSchema = z.object({ id: z.string().uuid('Geçersiz id.') })
 
@@ -192,6 +196,21 @@ dosyalarRouter.get(
     const { id: dosyaId } = idParamSchema.parse(req.params)
     const tenantId = req.auth!.tenantId
     const data = await getDosyaHesapOzetiForTenant(tenantId, dosyaId)
+    if (!data) {
+      res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Dosya bulunamadı.' })
+      return
+    }
+    res.json({ ok: true, ...data })
+  })
+)
+
+dosyalarRouter.get(
+  '/:id/mali-ozet',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { id: dosyaId } = idParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const data = await getDosyaMaliOzet(tenantId, dosyaId)
     if (!data) {
       res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Dosya bulunamadı.' })
       return

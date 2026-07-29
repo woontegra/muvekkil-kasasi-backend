@@ -25,11 +25,8 @@ export async function resolveTahsilatiYapanPersonel(
   const targetId = requestedPersonelId?.trim() || linked?.id
 
   if (!targetId) {
-    if (!yonetici) {
-      // Alt kullanıcı: bağlı personel yoksa tahsilatı yapan olarak giriş yapan kullanıcı kaydedilir.
-      return { personelId: null, bagliUserId: actorUserId }
-    }
-    throw new AppError(400, 'Tahsilatı yapan personel seçilmelidir.', 'INVALID_PERSONEL')
+    // Seçim / bağlı personel yoksa giriş yapan kullanıcı kaydedilir.
+    return { personelId: null, bagliUserId: actorUserId }
   }
 
   if (!yonetici && linked?.id !== targetId) {

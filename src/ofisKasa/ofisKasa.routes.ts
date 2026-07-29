@@ -17,6 +17,8 @@ import {
   createOfisKasaHareketi,
   deleteOfisKasaHareketi,
   getOfisKasaOzet,
+  getOfisKasaAnaSayfaOzet,
+  updateHesapDonemiModu,
   listOfisKasaHareketleri,
   rejectOfisKasaHareketi,
   serializeOfisKasaHareketi
@@ -46,6 +48,34 @@ ofisKasasiRouter.get(
     const tenantId = req.auth!.tenantId
     const ozet = await getOfisKasaOzet(tenantId)
     res.json({ ok: true, ozet })
+  })
+)
+
+ofisKasasiRouter.get(
+  '/anasayfa-ozet',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const tenantId = req.auth!.tenantId
+    const referenceDate =
+      typeof req.query.referenceDate === 'string' ? req.query.referenceDate : undefined
+    const ozet = await getOfisKasaAnaSayfaOzet(tenantId, referenceDate)
+    res.json({ ok: true, ...ozet })
+  })
+)
+
+const hesapDonemiModuSchema = z.object({
+  hesapDonemiModu: z.enum(['MONTHLY', 'YEARLY'])
+})
+
+ofisKasasiRouter.patch(
+  '/hesap-donemi-modu',
+  requireAuth,
+  requireRole(...YONETICI_ROLLER),
+  asyncHandler(async (req, res) => {
+    const tenantId = req.auth!.tenantId
+    const { hesapDonemiModu } = hesapDonemiModuSchema.parse(req.body)
+    await updateHesapDonemiModu(tenantId, hesapDonemiModu)
+    res.json({ ok: true, hesapDonemiModu })
   })
 )
 
