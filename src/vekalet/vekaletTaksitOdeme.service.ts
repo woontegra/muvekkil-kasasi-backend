@@ -203,23 +203,18 @@ export async function createVekaletTaksitOdeme(
   body: CreateVekaletTaksitOdemeBody,
   req: Request
 ): Promise<Record<string, unknown>> {
-  const taksit = await getTaksitWithOdemeler(tenantId, taksitId)
-  if (!taksit) {
+  const head = await prisma.vekaletTaksiti.findFirst({
+    where: { id: taksitId, tenantId },
+    select: { id: true, odemeDurumu: true }
+  })
+  if (!head) {
     throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
   }
-  if (taksit.odemeDurumu === 'IPTAL') {
+  if (head.odemeDurumu === 'IPTAL') {
     throw new AppError(400, 'İptal edilmiş taksit için ödeme alınamaz.', 'INVALID_STATE')
   }
 
   const tutar = new PrismaNamespace.Decimal(body.tutar)
-  const odenen = sumOdemeler(taksit.odemeler)
-  const taksitTutari = Number(taksit.tutar)
-  const kalan = Math.max(0, taksitTutari - odenen)
-
-  if (Number(tutar) > kalan + 0.0001) {
-    throw new AppError(400, 'Ödeme tutarı kalan taksit tutarını aşamaz.', 'TAKSIT_OVERPAYMENT')
-  }
-
   const meta = getRequestMeta(req)
   const odemeTarihi = body.odemeTarihi ?? new Date()
   const aciklama = body.aciklama?.trim() || null
@@ -230,20 +225,49 @@ export async function createVekaletTaksitOdeme(
     body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId
   )
 
-  const result = await prisma.$transaction(async (tx) => {
-    const odeme = await createVekaletOdemeInTx(tx, {
-      tenantId,
-      userId,
-      taksit,
-      tutar,
-      odemeTarihi,
-      odemeYontemi: body.odemeYontemi,
-      aciklama,
-      tahsilatiPersonelId: tahsilati.personelId,
-      tahsilatiUserId: tahsilati.bagliUserId
-    })
-    return odeme
-  })
+  /** Kalan borç kontrolü satır kilidi içinde — eşzamanlı çift ödeme aşımı engellenir. */
+  const result = await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`
+        SELECT id FROM "vekalet_taksiti"
+        WHERE id = ${taksitId} AND tenant_id = ${tenantId}
+        FOR UPDATE
+      `
+      const taksit = await tx.vekaletTaksiti.findFirst({
+        where: { id: taksitId, tenantId },
+        include: {
+          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+          vekaletUcreti: true,
+          dosya: { select: { konuBasligi: true } },
+          muvekkil: { select: { gorunenAd: true } }
+        }
+      })
+      if (!taksit) {
+        throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
+      }
+      if (taksit.odemeDurumu === 'IPTAL') {
+        throw new AppError(400, 'İptal edilmiş taksit için ödeme alınamaz.', 'INVALID_STATE')
+      }
+      const odenen = sumOdemeler(taksit.odemeler)
+      const kalan = Math.max(0, Number(taksit.tutar) - odenen)
+      if (Number(tutar) > kalan + 0.0001) {
+        throw new AppError(400, 'Ödeme tutarı kalan taksit tutarını aşamaz.', 'TAKSIT_OVERPAYMENT')
+      }
+
+      return createVekaletOdemeInTx(tx, {
+        tenantId,
+        userId,
+        taksit,
+        tutar,
+        odemeTarihi,
+        odemeYontemi: body.odemeYontemi,
+        aciklama,
+        tahsilatiPersonelId: tahsilati.personelId,
+        tahsilatiUserId: tahsilati.bagliUserId
+      })
+    },
+    { maxWait: 15_000, timeout: 30_000 }
+  )
 
   await writeAuditLog({
     tenantId,
@@ -324,31 +348,55 @@ export async function createVekaletPesinOdeme(
   let remaining = tutarNum
   const createdIds: string[] = []
 
-  await prisma.$transaction(async (tx) => {
-    for (const t of taksitler) {
-      if (remaining <= 0.0001) break
-      const odenen = sumOdemeler(t.odemeler)
-      const kalan = Math.max(0, Number(t.tutar) - odenen)
-      if (kalan <= 0.0001) continue
-      const pay = Math.min(remaining, kalan)
-      const odeme = await createVekaletOdemeInTx(tx, {
-        tenantId,
-        userId,
-        taksit: t,
-        tutar: new PrismaNamespace.Decimal(pay),
-        odemeTarihi,
-        odemeYontemi: body.odemeYontemi,
-        aciklama,
-        tahsilatiPersonelId: tahsilati.personelId,
-        tahsilatiUserId: tahsilati.bagliUserId
+  await prisma.$transaction(
+    async (tx) => {
+      // Açık taksitleri kilitle — peşin dağıtımında eşzamanlı aşımı önler
+      await tx.$executeRaw`
+        SELECT id FROM "vekalet_taksiti"
+        WHERE tenant_id = ${tenantId} AND dosya_id = ${dosyaId}
+          AND odeme_durumu IN ('ODENMEDI', 'KISMI_ODENDI')
+        ORDER BY vade_tarihi ASC, taksit_no ASC
+        FOR UPDATE
+      `
+      const locked = await tx.vekaletTaksiti.findMany({
+        where: {
+          tenantId,
+          dosyaId,
+          odemeDurumu: { in: ['ODENMEDI', 'KISMI_ODENDI'] }
+        },
+        include: {
+          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+          dosya: { select: { konuBasligi: true } },
+          muvekkil: { select: { gorunenAd: true } }
+        },
+        orderBy: [{ vadeTarihi: 'asc' }, { taksitNo: 'asc' }]
       })
-      createdIds.push(odeme.id)
-      remaining = Math.round((remaining - pay) * 100) / 100
-    }
-    if (remaining > 0.0001) {
-      throw new AppError(400, 'Ödeme tutarı için yeterli açık taksit kalanı yok.', 'INSUFFICIENT_OPEN_TAKSIT')
-    }
-  })
+      for (const t of locked) {
+        if (remaining <= 0.0001) break
+        const odenen = sumOdemeler(t.odemeler)
+        const kalan = Math.max(0, Number(t.tutar) - odenen)
+        if (kalan <= 0.0001) continue
+        const pay = Math.min(remaining, kalan)
+        const odeme = await createVekaletOdemeInTx(tx, {
+          tenantId,
+          userId,
+          taksit: t,
+          tutar: new PrismaNamespace.Decimal(pay),
+          odemeTarihi,
+          odemeYontemi: body.odemeYontemi,
+          aciklama,
+          tahsilatiPersonelId: tahsilati.personelId,
+          tahsilatiUserId: tahsilati.bagliUserId
+        })
+        createdIds.push(odeme.id)
+        remaining = Math.round((remaining - pay) * 100) / 100
+      }
+      if (remaining > 0.0001) {
+        throw new AppError(400, 'Ödeme tutarı için yeterli açık taksit kalanı yok.', 'INSUFFICIENT_OPEN_TAKSIT')
+      }
+    },
+    { maxWait: 15_000, timeout: 45_000 }
+  )
 
   await writeAuditLog({
     tenantId,
@@ -416,51 +464,61 @@ export async function updateVekaletTaksitOdeme(
     throw new AppError(400, 'İptal edilmiş taksit ödemesi düzenlenemez.', 'INVALID_STATE')
   }
 
-  const otherSum = sumOdemeler(existing.taksit.odemeler.filter((o) => o.id !== existing.id))
-  const taksitTutari = Number(existing.taksit.tutar)
-  const maxAllowed = Math.max(0, taksitTutari - otherSum)
-  const newTutar = body.tutar != null ? Number(body.tutar) : Number(existing.tutar)
-
-  if (newTutar > maxAllowed + 0.0001) {
-    throw new AppError(
-      400,
-      'Ödeme tutarı kalan taksit tutarını aşamaz.',
-      'TAKSIT_OVERPAYMENT'
-    )
-  }
-
   const meta = getRequestMeta(req)
   const odemeTarihi = body.odemeTarihi ?? existing.odemeTarihi
   const odemeYontemi = body.odemeYontemi ?? existing.odemeYontemi
   const aciklama =
     body.aciklama === undefined ? existing.aciklama : body.aciklama?.trim() || null
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.vekaletTaksitOdeme.update({
-      where: { id: existing.id },
-      data: {
-        tutar: new PrismaNamespace.Decimal(newTutar),
-        odemeTarihi,
-        odemeYontemi,
-        aciklama
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`
+        SELECT id FROM "vekalet_taksiti"
+        WHERE id = ${existing.taksitId} AND tenant_id = ${tenantId}
+        FOR UPDATE
+      `
+      const freshOdemeler = await tx.vekaletTaksitOdeme.findMany({
+        where: { tenantId, taksitId: existing.taksitId }
+      })
+      const otherSum = sumOdemeler(freshOdemeler.filter((o) => o.id !== existing.id))
+      const taksitTutari = Number(existing.taksit.tutar)
+      const maxAllowed = Math.max(0, taksitTutari - otherSum)
+      const newTutar = body.tutar != null ? Number(body.tutar) : Number(existing.tutar)
+      if (newTutar > maxAllowed + 0.0001) {
+        throw new AppError(
+          400,
+          'Ödeme tutarı kalan taksit tutarını aşamaz.',
+          'TAKSIT_OVERPAYMENT'
+        )
       }
-    })
 
-    if (existing.ofisKasaHareketId) {
-      await tx.ofisKasaHareketi.update({
-        where: { id: existing.ofisKasaHareketId },
+      const row = await tx.vekaletTaksitOdeme.update({
+        where: { id: existing.id },
         data: {
           tutar: new PrismaNamespace.Decimal(newTutar),
-          tarih: odemeTarihi,
-          odemeYontemi: toOfisOdemeYontemi(odemeYontemi),
-          updatedById: userId
+          odemeTarihi,
+          odemeYontemi,
+          aciklama
         }
       })
-    }
 
-    await syncTaksitOdemeDurumu(tx, existing.taksitId, userId)
-    return row
-  })
+      if (existing.ofisKasaHareketId) {
+        await tx.ofisKasaHareketi.update({
+          where: { id: existing.ofisKasaHareketId },
+          data: {
+            tutar: new PrismaNamespace.Decimal(newTutar),
+            tarih: odemeTarihi,
+            odemeYontemi: toOfisOdemeYontemi(odemeYontemi),
+            updatedById: userId
+          }
+        })
+      }
+
+      await syncTaksitOdemeDurumu(tx, existing.taksitId, userId)
+      return row
+    },
+    { maxWait: 15_000, timeout: 30_000 }
+  )
 
   await writeAuditLog({
     tenantId,

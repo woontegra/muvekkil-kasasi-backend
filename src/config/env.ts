@@ -13,14 +13,20 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   DATABASE_URL: z.string().min(1),
   JWT_SECRET: z.string().min(16, 'JWT_SECRET en az 16 karakter olmalı'),
-  JWT_EXPIRES_IN: z.string().default('8h'),
-  /** Woontegra süper admin JWT; yoksa JWT_SECRET kullanılır (payload `typ: admin` zorunlu). */
+  /** Access JWT ömrü — kısa tutulmalı (ör. 15m). */
+  JWT_EXPIRES_IN: z.string().default('15m'),
+  /** Woontegra süper admin JWT; production’da zorunlu. */
   ADMIN_JWT_SECRET: z.preprocess(
     (v) => (typeof v === 'string' && v.trim().length >= 16 ? v.trim() : undefined),
     z.string().min(16).optional()
   ),
-  ADMIN_JWT_EXPIRES_IN: z.string().default('8h'),
+  ADMIN_JWT_EXPIRES_IN: z.string().default('15m'),
+  /** Virgülle ayrılmış izinli frontend origin listesi (credentials). */
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  /** Refresh cookie / DB oturum süresi (gün). */
+  REFRESH_TOKEN_DAYS: z.coerce.number().int().min(1).max(90).default(14),
+  /** Cookie SameSite — çapraz site API için production’da none+secure gerekebilir. */
+  COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).default('lax'),
   /** Şifre sıfırlama e-postasındaki link kökü; yoksa FRONTEND_URL / CORS_ORIGIN kullanılır. */
   PUBLIC_APP_URL: optionalNonEmpty,
   FRONTEND_URL: optionalNonEmpty,
@@ -52,7 +58,34 @@ const envSchema = z.object({
       if (t === 'false' || t === '0' || t === 'no') return false
     }
     return Boolean(v)
-  }, z.boolean().optional())
+  }, z.boolean().optional()),
+  /** Meta Cloud API — false iken hiçbir gerçek dış WhatsApp API isteği yapılmaz. */
+  WHATSAPP_CLOUD_API_ENABLED: z.preprocess((v) => {
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase()
+      if (t === 'true' || t === '1' || t === 'yes') return true
+      if (t === 'false' || t === '0' || t === 'no') return false
+    }
+    return false
+  }, z.boolean().default(false)),
+  WHATSAPP_WEBHOOK_ENABLED: z.preprocess((v) => {
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase()
+      if (t === 'true' || t === '1' || t === 'yes') return true
+      if (t === 'false' || t === '0' || t === 'no') return false
+    }
+    return false
+  }, z.boolean().default(false)),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: optionalNonEmpty,
+  WHATSAPP_APP_SECRET: optionalNonEmpty,
+  /** @deprecated SMS/Netgsm kaldırıldı — yalnızca eski dosya derlemesi için opsiyonel. */
+  NETGSM_ENABLED: z.preprocess(() => false, z.boolean().default(false)),
+  NETGSM_USERNAME: optionalNonEmpty,
+  NETGSM_PASSWORD: optionalNonEmpty,
+  NETGSM_ORIGINATOR: optionalNonEmpty,
+  NETGSM_TEST_SMS_ENABLED: z.preprocess(() => false, z.boolean().default(false))
 })
 
 export type Env = z.infer<typeof envSchema>
@@ -66,6 +99,7 @@ if (!parsed.success) {
     '[env] Railway: Project → servisiniz → Variables bölümünde en az şunları tanımlayın:\n' +
       '  - DATABASE_URL  → PostgreSQL eklentisini servise bağlayın veya Postgres’in verdiği URL’yi yapıştırın\n' +
       '  - JWT_SECRET    → en az 16 karakter güçlü rastgele dize (örn. openssl rand -hex 32)\n' +
+      '  - ADMIN_JWT_SECRET → production’da zorunlu, JWT_SECRET’ten ayrı\n' +
       '  İsteğe bağlı: CORS_ORIGIN / FRONTEND_URL (frontend URL’iniz)\n' +
       '  İsteğe bağlı: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM (genel SMTP)\n' +
       '  veya: GMAIL_USER + GMAIL_APP_PASSWORD (Gmail kolay kurulum)'
@@ -75,6 +109,37 @@ if (!parsed.success) {
 
 export const env: Env = parsed.data
 
+if (env.NODE_ENV === 'production' && !env.ADMIN_JWT_SECRET) {
+  console.error('[env] Production’da ADMIN_JWT_SECRET zorunludur (JWT_SECRET fallback kapalı).')
+  process.exit(1)
+}
+
+if (
+  env.NODE_ENV === 'production' &&
+  env.ADMIN_JWT_SECRET &&
+  env.ADMIN_JWT_SECRET === env.JWT_SECRET
+) {
+  console.error('[env] Production’da ADMIN_JWT_SECRET, JWT_SECRET ile aynı olamaz.')
+  process.exit(1)
+}
+
+if (env.COOKIE_SAME_SITE === 'none' && env.NODE_ENV === 'production') {
+  // Secure cookie zorunlu — sessionCookies zaten production’da secure=true
+}
+
+if (env.WHATSAPP_CLOUD_API_ENABLED && env.NODE_ENV === 'production') {
+  // Cloud API prod’da flag açık olsa bile secret/config yoksa worker gerçek istek atmaz (provider NOT_CONFIGURED).
+  console.warn('[env] WHATSAPP_CLOUD_API_ENABLED=true — Meta hesap/secret yapılandırması tamamlanmadan gönderim yapılmaz.')
+}
+
 export function getActivationTokenExpiresHours(): number {
   return env.ACTIVATION_TOKEN_EXPIRES_HOURS
+}
+
+export function adminJwtSecretResolved(): string {
+  if (env.ADMIN_JWT_SECRET) return env.ADMIN_JWT_SECRET
+  if (env.NODE_ENV === 'production') {
+    throw new Error('ADMIN_JWT_SECRET production’da zorunlu')
+  }
+  return env.JWT_SECRET
 }

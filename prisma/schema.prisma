@@ -78,6 +78,9 @@ model Tenant {
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
   tahsilatBildirimDenemeleri TahsilatBildirimDeneme[]
   whatsAppBaglanti       WhatsAppBaglanti?
+  smsBakiye              SmsTenantBakiye?
+  smsKrediHareketleri    SmsKrediHareketi[]
+  refreshSessions            RefreshSession[]
 
   @@map("tenant")
 }
@@ -136,6 +139,7 @@ model User {
 
   auditLogs             AuditLog[]
   passwordResetTokens   PasswordResetToken[]
+  refreshSessions       RefreshSession[]
   muvekkillerCreated    Muvekkil[]            @relation("MuvekkilCreatedBy")
   muvekkillerUpdated    Muvekkil[]            @relation("MuvekkilUpdatedBy")
   dosyalarCreated       Dosya[]               @relation("DosyaCreatedBy")
@@ -163,6 +167,7 @@ model User {
   icraTahsilatAlacaklariUpdated IcraTahsilatAlacagi[] @relation("IcraAlacakUpdatedBy")
   icraTahsilatOdemeleriCreated  IcraTahsilatOdeme[]   @relation("IcraOdemeCreatedBy")
   tahsilatlariYapanIcraTahsilat IcraTahsilatOdeme[]   @relation("IcraOdemeTahsilatiYapan")
+  linkedSuperAdmin              SuperAdmin?           @relation("SuperAdminLinkedUser")
 
   @@unique([kullaniciAdi])
   @@unique([tenantId, eposta])
@@ -754,6 +759,48 @@ model PasswordResetToken {
   @@map("password_reset_token")
 }
 
+/// Opaque refresh oturumu (HttpOnly cookie). Token düz metin saklanmaz.
+model RefreshSession {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId       String    @map("user_id")
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String    @unique @map("token_hash")
+  familyId     String    @map("family_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime  @default(now()) @map("last_used_at")
+  expiresAt    DateTime  @map("expires_at")
+  revokedAt    DateTime? @map("revoked_at")
+  /// Kısa etiket (ör. "web"); IP/UA düz metin saklanmaz.
+  label        String?   @map("label") @db.VarChar(64)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("refresh_session")
+}
+
+/// Süper admin refresh oturumu.
+model AdminRefreshSession {
+  id           String      @id @default(uuid())
+  adminId      String      @map("admin_id")
+  admin        SuperAdmin  @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash    String      @unique @map("token_hash")
+  familyId     String      @map("family_id")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  lastUsedAt   DateTime    @default(now()) @map("last_used_at")
+  expiresAt    DateTime    @map("expires_at")
+  revokedAt    DateTime?   @map("revoked_at")
+  label        String?     @map("label") @db.VarChar(64)
+
+  @@index([adminId, revokedAt])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("admin_refresh_session")
+}
+
 enum ImportBatchSourceType {
   DESKTOP_SQLITE
 }
@@ -786,9 +833,16 @@ model ImportBatch {
   @@map("import_batch")
 }
 
-/// Otomatik tahsilat bildirimi — Faz 1 altyapısı
+/// Otomatik tahsilat bildirimi — kanal. SMS deprecated (geçmiş kayıtlar için korunur).
 enum BildirimKanali {
+  SMS
   WHATSAPP
+}
+
+/// Gönderim sağlayıcısı — channel'dan ayrı.
+enum BildirimProvider {
+  MANUAL_WHATSAPP
+  WHATSAPP_CLOUD_API
 }
 
 enum BildirimKuralTuru {
@@ -809,11 +863,16 @@ enum BildirimIsDurumu {
   ATLANDI
 }
 
+/// Tenant WhatsApp hesap durumu. Eski değerler migration uyumu için korunur.
 enum WhatsAppBaglantiDurumu {
   BAGLI_DEGIL
   ONAY_BEKLIYOR
   BAGLI
   HATA
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DISABLED
 }
 
 /// Tenant bazlı otomatik tahsilat bildirim ayarları. Varsayılan: kapalı + test modu.
@@ -828,6 +887,10 @@ model TahsilatBildirimAyar {
   /// Europe/Istanbul saat diliminde izin verilen gönderim penceresi (dakika 0–1439).
   izinliSaatBaslangic   Int      @default(600) @map("izinli_saat_baslangic")
   izinliSaatBitis       Int      @default(1200) @map("izinli_saat_bitis")
+  /// @deprecated SMS otomatik gönderim kapalı; kolon geçmiş uyumluluk için tutulur.
+  otomatikSmsAktif      Boolean  @default(false) @map("otomatik_sms_aktif")
+  /// @deprecated SMS bakiye eşiği kullanılmaz.
+  dusukSmsBakiyeEsigi   Int      @default(100) @map("dusuk_sms_bakiye_esigi")
   createdAt             DateTime @default(now()) @map("created_at")
   updatedAt             DateTime @updatedAt @map("updated_at")
 
@@ -879,6 +942,8 @@ model TahsilatBildirimIsi {
   taksitId           String           @map("taksit_id")
   taksit             VekaletTaksiti   @relation(fields: [taksitId], references: [id], onDelete: Cascade)
   kanal              BildirimKanali   @default(WHATSAPP)
+  /// MANUAL_WHATSAPP | WHATSAPP_CLOUD_API — eski SMS satırlarında null olabilir.
+  provider           BildirimProvider? @map("provider")
   kuralTuru          BildirimKuralTuru @map("kural_turu")
   planlananAt        DateTime         @map("planlanan_at")
   /// Planlama anındaki kalan tutar anlık görüntüsü (gönderilmiş işlerde korunur).
@@ -889,6 +954,17 @@ model TahsilatBildirimIsi {
   hataOzeti          String?          @map("hata_ozeti")
   denemeSayisi       Int              @default(0) @map("deneme_sayisi")
   sonDenemeAt        DateTime?        @map("son_deneme_at")
+  /// @deprecated SMS alanları — geçmiş kayıtlar için korunur.
+  smsParcaSayisi     Int?             @map("sms_parca_sayisi")
+  smsKrediTuketimi   Int?             @map("sms_kredi_tuketimi")
+  telefonMaskeli     String?          @map("telefon_maskeli")
+  providerAdi        String?          @map("provider_adi")
+  providerMessageId  String?          @map("provider_message_id")
+  providerBulkId     String?          @map("provider_bulk_id")
+  sonProviderHataKodu String?         @map("son_provider_hata_kodu")
+  raporSonrakiSorguAt DateTime?       @map("rapor_sonraki_sorgu_at")
+  raporSorguDeneme   Int              @default(0) @map("rapor_sorgu_deneme")
+  manuelTetikleme    Boolean          @default(false) @map("manuel_tetikleme")
   /// tenant|taksit|kural|kanal|planYmd — DB unique mükerrerlik
   idempotencyKey     String           @unique @map("idempotency_key")
   lockedAt           DateTime?        @map("locked_at")
@@ -896,6 +972,7 @@ model TahsilatBildirimIsi {
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
   denemeler          TahsilatBildirimDeneme[]
+  smsKrediHareketleri SmsKrediHareketi[]
 
   @@index([tenantId, durum, planlananAt])
   @@index([tenantId, taksitId, durum])
@@ -925,14 +1002,58 @@ model TahsilatBildirimDeneme {
   @@map("tahsilat_bildirim_deneme")
 }
 
-/// Tenant WhatsApp bağlantı durumu. Faz 1: gerçek token kaydı kapalı.
+enum SmsKrediHareketTuru {
+  MANUEL_YUKLEME
+  REZERVE
+  TUKETIM
+  REZERV_IPTALI
+  IADE
+  DUZELTME
+}
+
+model SmsTenantBakiye {
+  id                String   @id @default(uuid())
+  tenantId          String   @unique @map("tenant_id")
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  mevcutBakiye      Int      @default(0) @map("mevcut_bakiye")
+  toplamYuklenen    Int      @default(0) @map("toplam_yuklenen")
+  toplamTuketilen   Int      @default(0) @map("toplam_tuketilen")
+  toplamIadeEdilen  Int      @default(0) @map("toplam_iade_edilen")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("sms_tenant_bakiye")
+}
+
+model SmsKrediHareketi {
+  id                 String            @id @default(uuid())
+  tenantId           String            @map("tenant_id")
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bildirimIsiId      String?           @map("bildirim_isi_id")
+  bildirimIsi        TahsilatBildirimIsi? @relation(fields: [bildirimIsiId], references: [id], onDelete: SetNull)
+  tur                SmsKrediHareketTuru @map("tur")
+  miktar             Int               @map("miktar")
+  oncekiBakiye       Int               @map("onceki_bakiye")
+  sonrakiBakiye      Int               @map("sonraki_bakiye")
+  idempotencyKey     String            @map("idempotency_key")
+  aciklama           String?           @map("aciklama")
+  olusturanUserId    String?           @map("olusturan_user_id")
+  olusturanAdminId   String?           @map("olusturan_admin_id")
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, createdAt])
+  @@index([bildirimIsiId])
+  @@map("sms_kredi_hareketi")
+}
+
+/// Tenant WhatsApp bağlantı durumu. Cloud API token’ları yalnızca şifreli saklanır; frontend’e gitmez.
 model WhatsAppBaglanti {
   id                    String                 @id @default(uuid())
   tenantId              String                 @unique @map("tenant_id")
   tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  durum                 WhatsAppBaglantiDurumu @default(BAGLI_DEGIL)
-  /// Faz 2: yalnızca şifrelenmiş değer. Faz 1'de null bırakılır; düz metin token kabul edilmez.
-  /// Teknik not: projede henüz secret encryption yok; gerçek token kaydı Faz 2'ye kapalı.
+  durum                 WhatsAppBaglantiDurumu @default(DISABLED)
+  /// Yalnızca şifrelenmiş değer. Düz metin token kabul edilmez / loglanmaz.
   accessTokenEncrypted  String?                @map("access_token_encrypted")
   wabaIdMasked          String?                @map("waba_id_masked")
   phoneNumberIdMasked   String?                @map("phone_number_id_masked")
@@ -959,10 +1080,14 @@ model SuperAdmin {
   rol            SuperAdminRole
   aktifMi        Boolean         @default(true) @map("aktif_mi")
   sonGirisTarihi DateTime?       @map("son_giris_tarihi")
+  /// Tenant User ile güvenli bağlantı — e-posta eşleşmesi yetki vermez.
+  linkedUserId   String?         @unique @map("linked_user_id")
+  linkedUser     User?           @relation("SuperAdminLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
   createdAt      DateTime        @default(now()) @map("created_at")
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
-  adminAuditLogs AdminAuditLog[]
+  adminAuditLogs   AdminAuditLog[]
+  refreshSessions  AdminRefreshSession[]
 
   @@map("super_admin")
 }

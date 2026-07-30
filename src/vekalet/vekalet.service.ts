@@ -50,10 +50,13 @@ export function computeTaksitSmmDurum(odemeler: { smmKesildiMi: boolean; tutar: 
 }
 
 export function serializeVekaletTaksitiWithOzet(
-  t: VekaletTaksiti,
+  t: VekaletTaksiti & { otomatikBildirimAktif?: boolean },
   odemeler: OdemeRow[]
 ): Record<string, unknown> {
-  const base = serializeVekaletTaksiti(t)
+  const base = serializeVekaletTaksiti({
+    ...t,
+    otomatikBildirimAktif: t.otomatikBildirimAktif
+  })
   const taksitTutari = Number(t.tutar)
   const odenenToplam = sumOdemeTutar(odemeler)
   const kalanTutar = Math.max(0, taksitTutari - odenenToplam)
@@ -89,7 +92,11 @@ async function loadTaksitOdemeler(taksitId: string): Promise<OdemeRow[]> {
 
 export async function serializeTaksitApiResponse(t: VekaletTaksiti): Promise<Record<string, unknown>> {
   const odemeler = await loadTaksitOdemeler(t.id)
-  return serializeVekaletTaksitiWithOzet(t, odemeler)
+  const { getTaksitOtomatikBildirimAktif } = await import('../tahsilatBildirim/taksitBildirimColumn.js')
+  const otomatikBildirimAktif = await getTaksitOtomatikBildirimAktif(t.id)
+  return serializeVekaletTaksitiWithOzet({ ...t, otomatikBildirimAktif } as VekaletTaksiti & {
+    otomatikBildirimAktif: boolean
+  }, odemeler)
 }
 
 export async function syncTaksitOdemeDurumu(
@@ -177,6 +184,8 @@ export function serializeVekaletTaksiti(t: {
   updatedById: string | null
   createdAt: Date
   updatedAt: Date
+  /** Migration sonrası raw SQL ile doldurulabilir; yoksa true. */
+  otomatikBildirimAktif?: boolean
 }): Record<string, unknown> {
   return {
     id: t.id,
@@ -195,6 +204,7 @@ export function serializeVekaletTaksiti(t: {
     smmKesimTarihi: t.smmKesimTarihi?.toISOString() ?? null,
     smmNo: t.smmNo,
     smmAciklama: t.smmAciklama,
+    otomatikBildirimAktif: t.otomatikBildirimAktif ?? true,
     createdById: t.createdById,
     updatedById: t.updatedById,
     createdAt: t.createdAt.toISOString(),

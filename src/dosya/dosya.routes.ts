@@ -9,6 +9,10 @@ import { deactivateDosya, getDosyaHesapOzetiForTenant, getDosyaMakbuzlariForTena
 import { getDosyaMaliOzet } from './dosyaMaliOzet.service.js'
 import { serializeMuvekkil } from '../muvekkil/muvekkil.service.js'
 import {
+  getDosyaBildirimAyar,
+  setDosyaOtomatikBildirim
+} from '../tahsilatBildirim/bildirimAyar.service.js'
+import {
   createKasaHareketiBodySchema,
   listKasaHareketleriQuerySchema
 } from '../kasa/kasa.schemas.js'
@@ -264,6 +268,44 @@ dosyalarRouter.put(
     const userId = req.auth!.sub
     const updated = await updateDosya(tenantId, userId, id, body, req)
     res.json({ ok: true, dosya: serializeDosya(updated) })
+  })
+)
+
+const dosyaBildirimAyarBodySchema = z.object({
+  otomatikBildirimAktif: z.boolean()
+})
+
+dosyalarRouter.get(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const data = await getDosyaBildirimAyar(req.auth!.tenantId, id)
+    res.json({ ok: true, ...data })
+  })
+)
+
+dosyalarRouter.patch(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = dosyaBildirimAyarBodySchema.parse(req.body)
+    const result = await setDosyaOtomatikBildirim(
+      req.auth!.tenantId,
+      req.auth!.sub,
+      id,
+      body.otomatikBildirimAktif,
+      req
+    )
+    const row = await getDosyaWithMuvekkilForTenant(req.auth!.tenantId, id)
+    res.json({
+      ok: true,
+      ...result,
+      dosya: row ? serializeDosya(row.dosya) : null
+    })
   })
 )
 

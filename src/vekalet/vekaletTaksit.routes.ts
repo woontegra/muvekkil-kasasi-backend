@@ -4,6 +4,7 @@ import { UserRole } from '@prisma/client'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireRole } from '../middleware/requireRole.js'
+import { prisma } from '../lib/prisma.js'
 import {
   markTaksitPaidBodySchema,
   markTaksitSmmBodySchema,
@@ -14,15 +15,21 @@ import {
   deleteVekaletTaksiti,
   markVekaletTaksitPaid,
   markVekaletTaksitSmm,
+  serializeTaksitApiResponse,
   updateVekaletTaksiti
 } from './vekalet.service.js'
 import { createVekaletTaksitOdeme, listVekaletTaksitOdemeler } from './vekaletTaksitOdeme.service.js'
+import {
+  getTaksitBildirimAyar,
+  setTaksitOtomatikBildirim
+} from '../tahsilatBildirim/bildirimAyar.service.js'
 
 export const vekaletTaksitleriRouter = Router()
 
 const idParamSchema = z.object({ id: z.string().uuid('Geçersiz id.') })
 
 const ODEME_ROLLER = [UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL] as const
+const YONETICI = [UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI] as const
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -56,6 +63,43 @@ vekaletTaksitleriRouter.get(
       return
     }
     res.json({ ok: true, items })
+  })
+)
+
+const taksitBildirimAyarBodySchema = z.object({
+  otomatikBildirimAktif: z.boolean()
+})
+
+vekaletTaksitleriRouter.get(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const data = await getTaksitBildirimAyar(req.auth!.tenantId, id)
+    res.json({ ok: true, ...data })
+  })
+)
+
+vekaletTaksitleriRouter.patch(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = taksitBildirimAyarBodySchema.parse(req.body)
+    const result = await setTaksitOtomatikBildirim(
+      req.auth!.tenantId,
+      req.auth!.sub,
+      id,
+      body.otomatikBildirimAktif,
+      req
+    )
+    const row = await prisma.vekaletTaksiti.findFirst({
+      where: { id, tenantId: req.auth!.tenantId }
+    })
+    const taksit = row ? await serializeTaksitApiResponse(row) : null
+    res.json({ ok: true, ...result, taksit })
   })
 )
 

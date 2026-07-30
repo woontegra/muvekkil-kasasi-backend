@@ -13,6 +13,10 @@ import {
   serializeMuvekkil,
   updateMuvekkil
 } from './muvekkil.service.js'
+import {
+  getMuvekkilBildirimAyar,
+  setMuvekkilOtomatikBildirim
+} from '../tahsilatBildirim/bildirimAyar.service.js'
 import { createDosyaBodySchema, listDosyaForMuvekkilQuerySchema } from '../dosya/dosya.schemas.js'
 import { createDosya, listDosyalarForMuvekkil, serializeDosya } from '../dosya/dosya.service.js'
 import { getMuvekkilKarlilik } from '../dosya/dosyaMaliOzet.service.js'
@@ -36,6 +40,7 @@ muvekkillerRouter.get(
     const query = listMuvekkilQuerySchema.parse({
       q: req.query.q,
       tur: req.query.tur,
+      otomatikHatirlatma: req.query.otomatikHatirlatma,
       page: req.query.page,
       limit: req.query.limit
     })
@@ -131,6 +136,44 @@ muvekkillerRouter.put(
     const userId = req.auth!.sub
     const updated = await updateMuvekkil(tenantId, userId, id, body, req)
     res.json({ ok: true, muvekkil: serializeMuvekkil(updated) })
+  })
+)
+
+const bildirimAyarBodySchema = z.object({
+  otomatikBildirimIzni: z.boolean()
+})
+
+muvekkillerRouter.get(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const data = await getMuvekkilBildirimAyar(req.auth!.tenantId, id)
+    res.json({ ok: true, ...data })
+  })
+)
+
+muvekkillerRouter.patch(
+  '/:id/bildirim-ayar',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = bildirimAyarBodySchema.parse(req.body)
+    const result = await setMuvekkilOtomatikBildirim(
+      req.auth!.tenantId,
+      req.auth!.sub,
+      id,
+      body.otomatikBildirimIzni,
+      req
+    )
+    const muvekkil = await getMuvekkilById(req.auth!.tenantId, id)
+    res.json({
+      ok: true,
+      ...result,
+      muvekkil: muvekkil ? serializeMuvekkil(muvekkil) : null
+    })
   })
 )
 

@@ -1,10 +1,13 @@
 import jwt, { type Secret, type SignOptions } from 'jsonwebtoken'
 import type { SuperAdminRole } from '@prisma/client'
-import { env } from '../config/env.js'
+import { env, adminJwtSecretResolved } from '../config/env.js'
 import type { AdminJwtPayload } from '../types/adminPayload.js'
 
+export const ADMIN_JWT_ISS = 'muvekkil-kasa-defteri-admin'
+export const ADMIN_JWT_AUD = 'admin-api'
+
 export function adminJwtSecret(): string {
-  return env.ADMIN_JWT_SECRET ?? env.JWT_SECRET
+  return adminJwtSecretResolved()
 }
 
 export function signAdminAccessToken(input: { adminId: string; role: SuperAdminRole; kullaniciAdi: string }): string {
@@ -15,13 +18,31 @@ export function signAdminAccessToken(input: { adminId: string; role: SuperAdminR
     kullaniciAdi: input.kullaniciAdi
   }
   const secret: Secret = adminJwtSecret()
-  const options = { expiresIn: env.ADMIN_JWT_EXPIRES_IN } as SignOptions
+  const options = {
+    algorithm: 'HS256' as const,
+    expiresIn: env.ADMIN_JWT_EXPIRES_IN,
+    issuer: ADMIN_JWT_ISS,
+    audience: ADMIN_JWT_AUD
+  } as SignOptions
   return jwt.sign(payload, secret, options)
 }
 
 export function verifyAdminAccessToken(token: string): AdminJwtPayload {
-  const decoded = jwt.verify(token, adminJwtSecret()) as AdminJwtPayload
+  let decoded: AdminJwtPayload
+  try {
+    decoded = jwt.verify(token, adminJwtSecret(), {
+      algorithms: ['HS256'],
+      issuer: ADMIN_JWT_ISS,
+      audience: ADMIN_JWT_AUD
+    }) as AdminJwtPayload
+  } catch {
+    // Eski kısa ömürlü admin tokenlar (iss/aud yok) süreleri dolana kadar
+    decoded = jwt.verify(token, adminJwtSecret(), { algorithms: ['HS256'] }) as AdminJwtPayload
+  }
   if (decoded.typ !== 'admin') {
+    throw new Error('INVALID_ADMIN_TOKEN')
+  }
+  if (!decoded.sub || !decoded.role || !decoded.kullaniciAdi) {
     throw new Error('INVALID_ADMIN_TOKEN')
   }
   return decoded

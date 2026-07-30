@@ -10,6 +10,11 @@ import { serializeTenant } from '../auth/auth.service.js'
 import { getKasaOzet, listAllKasaHareketleriForDosya, serializeKasaHareketi } from '../kasa/kasa.service.js'
 import { getDosyaVekaletPackage } from '../vekalet/vekalet.service.js'
 import type { CreateDosyaBody, ListDosyaForMuvekkilQuery, UpdateDosyaBody } from './dosya.schemas.js'
+import {
+  BILDIRIM_IPTAL_NEDENI,
+  cancelPendingBildirimJobs
+} from '../tahsilatBildirim/eligibility.service.js'
+import { planJobsForTenant } from '../tahsilatBildirim/planner.service.js'
 
 export function serializeDosya(d: Dosya): Record<string, unknown> {
   return {
@@ -170,6 +175,9 @@ export async function updateDosya(
   }
 
   const data = buildDosyaUpdateFields(body)
+  const prevAktif = existing.otomatikBildirimAktif
+  const nextAktif =
+    body.otomatikBildirimAktif !== undefined ? body.otomatikBildirimAktif : prevAktif
 
   const updated = await prisma.dosya.update({
     where: { id: dosyaId },
@@ -178,6 +186,26 @@ export async function updateDosya(
       updatedById: userId
     }
   })
+
+  if (prevAktif !== nextAktif) {
+    if (!nextAktif) {
+      await cancelPendingBildirimJobs({ tenantId, dosyaId }, BILDIRIM_IPTAL_NEDENI.DOSYA)
+    } else {
+      await planJobsForTenant(tenantId)
+    }
+    await writeAuditLog({
+      tenantId,
+      userId,
+      action: 'DOSYA_OTOMATIK_BILDIRIM_UPDATED',
+      entityType: 'Dosya',
+      entityId: dosyaId,
+      oldValue: { otomatikBildirimAktif: prevAktif },
+      newValue: { otomatikBildirimAktif: nextAktif },
+      meta: { dosyaId, muvekkilId: existing.muvekkilId, via: 'DOSYA_UPDATED' },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent
+    })
+  }
 
   await writeAuditLog({
     tenantId,

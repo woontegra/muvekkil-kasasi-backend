@@ -1,11 +1,16 @@
+import type { Request } from 'express'
 import type { Muvekkil, Prisma } from '@prisma/client'
 import { MuvekkilTur } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { CreateMuvekkilBody, ListMuvekkilQuery, UpdateMuvekkilBody } from './muvekkil.schemas.js'
-import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
+import {
+  BILDIRIM_IPTAL_NEDENI,
+  cancelPendingBildirimJobs
+} from '../tahsilatBildirim/eligibility.service.js'
+import { planJobsForTenant } from '../tahsilatBildirim/planner.service.js'
 
 export function computeGorunenAd(tur: MuvekkilTur, adSoyad: string, sirketUnvani: string | null): string {
   if (tur === MuvekkilTur.TUZEL) return (sirketUnvani ?? '').trim()
@@ -56,18 +61,26 @@ function buildMuvekkilUncheckedFields(body: CreateMuvekkilBody): Omit<Prisma.Muv
     mudurTelefon: body.mudurTelefon.trim(),
     muhasebeAdSoyad: body.muhasebeAdSoyad.trim(),
     muhasebeTelefon: body.muhasebeTelefon.trim(),
+    ...(body.otomatikBildirimIzni !== undefined
+      ? { otomatikBildirimIzni: body.otomatikBildirimIzni }
+      : {}),
     aktifMi: true
   }
 }
 
 export async function listMuvekkiller(tenantId: string, query: ListMuvekkilQuery): Promise<{ items: Muvekkil[]; total: number }> {
-  const { q, tur, page, limit } = query
+  const { q, tur, page, limit, otomatikHatirlatma } = query
   const skip = (page - 1) * limit
 
   const where: Prisma.MuvekkilWhereInput = {
     tenantId,
     aktifMi: true,
     ...(tur ? { tur } : {}),
+    ...(otomatikHatirlatma === 'ACIK'
+      ? { otomatikBildirimIzni: true }
+      : otomatikHatirlatma === 'KAPALI'
+        ? { otomatikBildirimIzni: false }
+        : {}),
     ...(q.length > 0
       ? {
           OR: [
@@ -146,6 +159,9 @@ export async function updateMuvekkil(
   }
 
   const data = buildMuvekkilUncheckedFields(body)
+  const prevIzin = existing.otomatikBildirimIzni
+  const nextIzin =
+    body.otomatikBildirimIzni !== undefined ? body.otomatikBildirimIzni : prevIzin
 
   const updated = await prisma.muvekkil.update({
     where: { id },
@@ -157,6 +173,26 @@ export async function updateMuvekkil(
       updatedById: userId
     }
   })
+
+  if (prevIzin !== nextIzin) {
+    if (!nextIzin) {
+      await cancelPendingBildirimJobs({ tenantId, muvekkilId: id }, BILDIRIM_IPTAL_NEDENI.MUVEKKIL)
+    } else {
+      await planJobsForTenant(tenantId)
+    }
+    await writeAuditLog({
+      tenantId,
+      userId,
+      action: 'MUVEKKIL_OTOMATIK_BILDIRIM_UPDATED',
+      entityType: 'Muvekkil',
+      entityId: id,
+      oldValue: { otomatikBildirimIzni: prevIzin },
+      newValue: { otomatikBildirimIzni: nextIzin },
+      meta: { muvekkilId: id, via: 'MUVEKKIL_UPDATED' },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent
+    })
+  }
 
   await writeAuditLog({
     tenantId,

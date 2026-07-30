@@ -37,7 +37,9 @@ const muvekkilWriteBase = z.object({
 
 export const createMuvekkilBodySchema = muvekkilWriteBase
   .extend({
-    tur: z.nativeEnum(MuvekkilTur)
+    tur: z.nativeEnum(MuvekkilTur),
+    /** Varsayılan kapalı; gönderilmezse DB default false. */
+    otomatikBildirimIzni: z.boolean().optional()
   })
   .superRefine((data, ctx) => {
     emailCheck(data.eposta ?? null, ctx, ['eposta'])
@@ -67,17 +69,15 @@ export const createMuvekkilBodySchema = muvekkilWriteBase
 
 export type CreateMuvekkilBody = z.infer<typeof createMuvekkilBodySchema>
 
-export const updateMuvekkilBodySchema = createMuvekkilBodySchema.and(
-  z.object({
-    otomatikBildirimIzni: z.boolean().optional()
-  })
-)
+export const updateMuvekkilBodySchema = createMuvekkilBodySchema
 
 export type UpdateMuvekkilBody = z.infer<typeof updateMuvekkilBodySchema>
 
 export const listMuvekkilQuerySchema = z.object({
   q: z.string().trim().optional().default(''),
   tur: z.nativeEnum(MuvekkilTur).optional(),
+  /** Tumu | Acik | Kapali — otomatik hatırlatma filtresi */
+  otomatikHatirlatma: z.enum(['TUMU', 'ACIK', 'KAPALI']).optional().default('TUMU'),
   page: z.preprocess((v) => (v === undefined || v === '' ? 1 : Number(v)), z.number().int().min(1)),
   limit: z.preprocess((v) => (v === undefined || v === '' ? 20 : Number(v)), z.number().int().min(1).max(100))
 })

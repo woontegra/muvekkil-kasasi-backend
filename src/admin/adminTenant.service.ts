@@ -454,6 +454,10 @@ export async function adminSetTenantActive(id: string, aktif: boolean, adminId: 
   if (!t) throw new AppError(404, 'Büro bulunamadı.', 'NOT_FOUND')
   const meta = getRequestMeta(req)
   const updated = await prisma.tenant.update({ where: { id }, data: { aktifMi: aktif } })
+  if (!aktif) {
+    const { revokeTenantRefreshSessions } = await import('../auth/refreshSession.service.js')
+    await revokeTenantRefreshSessions(id)
+  }
   await writeAdminAuditLog({
     adminId,
     action: aktif ? 'TENANT_ACTIVATED' : 'TENANT_DEACTIVATED',
@@ -561,6 +565,14 @@ export async function adminUpdateUser(
   const updated = await prisma.user.update({ where: { id: userId }, data })
   const { sifreHash: _h, ...publicUser } = updated
 
+  if (
+    (body.rol !== undefined && body.rol !== u.role) ||
+    (body.aktifMi !== undefined && body.aktifMi !== u.aktifMi)
+  ) {
+    const { revokeUserRefreshSessions } = await import('../auth/refreshSession.service.js')
+    await revokeUserRefreshSessions(userId)
+  }
+
   await writeAdminAuditLog({
     adminId,
     action: 'USER_UPDATED_BY_ADMIN',
@@ -603,6 +615,8 @@ export async function adminResetUserPassword(
   const sifreHash = await hashPassword(geciciSifre)
   const meta = getRequestMeta(req)
   await prisma.user.update({ where: { id: userId }, data: { sifreHash } })
+  const { revokeUserRefreshSessions } = await import('../auth/refreshSession.service.js')
+  await revokeUserRefreshSessions(userId)
 
   await writeAdminAuditLog({
     adminId,

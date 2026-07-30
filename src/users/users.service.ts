@@ -199,6 +199,11 @@ export async function updateUserInTenant(
     }
   })
 
+  if (existing.role !== updated.role || existing.aktifMi !== updated.aktifMi) {
+    const { revokeUserRefreshSessions } = await import('../auth/refreshSession.service.js')
+    await revokeUserRefreshSessions(targetUserId)
+  }
+
   await writeAuditLog({
     tenantId,
     userId: actorUserId,
@@ -247,6 +252,9 @@ export async function resetUserPasswordInTenant(
     data: { sifreHash }
   })
 
+  const { revokeUserRefreshSessions } = await import('../auth/refreshSession.service.js')
+  await revokeUserRefreshSessions(targetUserId)
+
   await writeAuditLog({
     tenantId,
     userId: actorUserId,
@@ -286,6 +294,9 @@ export async function deactivateUserInTenant(
     where: { id: targetUserId },
     data: { aktifMi: false }
   })
+
+  const { revokeUserRefreshSessions } = await import('../auth/refreshSession.service.js')
+  await revokeUserRefreshSessions(targetUserId)
 
   await writeAuditLog({
     tenantId,

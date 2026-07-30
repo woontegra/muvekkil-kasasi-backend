@@ -1,5 +1,6 @@
 import { BildirimIsDurumu, Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { humanizeBildirimNedeni } from './eligibility.service.js'
 import { planAtFromYmdAndMinutes, ymdTr } from './time.js'
 
 export type BildirimIsGorunum = 'PLANLANANLAR' | 'BUGUN' | 'GECMIS' | 'ATLANANLAR'
@@ -26,6 +27,10 @@ function serializeJob(row: {
   hataOzeti: string | null
   denemeSayisi: number
   sonDenemeAt: Date | null
+  smsParcaSayisi?: number | null
+  smsKrediTuketimi?: number | null
+  telefonMaskeli?: string | null
+  manuelTetikleme?: boolean
   createdAt: Date
   updatedAt: Date
   muvekkil?: { gorunenAd: string }
@@ -51,9 +56,19 @@ function serializeJob(row: {
     durum: row.durum,
     iptalNedeni: row.iptalNedeni,
     atlamaNedeni: row.atlamaNedeni,
+    uygunlukAciklama:
+      humanizeBildirimNedeni(row.atlamaNedeni) ??
+      humanizeBildirimNedeni(row.iptalNedeni) ??
+      (row.durum === BildirimIsDurumu.PLANLANDI || row.durum === BildirimIsDurumu.KUYRUKTA
+        ? 'Planlandı'
+        : null),
     hataOzeti: row.hataOzeti,
     denemeSayisi: row.denemeSayisi,
     sonDenemeAt: row.sonDenemeAt?.toISOString() ?? null,
+    smsParcaSayisi: row.smsParcaSayisi ?? null,
+    smsKrediTuketimi: row.smsKrediTuketimi ?? null,
+    telefonMaskeli: row.telefonMaskeli ?? null,
+    manuelTetikleme: row.manuelTetikleme ?? false,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   }
@@ -104,7 +119,7 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
   const dayStart = planAtFromYmdAndMinutes(todayYmd, 0)
   const dayEnd = planAtFromYmdAndMinutes(todayYmd, 1439)
 
-  const [bugunPlanlanan, yaklasan, simulasyonTamamlanan, atlanan, basarisiz, iptalEdilen, ayar] =
+  const [bugunPlanlanan, yaklasan, gonderilen, teslimEdilen, simulasyonTamamlanan, atlanan, basarisiz, iptalEdilen, bakiyeYetersiz, ayar] =
     await Promise.all([
       prisma.tahsilatBildirimIsi.count({
         where: {
@@ -120,6 +135,12 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
         }
       }),
       prisma.tahsilatBildirimIsi.count({
+        where: { tenantId, durum: BildirimIsDurumu.GONDERILDI }
+      }),
+      prisma.tahsilatBildirimIsi.count({
+        where: { tenantId, durum: BildirimIsDurumu.TESLIM_EDILDI }
+      }),
+      prisma.tahsilatBildirimIsi.count({
         where: { tenantId, durum: BildirimIsDurumu.SIMULASYON_TAMAMLANDI }
       }),
       prisma.tahsilatBildirimIsi.count({
@@ -131,6 +152,9 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
       prisma.tahsilatBildirimIsi.count({
         where: { tenantId, durum: BildirimIsDurumu.IPTAL_EDILDI }
       }),
+      prisma.tahsilatBildirimIsi.count({
+        where: { tenantId, durum: BildirimIsDurumu.ATLANDI, atlamaNedeni: { contains: 'bakiye', mode: 'insensitive' } }
+      }),
       prisma.tahsilatBildirimAyar.findUnique({
         where: { tenantId },
         select: { testModu: true, otomasyonAktif: true }
@@ -140,10 +164,13 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
   return {
     bugunPlanlanan,
     yaklasan,
+    gonderilen,
+    teslimEdilen,
     simulasyonTamamlanan,
     atlanan,
     basarisiz,
     iptalEdilen,
+    bakiyeYetersiz,
     testModu: ayar?.testModu ?? true,
     otomasyonAktif: ayar?.otomasyonAktif ?? false,
     // Geriye dönük uyumluluk

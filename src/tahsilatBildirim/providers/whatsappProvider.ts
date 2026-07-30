@@ -1,3 +1,7 @@
+import { env } from '../../config/env.js'
+
+export type WhatsAppProviderKind = 'MANUAL_WHATSAPP' | 'WHATSAPP_CLOUD_API'
+
 export type WhatsAppSendPayload = {
   tenantId: string
   /** E.164 without +: 90XXXXXXXXXX — çağıran taraf loglamamalı. */
@@ -8,43 +12,83 @@ export type WhatsAppSendPayload = {
 
 export type WhatsAppSendResult = {
   ok: boolean
-  provider: string
+  provider: WhatsAppProviderKind | 'MOCK_SIMULATION'
   code: string
   message: string
-  externalId?: string | null
+  providerMessageId?: string | null
+  /** Yalnızca MANUAL_WHATSAPP: kullanıcı yönlendirme URL’si. */
+  deepLinkUrl?: string | null
 }
 
 export interface WhatsAppProvider {
+  readonly kind: WhatsAppProviderKind
   send(payload: WhatsAppSendPayload): Promise<WhatsAppSendResult>
 }
 
-/** Faz 1: ağ çağrısı yok; başarılı simülasyon. */
-export class MockWhatsAppProvider implements WhatsAppProvider {
-  async send(_payload: WhatsAppSendPayload): Promise<WhatsAppSendResult> {
+/** Kullanıcı kendi WhatsApp hesabından gönderir; API çağrısı yok. */
+export class ManualWhatsAppProvider implements WhatsAppProvider {
+  readonly kind = 'MANUAL_WHATSAPP' as const
+
+  async send(payload: WhatsAppSendPayload): Promise<WhatsAppSendResult> {
+    const deepLinkUrl = `https://wa.me/${payload.toE164}?text=${encodeURIComponent(payload.text)}`
     return {
       ok: true,
-      provider: 'MOCK_SIMULATION',
-      code: 'SIMULATED',
-      message: 'Simülasyon başarılı; gerçek WhatsApp gönderimi yapılmadı.',
-      externalId: null
+      provider: 'MANUAL_WHATSAPP',
+      code: 'MANUAL_READY',
+      message: 'WhatsApp bağlantısı hazır; mesaj otomatik gönderilmez.',
+      providerMessageId: null,
+      deepLinkUrl
     }
   }
 }
 
-/** Faz 1: Meta Cloud API kapalı — sahte başarı yok. */
-export class MetaCloudWhatsAppProvider implements WhatsAppProvider {
+/**
+ * Meta Cloud API iskeleti.
+ * WHATSAPP_CLOUD_API_ENABLED=false veya hesap ACTIVE değilken gerçek dış istek yok.
+ */
+export class WhatsAppCloudApiProvider implements WhatsAppProvider {
+  readonly kind = 'WHATSAPP_CLOUD_API' as const
+
   async send(_payload: WhatsAppSendPayload): Promise<WhatsAppSendResult> {
+    if (!env.WHATSAPP_CLOUD_API_ENABLED) {
+      return {
+        ok: false,
+        provider: 'WHATSAPP_CLOUD_API',
+        code: 'FEATURE_DISABLED',
+        message: 'WhatsApp Cloud API feature flag kapalı; gerçek gönderim yapılmaz.',
+        providerMessageId: null
+      }
+    }
+    // Meta onayı ve tenant secret/config tamamlanmadan ağ çağrısı yok.
     return {
       ok: false,
-      provider: 'META_CLOUD',
-      code: 'DISABLED',
-      message: 'WhatsApp otomatik gönderimi henüz aktif değil',
-      externalId: null
+      provider: 'WHATSAPP_CLOUD_API',
+      code: 'NOT_CONFIGURED',
+      message: 'WhatsApp Cloud API henüz yapılandırılmadı; Meta onayı sonrası aktif edilecek.',
+      providerMessageId: null
     }
   }
+}
+
+export function isWhatsAppCloudApiAllowed(): boolean {
+  return env.WHATSAPP_CLOUD_API_ENABLED === true
+}
+
+/**
+ * Varsayılan: MANUAL_WHATSAPP.
+ * Cloud API yalnızca feature flag açıkken seçilebilir; aksi halde manuel.
+ */
+export function resolveWhatsAppProvider(preferred?: WhatsAppProviderKind | null): WhatsAppProvider {
+  if (preferred === 'WHATSAPP_CLOUD_API' && isWhatsAppCloudApiAllowed()) {
+    return new WhatsAppCloudApiProvider()
+  }
+  return new ManualWhatsAppProvider()
 }
 
 export function getWhatsAppProvider(testModu: boolean): WhatsAppProvider {
-  if (testModu) return new MockWhatsAppProvider()
-  return new MetaCloudWhatsAppProvider()
+  // testModu eski çağrılar için; Cloud API flag kapalıysa her zaman manuel.
+  if (testModu || !isWhatsAppCloudApiAllowed()) {
+    return new ManualWhatsAppProvider()
+  }
+  return new WhatsAppCloudApiProvider()
 }

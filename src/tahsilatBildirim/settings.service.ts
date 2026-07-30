@@ -8,6 +8,7 @@ import {
   WhatsAppBaglantiDurumu
 } from '@prisma/client'
 import type { Request } from 'express'
+import { env } from '../config/env.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
@@ -67,9 +68,13 @@ export async function ensureTenantBildirimDefaults(tenantId: string): Promise<vo
       otomasyonAktif: false,
       testModu: true,
       izinliSaatBaslangic: 600,
-      izinliSaatBitis: 1200
+      izinliSaatBitis: 1200,
+      otomatikSmsAktif: false
     },
-    update: {}
+    update: {
+      // Yeni SMS üretimi kapalı tutulur.
+      otomatikSmsAktif: false
+    }
   })
 
   for (const rule of DEFAULT_RULES) {
@@ -114,7 +119,7 @@ export async function ensureTenantBildirimDefaults(tenantId: string): Promise<vo
     where: { tenantId },
     create: {
       tenantId,
-      durum: WhatsAppBaglantiDurumu.BAGLI_DEGIL
+      durum: WhatsAppBaglantiDurumu.DISABLED
     },
     update: {}
   })
@@ -128,17 +133,16 @@ export async function getSettings(tenantId: string): Promise<{
 }> {
   await ensureTenantBildirimDefaults(tenantId)
 
-  const [ayar, kurallar, sablonlar, baglanti] = await Promise.all([
+  const [ayar, kurallar, sablonlar] = await Promise.all([
     prisma.tahsilatBildirimAyar.findUniqueOrThrow({ where: { tenantId } }),
     prisma.tahsilatBildirimKurali.findMany({
-      where: { tenantId },
+      where: { tenantId, kanal: BildirimKanali.WHATSAPP },
       orderBy: { kuralTuru: 'asc' }
     }),
     prisma.tahsilatBildirimSablonu.findMany({
-      where: { tenantId },
+      where: { tenantId, kanal: BildirimKanali.WHATSAPP },
       orderBy: { kuralTuru: 'asc' }
-    }),
-    prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
+    })
   ])
 
   return {
@@ -146,10 +150,9 @@ export async function getSettings(tenantId: string): Promise<{
     kurallar: kurallar.map(serializeKural),
     sablonlar: sablonlar.map(serializeSablon),
     whatsapp: {
-      durum: baglanti?.durum ?? WhatsAppBaglantiDurumu.BAGLI_DEGIL,
-      wabaIdMasked: baglanti?.wabaIdMasked ?? null,
-      phoneNumberIdMasked: baglanti?.phoneNumberIdMasked ?? null,
-      sonHataOzeti: baglanti?.sonHataOzeti ?? null
+      aktifProvider: 'MANUAL_WHATSAPP',
+      cloudApiEnabled: false,
+      bilgi: 'Bildirimler WhatsApp üzerinden, kendi WhatsApp hesabınız kullanılarak gönderilir.'
     }
   }
 }
@@ -178,7 +181,9 @@ export async function updateSettings(
     throw new AppError(400, 'İzinli saat başlangıcı bitişten küçük olmalıdır.', 'INVALID_WINDOW')
   }
 
-  const data: Prisma.TahsilatBildirimAyarUpdateInput = {}
+  const data: Prisma.TahsilatBildirimAyarUpdateInput = {
+    otomatikSmsAktif: false
+  }
   if (body.otomasyonAktif !== undefined) data.otomasyonAktif = body.otomasyonAktif
   if (body.testModu !== undefined) data.testModu = body.testModu
   if (body.izinliSaatBaslangic !== undefined) data.izinliSaatBaslangic = body.izinliSaatBaslangic
@@ -307,10 +312,13 @@ export async function getWhatsAppDurum(tenantId: string): Promise<Record<string,
   await ensureTenantBildirimDefaults(tenantId)
   const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
   return {
-    durum: baglanti?.durum ?? WhatsAppBaglantiDurumu.BAGLI_DEGIL,
+    durum: baglanti?.durum ?? WhatsAppBaglantiDurumu.DISABLED,
     wabaIdMasked: baglanti?.wabaIdMasked ?? null,
     phoneNumberIdMasked: baglanti?.phoneNumberIdMasked ?? null,
     sonHataOzeti: baglanti?.sonHataOzeti ?? null,
-    gercekGonderimAktif: false
+    aktifProvider: 'MANUAL_WHATSAPP',
+    cloudApiEnabled: env.WHATSAPP_CLOUD_API_ENABLED,
+    gercekGonderimAktif: false,
+    bilgi: 'Bildirimler WhatsApp üzerinden, kendi WhatsApp hesabınız kullanılarak gönderilir.'
   }
 }

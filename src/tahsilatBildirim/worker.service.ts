@@ -2,12 +2,17 @@ import {
   BildirimIsDurumu,
   BildirimKanali,
   BildirimKuralTuru,
-  Prisma
+  BildirimProvider,
+  Prisma,
+  WhatsAppBaglantiDurumu
 } from '@prisma/client'
+import { env } from '../config/env.js'
 import { prisma } from '../lib/prisma.js'
+import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
+import { getTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { maskPhone, normalizeTurkiyePhone } from './phone.js'
-import { getWhatsAppProvider } from './providers/whatsappProvider.js'
-import { renderTemplate, type TemplateVars } from './templates.js'
+import { isWhatsAppCloudApiAllowed, resolveWhatsAppProvider } from './providers/whatsappProvider.js'
+import { DEFAULT_TEMPLATES, renderTemplate, type TemplateVars } from './templates.js'
 import { minutesNowTr, ymdTr } from './time.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
@@ -53,10 +58,13 @@ export type ProcessDueJobsResult = {
   atlananTelefon: number
   atlananIzin: number
   atlananDosya: number
+  atlananTaksit: number
   atlananSablon: number
   basarisiz: number
   skippedAlreadyDone: number
   deferredWindow: number
+  skippedManual: number
+  skippedSmsDeprecated: number
 }
 
 type LockedRow = { id: string }
@@ -70,20 +78,21 @@ async function claimDueJobs(opts: {
   const lockStaleBefore = new Date(opts.now.getTime() - 15 * 60 * 1000)
 
   return prisma.$transaction(async (tx) => {
-    const rows = opts.tenantId
-      ? await tx.$queryRaw<LockedRow[]>`
+    const rows =
+      opts.tenantId != null
+        ? await tx.$queryRaw<LockedRow[]>`
           SELECT id FROM tahsilat_bildirim_isi
-          WHERE durum IN ('PLANLANDI', 'KUYRUKTA')
+          WHERE tenant_id = ${opts.tenantId}::uuid
+            AND durum IN ('PLANLANDI'::"BildirimIsDurumu", 'KUYRUKTA'::"BildirimIsDurumu")
             AND planlanan_at <= ${opts.now}
-            AND tenant_id = ${opts.tenantId}
             AND (locked_at IS NULL OR locked_at < ${lockStaleBefore})
           ORDER BY planlanan_at ASC
           LIMIT ${opts.limit}
           FOR UPDATE SKIP LOCKED
         `
-      : await tx.$queryRaw<LockedRow[]>`
+        : await tx.$queryRaw<LockedRow[]>`
           SELECT id FROM tahsilat_bildirim_isi
-          WHERE durum IN ('PLANLANDI', 'KUYRUKTA')
+          WHERE durum IN ('PLANLANDI'::"BildirimIsDurumu", 'KUYRUKTA'::"BildirimIsDurumu")
             AND planlanan_at <= ${opts.now}
             AND (locked_at IS NULL OR locked_at < ${lockStaleBefore})
           ORDER BY planlanan_at ASC
@@ -121,10 +130,13 @@ export async function processDueJobs(
     atlananTelefon: 0,
     atlananIzin: 0,
     atlananDosya: 0,
+    atlananTaksit: 0,
     atlananSablon: 0,
     basarisiz: 0,
     skippedAlreadyDone: 0,
-    deferredWindow: 0
+    deferredWindow: 0,
+    skippedManual: 0,
+    skippedSmsDeprecated: 0
   }
 
   const ids = await claimDueJobs({
@@ -163,6 +175,21 @@ export async function processDueJobs(
       continue
     }
 
+    // Eski SMS işleri: yeni otomatik üretim yok; geçmiş kayıtlar korunur, worker göndermez.
+    if (job.kanal === BildirimKanali.SMS) {
+      result.skippedSmsDeprecated += 1
+      await prisma.tahsilatBildirimIsi.update({
+        where: { id },
+        data: {
+          durum: BildirimIsDurumu.ATLANDI,
+          atlamaNedeni: 'SMS kanalı kullanımdan kaldırıldı',
+          lockedAt: null,
+          lockedBy: null
+        }
+      })
+      continue
+    }
+
     const ayar = await prisma.tahsilatBildirimAyar.findUnique({
       where: { tenantId: job.tenantId }
     })
@@ -178,7 +205,6 @@ export async function processDueJobs(
       continue
     }
 
-    const testModu = options.simulateOnly === true ? true : (ayar?.testModu ?? true)
     const winStart = ayar?.izinliSaatBaslangic ?? 600
     const winEnd = ayar?.izinliSaatBitis ?? 1200
 
@@ -195,27 +221,22 @@ export async function processDueJobs(
       continue
     }
 
-    if (!job.muvekkil.otomatikBildirimIzni) {
-      result.atlananIzin += 1
+    const taksitAktif = await getTaksitOtomatikBildirimAktif(job.taksitId)
+    const elig = evaluateAutoBildirimEligibility({
+      tenantOtomasyonAktif: true,
+      muvekkilIzni: job.muvekkil.otomatikBildirimIzni,
+      dosyaAktif: job.dosya.otomatikBildirimAktif,
+      taksitAktif
+    })
+    if (!elig.eligible) {
+      if (elig.blockingLevel === 'MUVEKKIL') result.atlananIzin += 1
+      else if (elig.blockingLevel === 'DOSYA') result.atlananDosya += 1
+      else if (elig.blockingLevel === 'TAKSIT') result.atlananTaksit += 1
       await prisma.tahsilatBildirimIsi.update({
         where: { id },
         data: {
           durum: BildirimIsDurumu.ATLANDI,
-          atlamaNedeni: 'Bildirim izni kapalı',
-          lockedAt: null,
-          lockedBy: null
-        }
-      })
-      continue
-    }
-
-    if (!job.dosya.otomatikBildirimAktif) {
-      result.atlananDosya += 1
-      await prisma.tahsilatBildirimIsi.update({
-        where: { id },
-        data: {
-          durum: BildirimIsDurumu.ATLANDI,
-          atlamaNedeni: 'Dosyada otomasyon kapalı',
+          atlamaNedeni: elig.kullaniciMesaji,
           lockedAt: null,
           lockedBy: null
         }
@@ -267,7 +288,14 @@ export async function processDueJobs(
     const vadeYmd = ymdTr(job.taksit.vadeTarihi)
     const gecikme =
       job.kuralTuru === BildirimKuralTuru.VADE_SONRASI
-        ? Math.max(0, Math.round((new Date(`${todayYmd}T12:00:00+03:00`).getTime() - new Date(`${vadeYmd}T12:00:00+03:00`).getTime()) / 86_400_000))
+        ? Math.max(
+            0,
+            Math.round(
+              (new Date(`${todayYmd}T12:00:00+03:00`).getTime() -
+                new Date(`${vadeYmd}T12:00:00+03:00`).getTime()) /
+                86_400_000
+            )
+          )
         : 0
 
     const dosyaBilgisi = job.dosya.dosyaNo
@@ -285,16 +313,15 @@ export async function processDueJobs(
       gecikmeGunu: String(gecikme || (job.kuralTuru === BildirimKuralTuru.VADE_SONRASI ? 1 : 0))
     }
 
-    const rendered = renderTemplate(sablon?.metin ?? '', vars)
-    if (!sablon || !rendered.ok) {
+    const templateText = sablon?.metin ?? DEFAULT_TEMPLATES[job.kuralTuru]
+    const rendered = renderTemplate(templateText, vars)
+    if (!rendered.ok) {
       result.atlananSablon += 1
       await prisma.tahsilatBildirimIsi.update({
         where: { id },
         data: {
           durum: BildirimIsDurumu.ATLANDI,
-          atlamaNedeni: !sablon
-            ? 'Şablon bulunamadı'
-            : `Şablon değişkenleri eksik: ${rendered.ok === false ? rendered.missing.join(', ') : ''}`,
+          atlamaNedeni: `Şablon değişkenleri eksik: ${rendered.missing.join(', ')}`,
           lockedAt: null,
           lockedBy: null
         }
@@ -302,7 +329,53 @@ export async function processDueJobs(
       continue
     }
 
-    const provider = getWhatsAppProvider(testModu)
+    const preferred =
+      job.provider === BildirimProvider.WHATSAPP_CLOUD_API
+        ? 'WHATSAPP_CLOUD_API'
+        : 'MANUAL_WHATSAPP'
+
+    // Manuel WhatsApp otomatik worker ile gönderilmez (kullanıcı wa.me açar).
+    // Simülasyon hariç: Cloud API flag + ACTIVE hesap şart.
+    const cloudReady =
+      isWhatsAppCloudApiAllowed() &&
+      preferred === 'WHATSAPP_CLOUD_API' &&
+      (await prisma.whatsAppBaglanti.findUnique({ where: { tenantId: job.tenantId } }))?.durum ===
+        WhatsAppBaglantiDurumu.ACTIVE
+
+    if (!options.simulateOnly && !cloudReady) {
+      result.skippedManual += 1
+      await prisma.tahsilatBildirimIsi.update({
+        where: { id },
+        data: {
+          durum: BildirimIsDurumu.PLANLANDI,
+          provider: BildirimProvider.MANUAL_WHATSAPP,
+          providerAdi: 'MANUAL_WHATSAPP',
+          telefonMaskeli: maskPhone(phoneE164),
+          atlamaNedeni: null,
+          lockedAt: null,
+          lockedBy: null
+        }
+      })
+      continue
+    }
+
+    if (!options.simulateOnly && preferred === 'WHATSAPP_CLOUD_API' && !env.WHATSAPP_CLOUD_API_ENABLED) {
+      result.basarisiz += 1
+      await prisma.tahsilatBildirimIsi.update({
+        where: { id },
+        data: {
+          durum: BildirimIsDurumu.BASARISIZ,
+          hataOzeti: 'WhatsApp Cloud API feature flag kapalı',
+          sonProviderHataKodu: 'FEATURE_DISABLED',
+          providerAdi: 'WHATSAPP_CLOUD_API',
+          lockedAt: null,
+          lockedBy: null
+        }
+      })
+      continue
+    }
+
+    const provider = resolveWhatsAppProvider(cloudReady ? 'WHATSAPP_CLOUD_API' : 'MANUAL_WHATSAPP')
     const sendResult = await provider.send({
       tenantId: job.tenantId,
       toE164: phoneE164,
@@ -313,7 +386,7 @@ export async function processDueJobs(
     const telefonMaskeli = maskPhone(phoneE164)
     const denemeAt = new Date()
 
-    if (sendResult.ok && sendResult.provider === 'MOCK_SIMULATION') {
+    if (sendResult.ok || options.simulateOnly) {
       result.simulasyon += 1
       await prisma.$transaction([
         prisma.tahsilatBildirimDeneme.create({
@@ -323,19 +396,27 @@ export async function processDueJobs(
             provider: sendResult.provider,
             basariliMi: true,
             telefonMaskeli,
-            sablonOzeti: truncate(sablon.metin, 200),
-            mesajOzeti: truncate(rendered.text, 280),
-            sonucKodu: sendResult.code,
+            sablonOzeti: truncate(templateText, 200),
+            mesajOzeti: 'MASKED',
+            sonucKodu: options.simulateOnly ? 'SIMULATED' : sendResult.code,
             sonucMesaji: sendResult.message
           }
         }),
         prisma.tahsilatBildirimIsi.update({
           where: { id },
           data: {
-            durum: BildirimIsDurumu.SIMULASYON_TAMAMLANDI,
+            durum:
+              options.simulateOnly || sendResult.provider === 'MANUAL_WHATSAPP'
+                ? BildirimIsDurumu.SIMULASYON_TAMAMLANDI
+                : BildirimIsDurumu.GONDERILDI,
             kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
             denemeSayisi: { increment: 1 },
             sonDenemeAt: denemeAt,
+            telefonMaskeli,
+            provider: BildirimProvider.MANUAL_WHATSAPP,
+            providerAdi: sendResult.provider,
+            providerMessageId: sendResult.providerMessageId ?? null,
+            sonProviderHataKodu: null,
             lockedAt: null,
             lockedBy: null,
             hataOzeti: null,
@@ -346,28 +427,29 @@ export async function processDueJobs(
       continue
     }
 
-    // Meta kapalı / yapılandırılmamış — sahte başarı yok
     result.basarisiz += 1
-    const msg = sendResult.message || 'WhatsApp otomatik gönderimi henüz aktif değil'
     await prisma.$transaction([
       prisma.tahsilatBildirimDeneme.create({
         data: {
           tenantId: job.tenantId,
           isId: job.id,
-          provider: sendResult.provider || 'META_DISABLED',
+          provider: sendResult.provider,
           basariliMi: false,
           telefonMaskeli,
-          sablonOzeti: truncate(sablon.metin, 200),
-          mesajOzeti: truncate(rendered.text, 280),
-          sonucKodu: sendResult.code || 'DISABLED',
-          sonucMesaji: msg
+          sablonOzeti: truncate(templateText, 200),
+          mesajOzeti: 'MASKED',
+          sonucKodu: sendResult.code || 'FAILED',
+          sonucMesaji: sendResult.message
         }
       }),
       prisma.tahsilatBildirimIsi.update({
         where: { id },
         data: {
           durum: BildirimIsDurumu.BASARISIZ,
-          hataOzeti: msg,
+          hataOzeti: sendResult.message,
+          sonProviderHataKodu: sendResult.code || null,
+          providerAdi: sendResult.provider,
+          telefonMaskeli,
           denemeSayisi: { increment: 1 },
           sonDenemeAt: denemeAt,
           lockedAt: null,

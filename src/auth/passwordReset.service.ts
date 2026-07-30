@@ -14,8 +14,8 @@ import { getActivationTokenExpiresHours } from '../config/env.js'
 export const FORGOT_PASSWORD_PUBLIC_MESSAGE =
   'Bilgiler sistemde kayıtlıysa şifre sıfırlama bağlantısı e-posta adresinize gönderilecektir.'
 
-export const FORGOT_PASSWORD_SENT_MESSAGE =
-  'Şifre sıfırlama bağlantısı e-posta adresinize gönderildi.'
+/** @deprecated Enumeration önlemek için her zaman PUBLIC mesaj kullanın. */
+export const FORGOT_PASSWORD_SENT_MESSAGE = FORGOT_PASSWORD_PUBLIC_MESSAGE
 
 const BCRYPT_ROUNDS = 12
 const RESET_TOKEN_EXPIRES_MIN = 30
@@ -135,7 +135,7 @@ export async function requestPasswordReset(body: ForgotPasswordBody, req: Reques
     userAgent: meta.userAgent
   })
 
-  return { message: FORGOT_PASSWORD_SENT_MESSAGE }
+  return { message: FORGOT_PASSWORD_PUBLIC_MESSAGE }
 }
 
 export type ActivationTokenResult = {
@@ -178,7 +178,7 @@ export async function issueActivationToken(
   return { plainToken, expiresAt }
 }
 
-export async function resetPasswordWithToken(body: ResetPasswordBody, req: Request): Promise<void> {
+export async function resetPasswordWithToken(body: ResetPasswordBody, req: Request): Promise<string> {
   const meta = getRequestMeta(req)
   const tokenHash = hashResetToken(body.token)
   const now = new Date()
@@ -221,16 +221,23 @@ export async function resetPasswordWithToken(body: ResetPasswordBody, req: Reque
 
   const sifreHash = await bcrypt.hash(body.yeniSifre, BCRYPT_ROUNDS)
 
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: row.userId },
-      data: { sifreHash }
-    }),
-    prisma.passwordResetToken.update({
-      where: { id: row.id },
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.passwordResetToken.updateMany({
+      where: {
+        id: row.id,
+        usedAt: null,
+        expiresAt: { gt: now }
+      },
       data: { usedAt: now }
     })
-  ])
+    if (claimed.count !== 1) {
+      throw new AppError(400, GENERIC_RESET_FAILURE, 'PASSWORD_RESET_INVALID')
+    }
+    await tx.user.update({
+      where: { id: row.userId },
+      data: { sifreHash, mustChangePassword: false }
+    })
+  })
 
   console.info('[auth] reset-password success — userId:', row.userId.slice(0, 8))
 
@@ -243,4 +250,6 @@ export async function resetPasswordWithToken(body: ResetPasswordBody, req: Reque
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })
+
+  return row.userId
 }

@@ -75,6 +75,8 @@ export async function adminChangeOwnPassword(adminId: string, body: ChangePwdBod
   const sifreHash = await hashPassword(body.yeniSifre)
   const meta = getRequestMeta(req)
   await prisma.superAdmin.update({ where: { id: adminId }, data: { sifreHash } })
+  const { revokeAdminRefreshSessions } = await import('../auth/adminRefreshSession.service.js')
+  await revokeAdminRefreshSessions(adminId)
 
   await writeAdminAuditLog({
     adminId,

@@ -147,6 +147,7 @@ ofisKasasiRouter.post(
 ofisKasasiRouter.post(
   '/hareketler/:id/duzeltme',
   requireAuth,
+  requireRole(...HAREKET_OLUSTURMA_ROLLER),
   asyncHandler(async (req, res) => {
     const { id } = idParamSchema.parse(req.params)
     const body = createOfisKasaDuzeltmeBodySchema.parse(req.body)

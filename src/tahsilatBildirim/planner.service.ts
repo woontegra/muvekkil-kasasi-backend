@@ -7,6 +7,8 @@ import {
 } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { ensureTenantBildirimDefaults } from './settings.service.js'
+import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
+import { mapTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { addDaysYmd, planAtFromYmdAndMinutes, ymdTr } from './time.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
@@ -34,9 +36,10 @@ function idempotencyKey(
   tenantId: string,
   taksitId: string,
   kuralTuru: BildirimKuralTuru,
+  kanal: BildirimKanali,
   planYmd: string
 ): string {
-  return `${tenantId}|${taksitId}|${kuralTuru}|WHATSAPP|${planYmd}`
+  return `${tenantId}|${taksitId}|${kuralTuru}|${kanal}|${planYmd}`
 }
 
 export type PlanJobsResult = {
@@ -116,13 +119,22 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
     include: {
       odemeler: { select: { tutar: true } },
       dosya: { select: { id: true, otomatikBildirimAktif: true } },
-      muvekkil: { select: { id: true } }
+      muvekkil: { select: { id: true, otomatikBildirimIzni: true } }
     }
   })
 
   let created = 0
+  const taksitAktifMap = await mapTaksitOtomatikBildirimAktif(taksitler.map((t) => t.id))
 
   for (const taksit of taksitler) {
+    const elig = evaluateAutoBildirimEligibility({
+      tenantOtomasyonAktif: true,
+      muvekkilIzni: taksit.muvekkil.otomatikBildirimIzni,
+      dosyaAktif: taksit.dosya.otomatikBildirimAktif,
+      taksitAktif: taksitAktifMap.get(taksit.id) ?? true
+    })
+    if (!elig.eligible) continue
+
     const kalan = Math.max(0, Number(taksit.tutar) - sumOdeme(taksit.odemeler))
     if (kalan <= 0.001) continue
 
@@ -132,7 +144,7 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
       const planYmd = targetYmdForRule(vadeYmd, rule.kuralTuru, rule.gunOffset)
       if (planYmd !== todayYmd) continue
 
-      const key = idempotencyKey(tenantId, taksit.id, rule.kuralTuru, planYmd)
+      const key = idempotencyKey(tenantId, taksit.id, rule.kuralTuru, BildirimKanali.WHATSAPP, planYmd)
       const planlananAt = planAtFromYmdAndMinutes(planYmd, rule.gonderimSaatiDk)
 
       try {
@@ -143,11 +155,13 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
             dosyaId: taksit.dosyaId,
             taksitId: taksit.id,
             kanal: BildirimKanali.WHATSAPP,
+            provider: 'MANUAL_WHATSAPP',
             kuralTuru: rule.kuralTuru,
             planlananAt,
             kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
             durum: BildirimIsDurumu.PLANLANDI,
-            idempotencyKey: key
+            idempotencyKey: key,
+            providerAdi: 'MANUAL_WHATSAPP'
           }
         })
         created += 1

@@ -207,6 +207,13 @@ export const adminProfileUpdateSchema = z.object({
   eposta: z.string().trim().email().max(320).nullable().optional()
 })
 
+export const adminSmsBalanceAdjustSchema = z.object({
+  islemTuru: z.enum(['YUKLE', 'DUZELTME', 'DUS']),
+  miktar: z.coerce.number().int().min(1),
+  aciklama: z.string().trim().min(1).max(1000),
+  idempotencyKey: z.string().trim().min(8).max(128)
+})
+
 export const adminSelfChangePasswordSchema = z
   .object({
     mevcutSifre: z.string().min(1, 'Mevcut şifre gerekli.'),
