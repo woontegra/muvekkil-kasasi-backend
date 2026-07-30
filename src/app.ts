@@ -1,6 +1,7 @@
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import express from 'express'
+import { getAllowedOrigins } from './config/allowedOrigins.js'
 import { env } from './config/env.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requestLogger } from './middleware/requestLogger.js'
@@ -35,11 +36,9 @@ export function createApp(): express.Express {
   app.use(express.json({ limit: '1mb' }))
   app.use(cookieParser())
 
-  const origins = env.CORS_ORIGIN.split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  if (origins.includes('*') || origins.length === 0) {
-    throw new Error('CORS_ORIGIN=* credentials ile kullanılamaz; bilinen frontend origin tanımlayın.')
+  const origins = getAllowedOrigins()
+  if (origins.length === 0) {
+    throw new Error('CORS_ORIGIN/FRONTEND_URL boş; bilinen frontend origin tanımlayın.')
   }
   app.use(
     cors({
