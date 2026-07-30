@@ -7,6 +7,7 @@ import { env } from '../config/env.js'
  * ORIGIN_FORBIDDEN olmasın (tam eşleşme; wildcard yok).
  */
 const KNOWN_PRODUCTION_FRONTEND_ORIGINS = [
+  'https://muvekkil.woontegra.com',
   'https://muvekkil-kasasi-frontend.vercel.app',
   'https://app.muvekkilkasasi.com'
 ] as const

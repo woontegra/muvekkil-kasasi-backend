@@ -21,7 +21,7 @@ function resolveFrontendOrigin(): string {
       /* ignore */
     }
   }
-  return 'https://muvekkil-kasasi-frontend.vercel.app'
+  return 'https://muvekkil.woontegra.com'
 }
 
 const FRONTEND_ORIGIN = resolveFrontendOrigin()
