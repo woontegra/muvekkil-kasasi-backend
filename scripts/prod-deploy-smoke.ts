@@ -10,6 +10,22 @@ const API = (
   'https://muvekkil-kasasi-backend-production.up.railway.app'
 ).replace(/\/$/, '')
 
+function resolveFrontendOrigin(): string {
+  const fromEnv = process.env.PROD_FRONTEND_ORIGIN?.trim()
+  if (fromEnv) return fromEnv.replace(/\/$/, '')
+  const fe = process.env.FRONTEND_URL?.trim() || process.env.PUBLIC_APP_URL?.trim()
+  if (fe) {
+    try {
+      return new URL(fe).origin
+    } catch {
+      /* ignore */
+    }
+  }
+  return 'https://muvekkil-kasasi-frontend.vercel.app'
+}
+
+const FRONTEND_ORIGIN = resolveFrontendOrigin()
+
 const infoPass = process.env.ADMIN_BOOTSTRAP_PASSWORD
 const e2eUser = process.env.E2E_USER ?? 'e2e.sahip'
 const e2ePass = process.env.E2E_PASSWORD ?? 'E2eTestPass123!'
@@ -27,7 +43,7 @@ async function jsonFetch(path: string, init?: RequestInit) {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Origin: process.env.PROD_FRONTEND_ORIGIN ?? 'https://muvekkil-kasasi-frontend.vercel.app',
+      Origin: FRONTEND_ORIGIN,
       ...(init?.headers as Record<string, string> | undefined)
     }
   })
@@ -43,6 +59,13 @@ async function jsonFetch(path: string, init?: RequestInit) {
 
 async function main() {
   console.info('[prod-smoke] API', API)
+  console.info('[prod-smoke] frontendOriginHost', (() => {
+    try {
+      return new URL(FRONTEND_ORIGIN).host
+    } catch {
+      return '(invalid)'
+    }
+  })())
 
   const health = await jsonFetch('/health')
   record('health', health.status === 200 && (health.body as { ok?: boolean })?.ok === true)
@@ -92,7 +115,7 @@ async function main() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Origin: process.env.PROD_FRONTEND_ORIGIN ?? 'https://muvekkil-kasasi-frontend.vercel.app',
+          Origin: FRONTEND_ORIGIN,
           Cookie: cookieHeader
         }
       })
