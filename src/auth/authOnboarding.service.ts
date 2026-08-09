@@ -6,7 +6,7 @@ import { saasLicenseKeysMatch } from '../lib/saasLicenseKey.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getRequestMeta } from './requestMeta.js'
-import type { ActivateLicenseBody, ChangeInitialPasswordBody } from './auth.schemas.js'
+import type { ActivateLicenseBody, ChangeInitialPasswordBody, ChangePasswordBody } from './auth.schemas.js'
 
 const BCRYPT_ROUNDS = 12
 
@@ -125,4 +125,36 @@ export async function changeInitialPasswordForUser(
   })
 
   return getUserOnboardingFlags(updated, updated.tenant)
+}
+
+export async function changePasswordForUser(
+  user: User & { tenant: Tenant },
+  body: ChangePasswordBody,
+  req: Request
+): Promise<void> {
+  const ok = await bcrypt.compare(body.mevcutSifre, user.sifreHash)
+  if (!ok) {
+    throw new AppError(401, 'Mevcut şifre hatalı.', 'INVALID_PASSWORD')
+  }
+
+  const sifreHash = await bcrypt.hash(body.yeniSifre, BCRYPT_ROUNDS)
+  const meta = getRequestMeta(req)
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      sifreHash,
+      mustChangePassword: false
+    }
+  })
+
+  await writeAuditLog({
+    tenantId: user.tenantId,
+    userId: user.id,
+    action: 'PASSWORD_CHANGED',
+    entityType: 'User',
+    entityId: user.id,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
 }

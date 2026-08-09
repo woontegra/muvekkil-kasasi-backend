@@ -60,8 +60,10 @@ function serializeJob(row: {
       humanizeBildirimNedeni(row.atlamaNedeni) ??
       humanizeBildirimNedeni(row.iptalNedeni) ??
       (row.durum === BildirimIsDurumu.PLANLANDI || row.durum === BildirimIsDurumu.KUYRUKTA
-        ? 'Planlandı'
-        : null),
+        ? 'Gönderilmeyi bekliyor'
+        : row.durum === BildirimIsDurumu.SIMULASYON_TAMAMLANDI
+          ? 'WhatsApp açıldı'
+          : null),
     hataOzeti: row.hataOzeti,
     denemeSayisi: row.denemeSayisi,
     sonDenemeAt: row.sonDenemeAt?.toISOString() ?? null,
@@ -119,8 +121,19 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
   const dayStart = planAtFromYmdAndMinutes(todayYmd, 0)
   const dayEnd = planAtFromYmdAndMinutes(todayYmd, 1439)
 
-  const [bugunPlanlanan, yaklasan, gonderilen, teslimEdilen, simulasyonTamamlanan, atlanan, basarisiz, iptalEdilen, bakiyeYetersiz, ayar] =
-    await Promise.all([
+  const [
+    bugunPlanlanan,
+    yaklasan,
+    gonderilmeyiBekleyen,
+    gonderilen,
+    teslimEdilen,
+    simulasyonTamamlanan,
+    atlanan,
+    basarisiz,
+    iptalEdilen,
+    bakiyeYetersiz,
+    ayar
+  ] = await Promise.all([
       prisma.tahsilatBildirimIsi.count({
         where: {
           tenantId,
@@ -132,6 +145,18 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
         where: {
           tenantId,
           durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+        }
+      }),
+      prisma.tahsilatBildirimIsi.count({
+        where: {
+          tenantId,
+          durum: {
+            in: [
+              BildirimIsDurumu.PLANLANDI,
+              BildirimIsDurumu.KUYRUKTA,
+              BildirimIsDurumu.SIMULASYON_TAMAMLANDI
+            ]
+          }
         }
       }),
       prisma.tahsilatBildirimIsi.count({
@@ -164,6 +189,7 @@ export async function getBildirimOzet(tenantId: string): Promise<Record<string, 
   return {
     bugunPlanlanan,
     yaklasan,
+    gonderilmeyiBekleyen,
     gonderilen,
     teslimEdilen,
     simulasyonTamamlanan,

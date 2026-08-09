@@ -2,7 +2,6 @@ import { Router } from 'express'
 import { authRouter } from '../auth/auth.routes.js'
 import { loadAuthContext } from '../middleware/loadAuthContext.js'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requirePermission } from '../middleware/requirePermission.js'
 import { tenantContext } from '../middleware/tenantContext.js'
 import { muvekkillerRouter } from '../muvekkil/muvekkil.routes.js'
 import { dosyalarRouter } from '../dosya/dosya.routes.js'
@@ -23,7 +22,8 @@ import { maliKontrolRouter } from '../maliKontrol/maliKontrol.routes.js'
 import { tahsilatMerkeziRouter } from '../tahsilatMerkezi/tahsilatMerkezi.routes.js'
 import { tahsilatBildirimRouter } from '../tahsilatBildirim/tahsilatBildirim.routes.js'
 import { whatsappWebhookRouter } from '../tahsilatBildirim/webhook.routes.js'
-import { Permission } from '../permissions/roles.js'
+import { tenantRouter } from '../tenant/tenant.routes.js'
+import { auditRouter } from '../audit/audit.routes.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
 import { woontegraWebsiteProvisionRouter } from '../integrations/woontegraWebsite/woontegraWebsiteProvision.routes.js'
@@ -53,10 +53,8 @@ apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)
 apiV1Router.use('/users', usersRouter)
 apiV1Router.use('/license', licenseRouter)
+apiV1Router.use('/tenant', tenantRouter)
 
 apiV1Router.get('/me', requireAuth, loadAuthContext, meHandler)
 
-/** Örnek korumalı uç — audit okuma yetkisi (iskelet). */
-apiV1Router.get('/audit/ping', requireAuth, loadAuthContext, requirePermission(Permission.AUDIT_READ), (_req, res) => {
-  res.json({ ok: true, message: 'Audit uçları yakında.' })
-})
+apiV1Router.use('/audit', auditRouter)

@@ -1,3 +1,7 @@
+/**
+ * Planlama otomatik; gönderim MANUAL_WHATSAPP modunda kullanıcı aksiyonuna bırakılır.
+ * Meta WhatsApp onayı sonrası WHATSAPP_CLOUD_API provider config ile otomatik gönderime geçilebilir.
+ */
 import {
   BildirimIsDurumu,
   BildirimKanali,
@@ -118,6 +122,25 @@ async function claimDueJobs(opts: {
 export async function processDueJobs(
   options: ProcessDueJobsOptions = {}
 ): Promise<ProcessDueJobsResult> {
+  const emptyResult = (): ProcessDueJobsResult => ({
+    processed: 0,
+    simulasyon: 0,
+    atlananTelefon: 0,
+    atlananIzin: 0,
+    atlananDosya: 0,
+    atlananTaksit: 0,
+    atlananSablon: 0,
+    basarisiz: 0,
+    skippedAlreadyDone: 0,
+    deferredWindow: 0,
+    skippedManual: 0,
+    skippedSmsDeprecated: 0
+  })
+
+  if (!env.WHATSAPP_AUTOMATION_ENABLED) {
+    return emptyResult()
+  }
+
   const limit = Math.max(1, Math.min(options.limit ?? 50, 200))
   const workerId = options.workerId ?? `worker-${process.pid}`
   const now = new Date()

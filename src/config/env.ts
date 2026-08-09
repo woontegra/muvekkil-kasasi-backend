@@ -69,6 +69,16 @@ const envSchema = z.object({
     }
     return false
   }, z.boolean().default(false)),
+  /** Otomatik WhatsApp hatırlatma planlama/worker — Meta onayı öncesi false. */
+  WHATSAPP_AUTOMATION_ENABLED: z.preprocess((v) => {
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase()
+      if (t === 'true' || t === '1' || t === 'yes') return true
+      if (t === 'false' || t === '0' || t === 'no') return false
+    }
+    return false
+  }, z.boolean().default(false)),
   WHATSAPP_WEBHOOK_ENABLED: z.preprocess((v) => {
     if (typeof v === 'boolean') return v
     if (typeof v === 'string') {

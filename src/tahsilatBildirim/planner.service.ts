@@ -6,6 +6,7 @@ import {
   VekaletTaksitOdemeDurumu
 } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { env } from '../config/env.js'
 import { ensureTenantBildirimDefaults } from './settings.service.js'
 import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { mapTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
@@ -91,6 +92,10 @@ async function cancelObsoleteJobsForTenant(tenantId: string): Promise<number> {
 }
 
 export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResult> {
+  if (!env.WHATSAPP_AUTOMATION_ENABLED) {
+    return { tenantId, skipped: true, reason: 'whatsapp_automation_disabled', created: 0, cancelled: 0 }
+  }
+
   await ensureTenantBildirimDefaults(tenantId)
 
   const ayar = await prisma.tahsilatBildirimAyar.findUnique({ where: { tenantId } })

@@ -216,7 +216,7 @@ export async function adminGetTenant(id: string) {
     }
   }
 
-  const [auditLogs, kasaCount, licenseRenewals] = await Promise.all([
+  const [auditLogs, kasaCount, licenseRenewals, icraCount, makbuzCount, lastLoginAudit] = await Promise.all([
     prisma.auditLog.findMany({
       where: { tenantId: id },
       orderBy: { createdAt: 'desc' },
@@ -227,15 +227,28 @@ export async function adminGetTenant(id: string) {
         entityType: true,
         entityId: true,
         createdAt: true,
-        userId: true
+        userId: true,
+        ipAddress: true,
+        user: { select: { adSoyad: true, kullaniciAdi: true } }
       }
     }),
     prisma.kasaHareketi.count({ where: { tenantId: id } }),
     prisma.tenantLicenseRenewal.findMany({
       where: { tenantId: id },
       orderBy: { createdAt: 'desc' }
+    }),
+    prisma.icraTahsilatOdeme.count({ where: { tenantId: id } }),
+    prisma.vekaletTaksitOdeme.count({ where: { tenantId: id } }),
+    prisma.auditLog.findFirst({
+      where: { tenantId: id, action: 'AUTH_LOGIN_SUCCESS', ipAddress: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { ipAddress: true }
     })
   ])
+
+  const demoVerildiTarihi = t.demoMu
+    ? (t.lisansBaslangicTarihi ?? t.createdAt).toISOString()
+    : null
 
   return {
     tenant: {
@@ -271,10 +284,21 @@ export async function adminGetTenant(id: string) {
       toplamMuvekkil: t._count.muvekkiller,
       toplamDosya: t._count.dosyalar,
       kasaHareketi: kasaCount,
-      auditKayit: t._count.auditLogs
+      auditKayit: t._count.auditLogs,
+      icraTahsilatKaydi: icraCount,
+      makbuzSayisi: makbuzCount
     },
+    sonIp: lastLoginAudit?.ipAddress ?? null,
+    demoVerildiTarihi,
     sonAuditLoglar: auditLogs.map((a) => ({
-      ...a,
+      id: a.id,
+      action: a.action,
+      entityType: a.entityType,
+      entityId: a.entityId,
+      userId: a.userId,
+      ipAddress: a.ipAddress,
+      kullaniciAdSoyad: a.user?.adSoyad ?? null,
+      kullaniciAdi: a.user?.kullaniciAdi ?? null,
       createdAt: a.createdAt.toISOString()
     })),
     licenseRenewals: licenseRenewals.map((r) => ({

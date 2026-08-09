@@ -7,6 +7,7 @@ import { manualSmsRateLimit } from '../middleware/rateLimits.js'
 import { requireRole } from '../middleware/requireRole.js'
 import { prisma } from '../lib/prisma.js'
 import { prepareManualWhatsApp, previewManualWhatsApp } from '../tahsilatBildirim/manualWhatsApp.service.js'
+import { getManualSmsPreview, sendManualSms } from './manualSms.service.js'
 import { getTahsilatMerkeziOzet, listTahsilatMerkezi } from './tahsilatMerkezi.service.js'
 
 export const tahsilatMerkeziRouter = Router()
@@ -94,6 +95,37 @@ tahsilatMerkeziRouter.post(
     const taksitId = z.string().uuid().parse(req.params.taksitId)
     const body = manualWaBodySchema.parse(req.body)
     const result = await prepareManualWhatsApp({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      taksitId,
+      mesaj: body.mesaj,
+      idempotencyKey: body.idempotencyKey,
+      req
+    })
+    res.json(result)
+  })
+)
+
+tahsilatMerkeziRouter.get(
+  '/:taksitId/manual-sms/preview',
+  requireAuth,
+  requireRole(...TAHSILAT_ROLLER),
+  asyncHandler(async (req, res) => {
+    const taksitId = z.string().uuid().parse(req.params.taksitId)
+    const preview = await getManualSmsPreview(req.auth!.tenantId, taksitId)
+    res.json({ ok: true, ...preview })
+  })
+)
+
+tahsilatMerkeziRouter.post(
+  '/:taksitId/manual-sms/send',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI),
+  manualSmsRateLimit,
+  asyncHandler(async (req, res) => {
+    const taksitId = z.string().uuid().parse(req.params.taksitId)
+    const body = manualWaBodySchema.parse(req.body)
+    const result = await sendManualSms({
       tenantId: req.auth!.tenantId,
       userId: req.auth!.sub,
       taksitId,

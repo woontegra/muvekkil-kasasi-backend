@@ -151,8 +151,9 @@ export async function getSettings(tenantId: string): Promise<{
     sablonlar: sablonlar.map(serializeSablon),
     whatsapp: {
       aktifProvider: 'MANUAL_WHATSAPP',
+      gonderimYontemi: 'Manuel WhatsApp',
       cloudApiEnabled: false,
-      bilgi: 'Bildirimler WhatsApp üzerinden, kendi WhatsApp hesabınız kullanılarak gönderilir.'
+      bilgi: 'Hatırlatmalar program tarafından hazırlanır. Gönderim WhatsApp üzerinden sizin tarafınızdan tamamlanır.'
     }
   }
 }

@@ -3,12 +3,13 @@ import { Router } from 'express'
 import {
   activateLicenseBodySchema,
   changeInitialPasswordBodySchema,
+  changePasswordBodySchema,
   forgotPasswordBodySchema,
   loginBodySchema,
   resetPasswordBodySchema
 } from './auth.schemas.js'
 import { login, serializeTenant, serializeUser } from './auth.service.js'
-import { activateLicenseForUser, changeInitialPasswordForUser, getUserOnboardingFlags } from './authOnboarding.service.js'
+import { activateLicenseForUser, changeInitialPasswordForUser, changePasswordForUser, getUserOnboardingFlags } from './authOnboarding.service.js'
 import { requestPasswordReset, resetPasswordWithToken } from './passwordReset.service.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { loadAuthContext } from '../middleware/loadAuthContext.js'
@@ -202,6 +203,19 @@ authRouter.post(
       requiresLicenseActivation: flags.requiresLicenseActivation,
       mustChangePassword: flags.mustChangePassword
     })
+  })
+)
+
+authRouter.post(
+  '/change-password',
+  requireAuth,
+  loadAuthContext,
+  asyncHandler(async (req, res) => {
+    const body = changePasswordBodySchema.parse(req.body)
+    await changePasswordForUser(req.user!, body, req)
+    await revokeUserRefreshSessions(req.auth!.sub)
+    clearTenantRefreshCookie(res)
+    res.json({ ok: true, message: 'Şifreniz güncellendi. Lütfen tekrar giriş yapın.' })
   })
 )
 

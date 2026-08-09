@@ -48,3 +48,16 @@ export const changeInitialPasswordBodySchema = z
   })
 
 export type ChangeInitialPasswordBody = z.infer<typeof changeInitialPasswordBodySchema>
+
+export const changePasswordBodySchema = z
+  .object({
+    mevcutSifre: z.string().min(1, 'Mevcut şifre zorunludur.'),
+    yeniSifre: z.string().min(8, 'Yeni şifre en az 8 karakter olmalıdır.').max(200),
+    yeniSifreTekrar: z.string().min(8, 'Şifre tekrarı en az 8 karakter olmalıdır.').max(200)
+  })
+  .refine((d) => d.yeniSifre === d.yeniSifreTekrar, {
+    message: 'Şifreler eşleşmiyor.',
+    path: ['yeniSifreTekrar']
+  })
+
+export type ChangePasswordBody = z.infer<typeof changePasswordBodySchema>

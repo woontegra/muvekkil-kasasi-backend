@@ -70,14 +70,14 @@ adminRouter.get(
   })
 )
 
-/** Platform yönetimi: yalnızca aktif SUPER_ADMIN. */
-const platformAdmin = requireAdminRoles('SUPER_ADMIN')
-const superOnly = platformAdmin
+/** Platform personeli: SUPER_ADMIN, DESTEK, FINANS. */
+const platformStaff = requireAdminRoles('SUPER_ADMIN', 'DESTEK', 'FINANS')
+const superOnly = requireAdminRoles('SUPER_ADMIN')
 
 adminRouter.get(
   '/settings/profile',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const profile = await adminGetSettingsProfile(req.adminAuth!.sub)
     res.json({ ok: true, profile })
@@ -87,7 +87,7 @@ adminRouter.get(
 adminRouter.put(
   '/settings/profile',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const body = adminProfileUpdateSchema.parse(req.body)
     const profile = await adminUpdateSettingsProfile(req.adminAuth!.sub, body, req)
@@ -98,7 +98,7 @@ adminRouter.put(
 adminRouter.post(
   '/settings/change-password',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const body = adminSelfChangePasswordSchema.parse(req.body)
     await adminChangeOwnPassword(req.adminAuth!.sub, body, req)
@@ -109,7 +109,7 @@ adminRouter.post(
 adminRouter.get(
   '/settings/system-info',
   requireAdminAuth,
-  platformAdmin,
+  superOnly,
   asyncHandler(async (req, res) => {
     res.json({ ok: true, ...adminGetSystemInfo(req) })
   })
@@ -118,7 +118,7 @@ adminRouter.get(
 adminRouter.get(
   '/admin-users',
   requireAdminAuth,
-  platformAdmin,
+  superOnly,
   asyncHandler(async (_req, res) => {
     const items = await adminListSuperAdmins()
     res.json({ ok: true, items })
@@ -185,7 +185,7 @@ adminRouter.post(
 adminRouter.get(
   '/dashboard',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (_req, res) => {
     const stats = await getAdminDashboardStats()
     res.json({ ok: true, ...stats })
@@ -195,7 +195,7 @@ adminRouter.get(
 adminRouter.get(
   '/tenants/expiring',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const days = Math.min(365, Math.max(1, Number(req.query.days) || 7))
     const items = await adminListExpiringTenants(days)
@@ -206,7 +206,7 @@ adminRouter.get(
 adminRouter.get(
   '/tenants',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q : undefined
     const lisansDurumu = typeof req.query.lisansDurumu === 'string' ? req.query.lisansDurumu : undefined
@@ -233,7 +233,7 @@ adminRouter.post(
 adminRouter.get(
   '/tenants/:id',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.id)
     const out = await adminGetTenant(id)
@@ -244,7 +244,7 @@ adminRouter.get(
 adminRouter.put(
   '/tenants/:id',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.id)
     const body = adminTenantUpdateBodySchema.parse(req.body)
@@ -301,7 +301,7 @@ adminRouter.delete(
 adminRouter.post(
   '/tenants/:id/resend-welcome-mail',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.id)
     const out = await adminResendWelcomeActivationEmail(id, req.adminAuth!.sub, req)
@@ -312,7 +312,7 @@ adminRouter.post(
 adminRouter.get(
   '/tenants/:id/users',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const id = z.string().uuid().parse(req.params.id)
     const users = await adminListTenantUsers(id)
@@ -323,7 +323,7 @@ adminRouter.get(
 adminRouter.put(
   '/users/:userId',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const userId = z.string().uuid().parse(req.params.userId)
     const body = adminUserUpdateBodySchema.parse(req.body)
@@ -335,7 +335,7 @@ adminRouter.put(
 adminRouter.post(
   '/users/:userId/reset-password',
   requireAdminAuth,
-  platformAdmin,
+  platformStaff,
   asyncHandler(async (req, res) => {
     const userId = z.string().uuid().parse(req.params.userId)
     const body = adminResetPasswordBodySchema.parse(req.body ?? {})

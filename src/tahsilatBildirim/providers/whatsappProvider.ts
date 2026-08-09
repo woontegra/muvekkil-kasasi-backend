@@ -1,5 +1,6 @@
 import { env } from '../../config/env.js'
 
+/** Canlı varsayılan: MANUAL_WHATSAPP. Meta WhatsApp onayı sonrası WHATSAPP_CLOUD_API yeniden etkinleştirilecek. */
 export type WhatsAppProviderKind = 'MANUAL_WHATSAPP' | 'WHATSAPP_CLOUD_API'
 
 export type WhatsAppSendPayload = {

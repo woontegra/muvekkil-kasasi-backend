@@ -13,6 +13,7 @@ import {
   updateSettings,
   updateTemplate
 } from './settings.service.js'
+import { markBildirimJobSent, openBildirimJobWhatsApp } from './bildirimJobWhatsApp.service.js'
 import { simulateTodaysJobs } from './simulate.service.js'
 
 export const tahsilatBildirimRouter = Router()
@@ -112,6 +113,44 @@ tahsilatBildirimRouter.get(
     const q = listeQuerySchema.parse(req.query)
     const data = await listBildirimIsleri(req.auth!.tenantId, q)
     res.json({ ok: true, ...data })
+  })
+)
+
+const whatsappAcSchema = z.object({
+  mesaj: z.string().min(1).max(4000).optional()
+})
+
+tahsilatBildirimRouter.post(
+  '/isler/:id/whatsapp-ac',
+  requireAuth,
+  requireRole(...OKUMA),
+  asyncHandler(async (req, res) => {
+    const jobId = z.string().uuid().parse(req.params.id)
+    const body = whatsappAcSchema.parse(req.body ?? {})
+    const result = await openBildirimJobWhatsApp({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      jobId,
+      req,
+      mesaj: body.mesaj
+    })
+    res.json({ ok: true, ...result })
+  })
+)
+
+tahsilatBildirimRouter.post(
+  '/isler/:id/gonderildi-isaretle',
+  requireAuth,
+  requireRole(...OKUMA),
+  asyncHandler(async (req, res) => {
+    const jobId = z.string().uuid().parse(req.params.id)
+    const result = await markBildirimJobSent({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      jobId,
+      req
+    })
+    res.json({ ok: true, ...result })
   })
 )
 
