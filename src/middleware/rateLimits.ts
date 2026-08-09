@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import type { Request, RequestHandler } from 'express'
 import { env } from '../config/env.js'
 
@@ -75,7 +75,8 @@ export const manualSmsRateLimit: RequestHandler = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     const auth = (req as Request & { auth?: { tenantId?: string; sub?: string } }).auth
-    return `${auth?.tenantId ?? 'anon'}:${auth?.sub ?? req.ip}`
+    const ipKey = req.ip ? ipKeyGenerator(req.ip) : 'no-ip'
+    return `${auth?.tenantId ?? 'anon'}:${auth?.sub ?? ipKey}`
   },
   message: {
     ok: false,

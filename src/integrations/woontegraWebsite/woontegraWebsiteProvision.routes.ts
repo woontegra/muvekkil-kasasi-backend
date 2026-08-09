@@ -6,6 +6,18 @@ import { provisionTenantFromWoontegraWebsite } from './woontegraWebsiteProvision
 import { parseWoontegraWebsiteRenewBody } from './woontegraWebsiteRenew.schemas.js'
 import { renewTenantFromWoontegraWebsite } from './woontegraWebsiteRenew.service.js'
 import { lookupTenantsByOwnerEmail } from './woontegraWebsiteLookup.service.js'
+import {
+  bindLicensePurchaseToken,
+  fulfillLicensePurchase,
+  previewLicenseRenewalEnd,
+  resolveLicensePurchaseToken
+} from './licensePurchase.service.js'
+import {
+  parseLicensePurchaseBindBody,
+  parseLicensePurchaseFulfillBody,
+  parseLicensePurchasePreviewBody,
+  parseLicensePurchaseResolveBody
+} from './licensePurchase.schemas.js'
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -46,6 +58,46 @@ woontegraWebsiteProvisionRouter.post(
   asyncHandler(async (req, res) => {
     const body = parseWoontegraWebsiteRenewBody(req.body)
     const result = await renewTenantFromWoontegraWebsite(body, req)
+    res.status(200).json(result)
+  })
+)
+
+woontegraWebsiteProvisionRouter.post(
+  '/license-purchase/resolve',
+  requireWoontegraWebsiteProvisionAuth,
+  asyncHandler(async (req, res) => {
+    const body = parseLicensePurchaseResolveBody(req.body)
+    const result = await resolveLicensePurchaseToken(body.renewalToken)
+    res.status(200).json({ ok: true, ...result })
+  })
+)
+
+woontegraWebsiteProvisionRouter.post(
+  '/license-purchase/bind',
+  requireWoontegraWebsiteProvisionAuth,
+  asyncHandler(async (req, res) => {
+    const body = parseLicensePurchaseBindBody(req.body)
+    const result = await bindLicensePurchaseToken(body)
+    res.status(200).json({ ok: true, ...result })
+  })
+)
+
+woontegraWebsiteProvisionRouter.post(
+  '/license-purchase/preview',
+  requireWoontegraWebsiteProvisionAuth,
+  asyncHandler(async (req, res) => {
+    const body = parseLicensePurchasePreviewBody(req.body)
+    const result = await previewLicenseRenewalEnd(body)
+    res.status(200).json({ ok: true, ...result })
+  })
+)
+
+woontegraWebsiteProvisionRouter.post(
+  '/license-purchase/fulfill',
+  requireWoontegraWebsiteProvisionAuth,
+  asyncHandler(async (req, res) => {
+    const body = parseLicensePurchaseFulfillBody(req.body)
+    const result = await fulfillLicensePurchase(body)
     res.status(200).json(result)
   })
 )
