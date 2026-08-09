@@ -122,7 +122,12 @@ export type LicensePurchasePublicView = {
   lisansBitisTarihi: string | null
   lisansBaslangicTarihi: string | null
   extensionBaseDate: string
+  ownerName: string | null
   ownerEmail: string | null
+  ownerPhone: string | null
+  tenantAdres: string | null
+  tenantVergiNo: string | null
+  tenantVergiDairesi: string | null
   expiresAt: string
   status: LicensePurchaseSessionStatus
   boundExternalOrderId: string | null
@@ -138,7 +143,7 @@ function toPublicView(
     purpose: string
   },
   tenant: Tenant,
-  owner: Pick<User, 'eposta'> | null
+  owner: Pick<User, 'eposta' | 'adSoyad' | 'telefon'> | null
 ): LicensePurchasePublicView {
   const purpose = (session.purpose === LICENSE_RENEWAL_PURPOSE
     ? LICENSE_RENEWAL_PURPOSE
@@ -158,7 +163,13 @@ function toPublicView(
     lisansBitisTarihi: tenant.lisansBitisTarihi?.toISOString() ?? null,
     lisansBaslangicTarihi: tenant.lisansBaslangicTarihi?.toISOString() ?? null,
     extensionBaseDate: computeExtensionBaseDate(tenant).toISOString(),
-    ownerEmail: owner?.eposta?.trim().toLowerCase() || null,
+    ownerName: owner?.adSoyad?.trim() || null,
+    ownerEmail:
+      owner?.eposta?.trim().toLowerCase() || tenant.eposta?.trim().toLowerCase() || null,
+    ownerPhone: owner?.telefon?.trim() || tenant.telefon?.trim() || null,
+    tenantAdres: tenant.adres?.trim() || null,
+    tenantVergiNo: tenant.vergiNo?.trim() || null,
+    tenantVergiDairesi: tenant.vergiDairesi?.trim() || null,
     expiresAt: session.expiresAt.toISOString(),
     status: session.status,
     boundExternalOrderId: session.boundExternalOrderId
@@ -296,7 +307,10 @@ export async function resolveLicensePurchaseToken(token: string): Promise<Licens
 
   const session = await prisma.licensePurchaseSession.findUnique({
     where: { tokenHash: hashLicensePurchaseToken(token) },
-    include: { tenant: true, user: { select: { eposta: true } } }
+    include: {
+      tenant: true,
+      user: { select: { eposta: true, adSoyad: true, telefon: true } }
+    }
   })
   if (!session) {
     throw new AppError(404, 'Satın alma bağlantısı geçersiz veya süresi dolmuş.', 'TOKEN_NOT_FOUND')
@@ -325,7 +339,10 @@ export async function bindLicensePurchaseToken(body: LicensePurchaseBindBody): P
   const externalOrderId = body.externalOrderId.trim()
   const session = await prisma.licensePurchaseSession.findUnique({
     where: { tokenHash: hashLicensePurchaseToken(token) },
-    include: { tenant: true, user: { select: { eposta: true } } }
+    include: {
+      tenant: true,
+      user: { select: { eposta: true, adSoyad: true, telefon: true } }
+    }
   })
   if (!session) {
     throw new AppError(404, 'Satın alma bağlantısı geçersiz veya süresi dolmuş.', 'TOKEN_NOT_FOUND')
@@ -335,12 +352,6 @@ export async function bindLicensePurchaseToken(body: LicensePurchaseBindBody): P
   }
   if (!['CREATED', 'BOUND'].includes(session.status)) {
     throw new AppError(409, 'Satın alma bağlantısı kullanılamıyor.', 'SESSION_UNAVAILABLE')
-  }
-
-  const ownerEmail = session.user.eposta?.trim().toLowerCase() || null
-  const checkoutEmail = body.checkoutEmail?.trim().toLowerCase() || null
-  if (ownerEmail && checkoutEmail && ownerEmail !== checkoutEmail) {
-    throw new AppError(403, 'Ödeme e-postası büro hesabı ile eşleşmiyor.', 'CHECKOUT_EMAIL_MISMATCH')
   }
 
   if (session.boundExternalOrderId) {
@@ -369,7 +380,10 @@ export async function bindLicensePurchaseToken(body: LicensePurchaseBindBody): P
 
   const fresh = await prisma.licensePurchaseSession.findUniqueOrThrow({
     where: { id: session.id },
-    include: { tenant: true, user: { select: { eposta: true } } }
+    include: {
+      tenant: true,
+      user: { select: { eposta: true, adSoyad: true, telefon: true } }
+    }
   })
   return toPublicView(fresh, fresh.tenant, fresh.user)
 }
