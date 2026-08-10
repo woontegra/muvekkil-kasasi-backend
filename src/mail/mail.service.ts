@@ -555,3 +555,147 @@ export async function sendLicenseRenewalEmail(
     return { sent: false, error: msg }
   }
 }
+
+export type SendLicenseExpiryReminderEmailParams = {
+  to: string
+  adSoyad: string
+  buroAdi: string
+  lisansBitisTarihi: string
+  daysRemaining: 30 | 7 | 1
+  renewalUrl: string
+}
+
+export type LicenseExpiryReminderEmailResult = { sent: boolean; error?: string }
+
+function expiryReminderSubject(daysRemaining: 30 | 7 | 1): string {
+  return `Müvekkil Kasa Defteri lisansınızın bitmesine ${daysRemaining} gün kaldı`
+}
+
+function expiryReminderButtonColor(daysRemaining: 30 | 7 | 1): string {
+  if (daysRemaining === 1) return '#dc2626'
+  if (daysRemaining === 7) return '#d97706'
+  return '#2563eb'
+}
+
+function expiryReminderIntroTone(daysRemaining: 30 | 7 | 1): string {
+  if (daysRemaining === 1) {
+    return 'Lisansınızın süresi yarın sona erecek. Kesintisiz erişim için lütfen lisansınızı yenileyin.'
+  }
+  if (daysRemaining === 7) {
+    return 'Lisansınızın süresi yakında dolacak. Mevcut hesabınızı ve verilerinizi korumak için yenilemenizi öneririz.'
+  }
+  return 'Lisansınızı süresi dolmadan yenileyerek mevcut hesabınızı ve verilerinizi kullanmaya kesintisiz devam edebilirsiniz.'
+}
+
+function buildExpiryReminderEmailHtml(params: SendLicenseExpiryReminderEmailParams): string {
+  const bitis = formatDateTr(params.lisansBitisTarihi)
+  const safeUrl = escapeHtml(params.renewalUrl)
+  const year = new Date().getFullYear()
+  const btnColor = expiryReminderButtonColor(params.daysRemaining)
+
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head><meta charset="UTF-8" /><title>${escapeHtml(expiryReminderSubject(params.daysRemaining))}</title></head>
+<body style="margin:0;padding:0;width:100% !important;background-color:#f3f6fb;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f3f6fb;">
+    <tr><td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;width:100%;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <tr><td style="padding:32px 40px 20px;font-family:'Segoe UI',Arial,sans-serif;">
+          <p style="margin:0 0 4px;font-size:11px;font-weight:700;letter-spacing:0.14em;color:#64748b;text-transform:uppercase;">WOONTEGRA</p>
+          <p style="margin:0;font-size:18px;font-weight:700;color:#0f172a;">Müvekkil Kasa Defteri</p>
+        </td></tr>
+        <tr><td style="padding:0 40px;"><hr style="border:none;border-top:1px solid #e2e8f0;margin:0;" /></td></tr>
+        <tr><td style="padding:28px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
+          <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;">Lisans bitiş hatırlatması</h1>
+          <p style="margin:0 0 12px;font-size:15px;line-height:1.65;color:#334155;">Merhaba ${escapeHtml(params.adSoyad)},</p>
+          <p style="margin:0;font-size:15px;line-height:1.65;color:#334155;"><strong>${escapeHtml(params.buroAdi)}</strong> bürosuna ait Müvekkil Kasa Defteri lisansınızın bitmesine <strong>${params.daysRemaining} gün</strong> kaldı.</p>
+        </td></tr>
+        <tr><td style="padding:12px 40px 8px;font-family:'Segoe UI',Arial,sans-serif;">
+          ${welcomeInfoBox('Lisans bilgileri', [
+            { label: 'Lisans bitiş tarihi', value: escapeHtml(bitis) },
+            { label: 'Kalan süre', value: `${params.daysRemaining} gün` }
+          ])}
+          <p style="margin:0 0 16px;font-size:14px;line-height:1.65;color:#475569;">${escapeHtml(expiryReminderIntroTone(params.daysRemaining))}</p>
+        </td></tr>
+        <tr><td align="center" style="padding:8px 40px 24px;font-family:'Segoe UI',Arial,sans-serif;">
+          ${welcomeActionButton(params.renewalUrl, 'Lisansı Yenile', btnColor)}
+        </td></tr>
+        <tr><td style="padding:0 40px 24px;font-family:'Segoe UI',Arial,sans-serif;">
+          <p style="margin:0 0 8px;font-size:13px;color:#64748b;">Buton çalışmazsa bağlantı:</p>
+          <p style="margin:0;font-size:12px;line-height:1.55;word-break:break-all;"><a href="${safeUrl}" style="color:#2563eb;">${safeUrl}</a></p>
+          <p style="margin:16px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Mevcut hesabınız ve verileriniz korunur; yeni hesap oluşturulmaz.</p>
+        </td></tr>
+        <tr><td style="padding:20px 40px 28px;background:#f8fafc;border-top:1px solid #e2e8f0;font-family:'Segoe UI',Arial,sans-serif;">
+          <p style="margin:0 0 8px;font-size:12px;line-height:1.55;color:#94a3b8;text-align:center;">Bu e-posta Woontegra Teknoloji Yazılım ve Dijital Hizmetler Ltd. Şti. tarafından gönderilmiştir.</p>
+          <p style="margin:0;font-size:11px;color:#cbd5e1;text-align:center;">© ${year} Woontegra</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`
+}
+
+function buildExpiryReminderEmailText(params: SendLicenseExpiryReminderEmailParams): string {
+  const bitis = formatDateTr(params.lisansBitisTarihi)
+  return [
+    'WOONTEGRA — Müvekkil Kasa Defteri',
+    '',
+    expiryReminderSubject(params.daysRemaining),
+    '',
+    `Merhaba ${params.adSoyad},`,
+    '',
+    `${params.buroAdi} bürosuna ait Müvekkil Kasa Defteri lisansınızın bitmesine ${params.daysRemaining} gün kaldı.`,
+    '',
+    `Lisans bitiş tarihi: ${bitis}`,
+    '',
+    expiryReminderIntroTone(params.daysRemaining),
+    '',
+    'Lisansı yenile:',
+    params.renewalUrl,
+    '',
+    'Mevcut hesabınız ve verileriniz korunur; yeni hesap oluşturulmaz.',
+    '',
+    '—',
+    'Bu e-posta Woontegra Teknoloji Yazılım ve Dijital Hizmetler Ltd. Şti. tarafından gönderilmiştir.',
+    `© ${new Date().getFullYear()} Woontegra`
+  ].join('\n')
+}
+
+export async function sendLicenseExpiryReminderEmail(
+  params: SendLicenseExpiryReminderEmailParams
+): Promise<LicenseExpiryReminderEmailResult> {
+  const toMasked = maskEmail(params.to)
+  const subject = expiryReminderSubject(params.daysRemaining)
+  console.info('[mail] License expiry reminder attempt — recipient:', toMasked, 'days:', params.daysRemaining)
+
+  const cfg = getResolvedMailTransport()
+  const tx = getTransporter()
+  const from = cfg.from ?? getMailFromAddress()
+
+  if (!tx || !from) {
+    const reason = describeWelcomeMailConfigError(cfg)
+    if (env.NODE_ENV === 'development') {
+      console.info('[DEV ONLY] Expiry reminder skipped (SMTP not configured)')
+      return { sent: false, error: 'smtp_not_configured_dev' }
+    }
+    console.error('[mail] License expiry reminder FAILED —', reason)
+    return { sent: false, error: reason }
+  }
+
+  try {
+    await tx.sendMail({
+      from,
+      to: params.to,
+      subject,
+      text: buildExpiryReminderEmailText(params),
+      html: buildExpiryReminderEmailHtml(params)
+    })
+    console.info('[mail] License expiry reminder sent — recipient:', toMasked)
+    return { sent: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[mail] License expiry reminder FAILED —', msg)
+    return { sent: false, error: msg }
+  }
+}

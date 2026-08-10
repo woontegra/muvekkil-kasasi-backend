@@ -224,6 +224,14 @@ export function getMkLoginUrl(): string {
   return clean.endsWith('/login') ? clean : `${clean}/login`
 }
 
+/** Lisans yenileme girişi — login sonrası /app/lisans-yenile ile taze checkout token üretilir. */
+export function getMkLicenseRenewalEntryUrl(): string {
+  const login = getMkLoginUrl()
+  const returnPath = encodeURIComponent('/app/lisans-yenile')
+  const sep = login.includes('?') ? '&' : '?'
+  return `${login}${sep}return=${returnPath}`
+}
+
 export function buildPasswordResetUrl(plainToken: string): string {
   const base = getFrontendBaseUrl()
   return `${base}/reset-password?token=${encodeURIComponent(plainToken)}`

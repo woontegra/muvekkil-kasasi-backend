@@ -25,7 +25,9 @@
     "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts",
     "test:vekalet-kismi": "tsx scripts/test-vekalet-kismi-odeme.ts",
     "bildirim:scheduler": "tsx scripts/tahsilat-bildirim-scheduler.ts",
-    "bildirim:worker": "tsx scripts/tahsilat-bildirim-worker.ts"
+    "bildirim:worker": "tsx scripts/tahsilat-bildirim-worker.ts",
+    "license:reminder": "tsx scripts/license-expiry-reminder-scheduler.ts",
+    "test:license-reminder": "tsx scripts/license-expiry-reminder-quality.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

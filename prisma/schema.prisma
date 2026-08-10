@@ -73,6 +73,7 @@ model Tenant {
   icraTahsilatOdemeleri  IcraTahsilatOdeme[]
   licenseRenewals        TenantLicenseRenewal[]
   licensePurchaseSessions LicensePurchaseSession[]
+  licenseExpiryReminders LicenseExpiryReminder[]
   tahsilatBildirimAyar   TahsilatBildirimAyar?
   tahsilatBildirimKurallari TahsilatBildirimKurali[]
   tahsilatBildirimSablonlari TahsilatBildirimSablonu[]
@@ -140,6 +141,40 @@ model LicensePurchaseSession {
   @@index([tenantId, createdAt])
   @@index([userId, createdAt])
   @@map("license_purchase_session")
+}
+
+enum LicenseExpiryReminderType {
+  D30
+  D7
+  D1
+}
+
+enum LicenseExpiryReminderStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// Aktif lisans bitiş hatırlatma e-postası idempotency kaydı (D30 / D7 / D1).
+model LicenseExpiryReminder {
+  id                String                      @id @default(uuid())
+  tenantId          String                      @map("tenant_id")
+  tenant            Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  licenseEndDate    DateTime                    @map("license_end_date")
+  reminderType      LicenseExpiryReminderType   @map("reminder_type")
+  recipient         String
+  status            LicenseExpiryReminderStatus @default(PENDING)
+  attemptCount      Int                         @default(0) @map("attempt_count")
+  sentAt            DateTime?                   @map("sent_at")
+  error             String?
+  purchaseSessionId String?                     @map("purchase_session_id")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  @@unique([tenantId, licenseEndDate, reminderType])
+  @@index([status, createdAt])
+  @@map("license_expiry_reminder")
 }
 
 enum UserRole {
