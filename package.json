@@ -27,7 +27,8 @@
     "bildirim:scheduler": "tsx scripts/tahsilat-bildirim-scheduler.ts",
     "bildirim:worker": "tsx scripts/tahsilat-bildirim-worker.ts",
     "license:reminder": "tsx scripts/license-expiry-reminder-scheduler.ts",
-    "test:license-reminder": "tsx scripts/license-expiry-reminder-quality.ts"
+    "test:license-reminder": "tsx scripts/license-expiry-reminder-quality.ts",
+    "test:randevu": "tsx scripts/randevu-quality.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

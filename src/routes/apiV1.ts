@@ -27,6 +27,7 @@ import { auditRouter } from '../audit/audit.routes.js'
 import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
 import { woontegraWebsiteProvisionRouter } from '../integrations/woontegraWebsite/woontegraWebsiteProvision.routes.js'
+import { randevularRouter } from '../randevu/randevu.routes.js'
 
 export const apiV1Router = Router()
 
@@ -36,6 +37,7 @@ apiV1Router.use('/integrations/whatsapp', whatsappWebhookRouter)
 apiV1Router.use(tenantContext)
 apiV1Router.use('/auth', authRouter)
 apiV1Router.use('/muvekkiller', muvekkillerRouter)
+apiV1Router.use('/randevular', randevularRouter)
 apiV1Router.use('/dosyalar', dosyalarRouter)
 apiV1Router.use('/kasa-hareketleri', kasaHareketleriRouter)
 apiV1Router.use('/vekalet-taksitleri', vekaletTaksitleriRouter)

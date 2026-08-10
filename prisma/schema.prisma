@@ -83,6 +83,7 @@ model Tenant {
   smsBakiye              SmsTenantBakiye?
   smsKrediHareketleri    SmsKrediHareketi[]
   refreshSessions            RefreshSession[]
+  randevular                 Randevu[]
 
   @@map("tenant")
 }
@@ -234,6 +235,8 @@ model User {
   icraTahsilatOdemeleriCreated  IcraTahsilatOdeme[]   @relation("IcraOdemeCreatedBy")
   tahsilatlariYapanIcraTahsilat IcraTahsilatOdeme[]   @relation("IcraOdemeTahsilatiYapan")
   linkedSuperAdmin              SuperAdmin?           @relation("SuperAdminLinkedUser")
+  randevularOlusturan           Randevu[]             @relation("RandevuOlusturan")
+  randevularSorumlu             Randevu[]             @relation("RandevuSorumlu")
 
   @@unique([kullaniciAdi])
   @@unique([tenantId, eposta])
@@ -301,6 +304,7 @@ model Muvekkil {
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
+  randevular             Randevu[]
 
   @@index([tenantId, aktifMi])
   @@index([tenantId, gorunenAd])
@@ -349,10 +353,38 @@ model Dosya {
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
+  randevular             Randevu[]
 
   @@index([tenantId, muvekkilId, aktifMi])
   @@index([tenantId, aktifMi])
   @@map("dosya")
+}
+
+model Randevu {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  muvekkilId      String?   @map("muvekkil_id")
+  muvekkil        Muvekkil? @relation(fields: [muvekkilId], references: [id], onDelete: SetNull)
+  dosyaId         String?   @map("dosya_id")
+  dosya           Dosya?    @relation(fields: [dosyaId], references: [id], onDelete: SetNull)
+  olusturanUserId String    @map("olusturan_user_id")
+  olusturanUser   User      @relation("RandevuOlusturan", fields: [olusturanUserId], references: [id], onDelete: Restrict)
+  sorumluUserId   String?   @map("sorumlu_user_id")
+  sorumluUser     User?     @relation("RandevuSorumlu", fields: [sorumluUserId], references: [id], onDelete: SetNull)
+  baslik          String
+  baslangicAt     DateTime  @map("baslangic_at")
+  bitisAt         DateTime  @map("bitis_at")
+  konum           String?
+  aciklama        String?
+  aktifMi         Boolean   @default(true) @map("aktif_mi")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenantId, baslangicAt])
+  @@index([sorumluUserId, baslangicAt])
+  @@index([muvekkilId])
+  @@map("randevu")
 }
 
 enum KasaHareketTipi {
