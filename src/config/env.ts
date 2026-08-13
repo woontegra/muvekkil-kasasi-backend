@@ -43,6 +43,19 @@ const envSchema = z.object({
   DEFAULT_MAIL_USER: optionalNonEmpty,
   GMAIL_USER: optionalNonEmpty,
   GMAIL_APP_PASSWORD: optionalNonEmpty,
+  /**
+   * Yalnızca yerel geliştirmede SMTP yokken reset/aktivasyon linkini konsola yaz.
+   * Railway / production’da asla açmayın — mail gitmeden 200 dönmesine yol açar.
+   */
+  MAIL_DEV_CONSOLE_FALLBACK: z.preprocess((v) => {
+    if (typeof v === 'boolean') return v
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase()
+      if (t === 'true' || t === '1' || t === 'yes') return true
+      if (t === 'false' || t === '0' || t === 'no') return false
+    }
+    return false
+  }, z.boolean().default(false)),
   /** Woontegra Website ödeme sonrası tenant/büro oluşturma entegrasyonu (server-to-server). */
   WOONTEGRA_WEBSITE_PROVISION_SECRET: z.preprocess(
     (v) => (typeof v === 'string' && v.trim().length >= 16 ? v.trim() : undefined),

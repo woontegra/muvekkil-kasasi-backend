@@ -3,6 +3,7 @@ import type { Transporter } from 'nodemailer'
 import { env } from '../config/env.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
+  allowMailDevConsoleFallback,
   buildPasswordResetUrl,
   getMkLoginUrl,
   getMailFromAddress,
@@ -184,9 +185,9 @@ export async function sendPasswordResetEmail(params: SendPasswordResetEmailParam
   const from = cfg.from ?? getMailFromAddress()
 
   if (!tx || !from) {
-    if (env.NODE_ENV === 'development') {
+    if (allowMailDevConsoleFallback()) {
       console.info('[DEV ONLY] Password reset link:', resetUrl)
-      console.info('[mail] Password reset mail skipped (SMTP not configured, development mode)')
+      console.info('[mail] Password reset mail skipped (SMTP not configured, MAIL_DEV_CONSOLE_FALLBACK)')
       return
     }
     console.error('[mail] Password reset mail FAILED — SMTP not configured')
@@ -442,9 +443,9 @@ export async function sendWelcomeActivationEmail(
 
   if (!tx || !from) {
     const reason = describeWelcomeMailConfigError(cfg)
-    if (env.NODE_ENV === 'development') {
+    if (allowMailDevConsoleFallback()) {
       console.info('[DEV ONLY] Activation link:', activationUrl)
-      console.info('[mail] Welcome activation mail skipped (SMTP not configured, development mode)')
+      console.info('[mail] Welcome activation mail skipped (SMTP not configured, MAIL_DEV_CONSOLE_FALLBACK)')
       return { sent: true }
     }
     console.error('[mail] Welcome activation mail FAILED —', reason)
@@ -541,8 +542,8 @@ export async function sendLicenseRenewalEmail(
 
   if (!tx || !from) {
     const reason = describeWelcomeMailConfigError(cfg)
-    if (env.NODE_ENV === 'development') {
-      console.info('[DEV ONLY] Renewal mail skipped (SMTP not configured)')
+    if (allowMailDevConsoleFallback()) {
+      console.info('[DEV ONLY] Renewal mail skipped (SMTP not configured, MAIL_DEV_CONSOLE_FALLBACK)')
       return { sent: true }
     }
     console.error('[mail] License renewal mail FAILED —', reason)
@@ -685,8 +686,8 @@ export async function sendLicenseExpiryReminderEmail(
 
   if (!tx || !from) {
     const reason = describeWelcomeMailConfigError(cfg)
-    if (env.NODE_ENV === 'development') {
-      console.info('[DEV ONLY] Expiry reminder skipped (SMTP not configured)')
+    if (allowMailDevConsoleFallback()) {
+      console.info('[DEV ONLY] Expiry reminder skipped (SMTP not configured, MAIL_DEV_CONSOLE_FALLBACK)')
       return { sent: false, error: 'smtp_not_configured_dev' }
     }
     console.error('[mail] License expiry reminder FAILED —', reason)

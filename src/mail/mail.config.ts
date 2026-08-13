@@ -137,6 +137,17 @@ export function getResolvedMailTransport(): ResolvedMailTransport {
   return resolveMailTransport(env)
 }
 
+/**
+ * Konsola link yazıp mail atlamaya izin — yalnızca açık bayrak + yerel geliştirme.
+ * Railway (RAILWAY_ENVIRONMENT) veya NODE_ENV=production’da asla true olmaz.
+ */
+export function allowMailDevConsoleFallback(): boolean {
+  if (!env.MAIL_DEV_CONSOLE_FALLBACK) return false
+  if (env.NODE_ENV === 'production') return false
+  if (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID) return false
+  return true
+}
+
 /** @deprecated getResolvedMailTransport kullanın */
 export function getSmtpConfigStatus(): ResolvedMailTransport {
   return getResolvedMailTransport()
@@ -276,10 +287,12 @@ export function logMailConfigOnStartup(): void {
     if (!gmailUser) console.error('[mail] GMAIL_USER eksik')
     if (!gmailPass) console.error('[mail] GMAIL_APP_PASSWORD eksik')
     console.warn('[mail] SMTP yapılandırması eksik:', cfg.missing.join(', ') || '(bilinmeyen)')
-    if (env.NODE_ENV === 'development') {
-      console.warn('[mail] Geliştirme modunda sıfırlama bağlantıları konsola yazdırılacak.')
+    if (allowMailDevConsoleFallback()) {
+      console.warn('[mail] MAIL_DEV_CONSOLE_FALLBACK=YES — sıfırlama bağlantıları yalnızca konsola yazılır.')
     } else {
-      console.warn('[mail] Üretimde aktivasyon ve şifre sıfırlama e-postası SMTP olmadan gönderilemez.')
+      console.warn(
+        '[mail] Şifre sıfırlama/aktivasyon e-postası SMTP olmadan gönderilemez. GMAIL_USER+GMAIL_APP_PASSWORD veya SMTP_* tanımlayın. NODE_ENV=development olsa bile Railway’de konsol fallback kapalıdır.'
+      )
     }
     return
   }
