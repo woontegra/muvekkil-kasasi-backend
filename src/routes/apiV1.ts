@@ -22,6 +22,7 @@ import { maliKontrolRouter } from '../maliKontrol/maliKontrol.routes.js'
 import { tahsilatMerkeziRouter } from '../tahsilatMerkezi/tahsilatMerkezi.routes.js'
 import { tahsilatBildirimRouter } from '../tahsilatBildirim/tahsilatBildirim.routes.js'
 import { whatsappWebhookRouter } from '../tahsilatBildirim/webhook.routes.js'
+import { whatsappBaglantiRouter } from '../tahsilatBildirim/connection.routes.js'
 import { tenantRouter } from '../tenant/tenant.routes.js'
 import { auditRouter } from '../audit/audit.routes.js'
 import { meHandler } from './me.js'
@@ -50,6 +51,8 @@ apiV1Router.use('/reports', reportsRouter)
 apiV1Router.use('/mali-kontrol', maliKontrolRouter)
 apiV1Router.use('/tahsilat-merkezi', tahsilatMerkeziRouter)
 apiV1Router.use('/tahsilat-bildirim', tahsilatBildirimRouter)
+apiV1Router.use('/tahsilat-bildirim/whatsapp-baglanti', whatsappBaglantiRouter)
+apiV1Router.use('/whatsapp-baglanti', whatsappBaglantiRouter)
 apiV1Router.use('/dashboard', dashboardRouter)
 apiV1Router.use('/smm', smmRouter)
 apiV1Router.use('/import/desktop', desktopImportRouter)

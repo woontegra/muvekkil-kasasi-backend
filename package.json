@@ -22,6 +22,8 @@
     "security:quality-phase2": "tsx scripts/quality-phase2-api.ts",
     "security:bildirim-ayar": "tsx scripts/bildirim-ayar-quality.ts",
     "test:whatsapp": "tsx scripts/whatsapp-provider-quality.ts",
+    "test:whatsapp-cloud": "tsx scripts/whatsapp-cloud-integration-quality.ts",
+    "whatsapp:cloud-test": "tsx scripts/whatsapp-cloud-api-test.ts",
     "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts",
     "test:vekalet-kismi": "tsx scripts/test-vekalet-kismi-odeme.ts",
     "bildirim:scheduler": "tsx scripts/tahsilat-bildirim-scheduler.ts",

@@ -69,6 +69,44 @@ const envSchema = z.object({
     }
     return false
   }, z.boolean().default(false)),
+  /**
+   * @deprecated Tenant gönderiminde kullanılmaz — yalnızca opsiyonel platform smoke test.
+   * Tenant mesajları WhatsAppBaglanti üzerinden gider.
+   */
+  WHATSAPP_WABA_ID: optionalNonEmpty,
+  /** @deprecated Tenant gönderiminde kullanılmaz — yalnızca opsiyonel platform smoke test. */
+  WHATSAPP_PHONE_NUMBER_ID: optionalNonEmpty,
+  /** @deprecated Tenant gönderiminde kullanılmaz — yalnızca opsiyonel platform smoke test. */
+  WHATSAPP_ACCESS_TOKEN: optionalNonEmpty,
+  /** Graph API sürümü (varsayılan v22.0; docs örnekleri v26.0 olabilir — env ile ayarlanır). */
+  WHATSAPP_GRAPH_API_VERSION: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim().length > 0 ? v.trim().replace(/^\/+/, '') : undefined),
+    z.string().min(1).optional()
+  ),
+  /** Meta / Facebook App ID — Embedded Signup (WHATSAPP_APP_ID tercih; META_APP_ID alias). */
+  WHATSAPP_APP_ID: optionalNonEmpty,
+  META_APP_ID: optionalNonEmpty,
+  /** Embedded Signup config_id (FB.login). */
+  WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: optionalNonEmpty,
+  /** Tenant WABA webhook override hedefi (tam URL, örn. https://api.../api/webhooks/whatsapp). */
+  WHATSAPP_WEBHOOK_PUBLIC_URL: optionalNonEmpty,
+  /**
+   * Tenant access token AES-256-GCM anahtarı (min 32 karakter).
+   * Production bağlantıda zorunlu; non-prod’da yoksa JWT_SECRET’ten türetilir (uyarı).
+   */
+  WHATSAPP_TOKEN_ENCRYPTION_KEY: optionalNonEmpty,
+  /**
+   * Yalnızca `npm run whatsapp:cloud-test` için test alıcı numarası.
+   * Kod içine gömülmez; yoksa test mesaj göndermez.
+   */
+  WHATSAPP_CLOUD_TEST_PHONE: optionalNonEmpty,
+  /**
+   * Bağlantı testi template adı. Boşsa Meta test şablonu `hello_world` kullanılır.
+   * 24s dışı soğuk mesajda serbest metin yerine template gerekir.
+   */
+  WHATSAPP_CLOUD_TEST_TEMPLATE_NAME: optionalNonEmpty,
+  /** Template dil kodu (varsayılan en_US — Meta hello_world). */
+  WHATSAPP_CLOUD_TEST_TEMPLATE_LANG: optionalNonEmpty,
   /** Otomatik WhatsApp hatırlatma planlama/worker — Meta onayı öncesi false. */
   WHATSAPP_AUTOMATION_ENABLED: z.preprocess((v) => {
     if (typeof v === 'boolean') return v
@@ -140,6 +178,16 @@ if (env.COOKIE_SAME_SITE === 'none' && env.NODE_ENV === 'production') {
 if (env.WHATSAPP_CLOUD_API_ENABLED && env.NODE_ENV === 'production') {
   // Cloud API prod’da flag açık olsa bile secret/config yoksa worker gerçek istek atmaz (provider NOT_CONFIGURED).
   console.warn('[env] WHATSAPP_CLOUD_API_ENABLED=true — Meta hesap/secret yapılandırması tamamlanmadan gönderim yapılmaz.')
+}
+
+/** Embedded Signup / Graph app id — WHATSAPP_APP_ID tercih, META_APP_ID alias. */
+export function resolveWhatsAppAppId(): string | undefined {
+  return env.WHATSAPP_APP_ID ?? env.META_APP_ID
+}
+
+/** Graph API version — varsayılan v22.0. */
+export function resolveWhatsAppGraphVersion(): string {
+  return env.WHATSAPP_GRAPH_API_VERSION?.trim() || 'v22.0'
 }
 
 export function getActivationTokenExpiresHours(): number {

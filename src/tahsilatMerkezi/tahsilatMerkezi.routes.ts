@@ -72,6 +72,12 @@ tahsilatMerkeziRouter.get(
 
 const manualWaBodySchema = z.object({
   mesaj: z.string().min(10).max(2000),
+  idempotencyKey: z.string().min(8).max(128),
+  openDeepLink: z.boolean().optional()
+})
+
+const manualSmsBodySchema = z.object({
+  mesaj: z.string().min(10).max(2000),
   idempotencyKey: z.string().min(8).max(128)
 })
 
@@ -100,6 +106,7 @@ tahsilatMerkeziRouter.post(
       taksitId,
       mesaj: body.mesaj,
       idempotencyKey: body.idempotencyKey,
+      openDeepLink: body.openDeepLink,
       req
     })
     res.json(result)
@@ -124,7 +131,7 @@ tahsilatMerkeziRouter.post(
   manualSmsRateLimit,
   asyncHandler(async (req, res) => {
     const taksitId = z.string().uuid().parse(req.params.taksitId)
-    const body = manualWaBodySchema.parse(req.body)
+    const body = manualSmsBodySchema.parse(req.body)
     const result = await sendManualSms({
       tenantId: req.auth!.tenantId,
       userId: req.auth!.sub,

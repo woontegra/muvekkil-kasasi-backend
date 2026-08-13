@@ -13,7 +13,7 @@ import {
   updateSettings,
   updateTemplate
 } from './settings.service.js'
-import { markBildirimJobSent, openBildirimJobWhatsApp } from './bildirimJobWhatsApp.service.js'
+import { markBildirimJobSent, openBildirimJobWhatsApp, sendBildirimJobViaCloudApi } from './bildirimJobWhatsApp.service.js'
 import { simulateTodaysJobs } from './simulate.service.js'
 
 export const tahsilatBildirimRouter = Router()
@@ -128,6 +128,24 @@ tahsilatBildirimRouter.post(
     const jobId = z.string().uuid().parse(req.params.id)
     const body = whatsappAcSchema.parse(req.body ?? {})
     const result = await openBildirimJobWhatsApp({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      jobId,
+      req,
+      mesaj: body.mesaj
+    })
+    res.json({ ok: true, ...result })
+  })
+)
+
+tahsilatBildirimRouter.post(
+  '/isler/:id/whatsapp-cloud-gonder',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const jobId = z.string().uuid().parse(req.params.id)
+    const body = whatsappAcSchema.parse(req.body ?? {})
+    const result = await sendBildirimJobViaCloudApi({
       tenantId: req.auth!.tenantId,
       userId: req.auth!.sub,
       jobId,

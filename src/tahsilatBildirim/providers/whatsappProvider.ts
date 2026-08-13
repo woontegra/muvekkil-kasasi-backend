@@ -1,4 +1,6 @@
 import { env } from '../../config/env.js'
+import { graphFetch, graphVersion } from '../meta/graphClient.js'
+import { loadTenantCloudCredentials } from '../connection.service.js'
 
 /** Canlı varsayılan: MANUAL_WHATSAPP. Meta WhatsApp onayı sonrası WHATSAPP_CLOUD_API yeniden etkinleştirilecek. */
 export type WhatsAppProviderKind = 'MANUAL_WHATSAPP' | 'WHATSAPP_CLOUD_API'
@@ -9,6 +11,12 @@ export type WhatsAppSendPayload = {
   toE164: string
   text: string
   idempotencyKey: string
+  /**
+   * Opsiyonel Meta template. Doluysa serbest metin yerine template gönderilir
+   * (24s dışı soğuk mesaj / bağlantı testi için).
+   */
+  templateName?: string | null
+  templateLanguage?: string | null
 }
 
 export type WhatsAppSendResult = {
@@ -19,6 +27,12 @@ export type WhatsAppSendResult = {
   providerMessageId?: string | null
   /** Yalnızca MANUAL_WHATSAPP: kullanıcı yönlendirme URL’si. */
   deepLinkUrl?: string | null
+  httpStatus?: number | null
+  metaErrorCode?: number | null
+  /** Secret içermeyen Meta hata özeti. */
+  metaErrorSummary?: string | null
+  usedTemplate?: boolean
+  templateName?: string | null
 }
 
 export interface WhatsAppProvider {
@@ -38,41 +52,137 @@ export class ManualWhatsAppProvider implements WhatsAppProvider {
       code: 'MANUAL_READY',
       message: 'WhatsApp bağlantısı hazır; mesaj otomatik gönderilmez.',
       providerMessageId: null,
-      deepLinkUrl
+      deepLinkUrl,
+      usedTemplate: false
     }
   }
 }
 
 /**
- * Meta Cloud API iskeleti.
- * WHATSAPP_CLOUD_API_ENABLED=false veya hesap ACTIVE değilken gerçek dış istek yok.
+ * Meta Cloud API provider — tenant WhatsAppBaglanti token + phoneNumberId kullanır.
+ * Global env token tenant gönderiminde KULLANILMAZ.
  */
 export class WhatsAppCloudApiProvider implements WhatsAppProvider {
   readonly kind = 'WHATSAPP_CLOUD_API' as const
 
-  async send(_payload: WhatsAppSendPayload): Promise<WhatsAppSendResult> {
+  async send(payload: WhatsAppSendPayload): Promise<WhatsAppSendResult> {
     if (!env.WHATSAPP_CLOUD_API_ENABLED) {
       return {
         ok: false,
         provider: 'WHATSAPP_CLOUD_API',
         code: 'FEATURE_DISABLED',
         message: 'WhatsApp Cloud API feature flag kapalı; gerçek gönderim yapılmaz.',
-        providerMessageId: null
+        providerMessageId: null,
+        usedTemplate: false
       }
     }
-    // Meta onayı ve tenant secret/config tamamlanmadan ağ çağrısı yok.
+
+    const creds = await loadTenantCloudCredentials(payload.tenantId)
+    if (!creds.ok) {
+      return {
+        ok: false,
+        provider: 'WHATSAPP_CLOUD_API',
+        code: creds.code,
+        message: creds.message,
+        providerMessageId: null,
+        usedTemplate: false
+      }
+    }
+
+    const to = payload.toE164.replace(/\D/g, '')
+    if (!to || to.length < 10) {
+      return {
+        ok: false,
+        provider: 'WHATSAPP_CLOUD_API',
+        code: 'INVALID_PHONE',
+        message: 'Geçersiz alıcı telefon numarası.',
+        providerMessageId: null,
+        usedTemplate: false
+      }
+    }
+
+    const templateName = payload.templateName?.trim() || null
+    const useTemplate = Boolean(templateName)
+    const language = (payload.templateLanguage?.trim() || 'en_US').slice(0, 16)
+
+    const body: Record<string, unknown> = useTemplate
+      ? {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: language }
+          }
+        }
+      : {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'text',
+          text: { preview_url: false, body: payload.text.slice(0, 4096) }
+        }
+
+    const result = await graphFetch<{ messages?: Array<{ id?: string }> }>(
+      `${encodeURIComponent(creds.phoneNumberId)}/messages`,
+      {
+        method: 'POST',
+        accessToken: creds.accessToken,
+        body,
+        version: graphVersion()
+      }
+    )
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        provider: 'WHATSAPP_CLOUD_API',
+        code: result.errorCode != null ? `META_${result.errorCode}` : `HTTP_${result.httpStatus}`,
+        message: 'Meta WhatsApp API hatası.',
+        providerMessageId: null,
+        httpStatus: result.httpStatus || null,
+        metaErrorCode: result.errorCode,
+        metaErrorSummary: result.errorSummary,
+        usedTemplate: useTemplate,
+        templateName
+      }
+    }
+
+    const messageId = result.data?.messages?.[0]?.id?.trim() || null
+    if (!messageId) {
+      return {
+        ok: false,
+        provider: 'WHATSAPP_CLOUD_API',
+        code: 'NO_MESSAGE_ID',
+        message: 'Meta API başarı döndü ancak message id yok.',
+        providerMessageId: null,
+        httpStatus: result.httpStatus,
+        usedTemplate: useTemplate,
+        templateName
+      }
+    }
+
     return {
-      ok: false,
+      ok: true,
       provider: 'WHATSAPP_CLOUD_API',
-      code: 'NOT_CONFIGURED',
-      message: 'WhatsApp Cloud API henüz yapılandırılmadı; Meta onayı sonrası aktif edilecek.',
-      providerMessageId: null
+      code: 'SENT',
+      message: useTemplate
+        ? `Template mesajı gönderildi (${templateName}).`
+        : 'Metin mesajı gönderildi.',
+      providerMessageId: messageId,
+      httpStatus: result.httpStatus,
+      usedTemplate: useTemplate,
+      templateName
     }
   }
 }
 
 export function isWhatsAppCloudApiAllowed(): boolean {
   return env.WHATSAPP_CLOUD_API_ENABLED === true
+}
+
+/** @deprecated Tenant için baglanti kontrolü kullanın; platform smoke için env. */
+export function isWhatsAppCloudApiConfigured(): boolean {
+  return Boolean(env.WHATSAPP_PHONE_NUMBER_ID?.trim() && env.WHATSAPP_ACCESS_TOKEN?.trim())
 }
 
 /**

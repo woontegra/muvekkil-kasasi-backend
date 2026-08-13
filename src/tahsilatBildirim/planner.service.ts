@@ -11,6 +11,7 @@ import { ensureTenantBildirimDefaults } from './settings.service.js'
 import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { mapTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { addDaysYmd, planAtFromYmdAndMinutes, ymdTr } from './time.js'
+import { isWhatsAppBaglantiConnected } from './connection.public.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
   return tutarlar.reduce((s, o) => s + Number(o.tutar), 0)
@@ -114,6 +115,14 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
 
   const todayYmd = ymdTr(new Date())
 
+  const baglanti = await prisma.whatsAppBaglanti.findUnique({
+    where: { tenantId },
+    select: { durum: true }
+  })
+  const useCloud =
+    env.WHATSAPP_CLOUD_API_ENABLED && isWhatsAppBaglantiConnected(baglanti?.durum)
+  const providerValue = useCloud ? 'WHATSAPP_CLOUD_API' : 'MANUAL_WHATSAPP'
+
   const taksitler = await prisma.vekaletTaksiti.findMany({
     where: {
       tenantId,
@@ -160,13 +169,13 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
             dosyaId: taksit.dosyaId,
             taksitId: taksit.id,
             kanal: BildirimKanali.WHATSAPP,
-            provider: 'MANUAL_WHATSAPP',
+            provider: providerValue,
             kuralTuru: rule.kuralTuru,
             planlananAt,
             kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
             durum: BildirimIsDurumu.PLANLANDI,
             idempotencyKey: key,
-            providerAdi: 'MANUAL_WHATSAPP'
+            providerAdi: providerValue
           }
         })
         created += 1

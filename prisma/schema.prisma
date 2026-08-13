@@ -80,6 +80,9 @@ model Tenant {
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
   tahsilatBildirimDenemeleri TahsilatBildirimDeneme[]
   whatsAppBaglanti       WhatsAppBaglanti?
+  whatsAppWebhookEvents  WhatsAppWebhookEvent[]
+  whatsAppGelenMesajlar  WhatsAppGelenMesaj[]
+  whatsAppMetaSablonlar  WhatsAppMetaSablon[]
   smsBakiye              SmsTenantBakiye?
   smsKrediHareketleri    SmsKrediHareketi[]
   refreshSessions            RefreshSession[]
@@ -971,6 +974,8 @@ enum WhatsAppBaglantiDurumu {
   ACTIVE
   SUSPENDED
   DISABLED
+  BAGLANIYOR
+  BAGLANTI_KESILDI
 }
 
 /// Tenant bazlı otomatik tahsilat bildirim ayarları. Varsayılan: kapalı + test modu.
@@ -1147,19 +1152,104 @@ model SmsKrediHareketi {
 
 /// Tenant WhatsApp bağlantı durumu. Cloud API token’ları yalnızca şifreli saklanır; frontend’e gitmez.
 model WhatsAppBaglanti {
-  id                    String                 @id @default(uuid())
-  tenantId              String                 @unique @map("tenant_id")
-  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  durum                 WhatsAppBaglantiDurumu @default(DISABLED)
+  id                       String                 @id @default(uuid())
+  tenantId                 String                 @unique @map("tenant_id")
+  tenant                   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  durum                    WhatsAppBaglantiDurumu @default(DISABLED)
+  /// META_CLOUD — tek WhatsApp Cloud API yolu (paralel ikinci sistem yok).
+  provider                 String                 @default("META_CLOUD")
   /// Yalnızca şifrelenmiş değer. Düz metin token kabul edilmez / loglanmaz.
-  accessTokenEncrypted  String?                @map("access_token_encrypted")
-  wabaIdMasked          String?                @map("waba_id_masked")
-  phoneNumberIdMasked   String?                @map("phone_number_id_masked")
-  sonHataOzeti          String?                @map("son_hata_ozeti")
-  createdAt             DateTime               @default(now()) @map("created_at")
-  updatedAt             DateTime               @updatedAt @map("updated_at")
+  accessTokenEncrypted     String?                @map("access_token_encrypted")
+  /// Routing için düz (maskesiz) WABA id.
+  wabaId                   String?                @map("waba_id")
+  /// Routing için düz (maskesiz) phone_number_id.
+  phoneNumberId            String?                @map("phone_number_id")
+  wabaIdMasked             String?                @map("waba_id_masked")
+  phoneNumberIdMasked      String?                @map("phone_number_id_masked")
+  displayPhoneNumber       String?                @map("display_phone_number")
+  verifiedName             String?                @map("verified_name")
+  businessAccountName      String?                @map("business_account_name")
+  tokenExpiresAt           DateTime?              @map("token_expires_at")
+  webhookOverrideActive    Boolean                @default(false) @map("webhook_override_active")
+  webhookOverrideCallback  String?                @map("webhook_override_callback")
+  connectedAt              DateTime?              @map("connected_at")
+  disconnectedAt           DateTime?              @map("disconnected_at")
+  lastWebhookAt            DateTime?              @map("last_webhook_at")
+  sonHataOzeti             String?                @map("son_hata_ozeti")
+  createdAt                DateTime               @default(now()) @map("created_at")
+  updatedAt                DateTime               @updatedAt @map("updated_at")
+  webhookEvents            WhatsAppWebhookEvent[]
+  gelenMesajlar            WhatsAppGelenMesaj[]
+  metaSablonlar            WhatsAppMetaSablon[]
 
+  /// Postgres UNIQUE birden fazla NULL’a izin verir.
+  @@unique([phoneNumberId])
+  @@index([phoneNumberId])
+  @@index([wabaId])
   @@map("whatsapp_baglanti")
+}
+
+/// Meta webhook olayları — idempotency (metaEventId unique).
+model WhatsAppWebhookEvent {
+  id                String            @id @default(uuid())
+  tenantId          String?           @map("tenant_id")
+  tenant            Tenant?           @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  baglantiId        String?           @map("baglanti_id")
+  baglanti          WhatsAppBaglanti? @relation(fields: [baglantiId], references: [id], onDelete: SetNull)
+  metaEventId       String            @unique @map("meta_event_id")
+  phoneNumberId     String?           @map("phone_number_id")
+  wabaId            String?           @map("waba_id")
+  eventType         String            @map("event_type")
+  statusRaw         String?           @map("status_raw")
+  providerMessageId String?           @map("provider_message_id")
+  processedOk       Boolean           @default(false) @map("processed_ok")
+  errorCode         String?           @map("error_code")
+  createdAt         DateTime          @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@index([phoneNumberId])
+  @@map("whatsapp_webhook_event")
+}
+
+/// Gelen WhatsApp mesajları — yalnızca metadata (içerik saklanmaz).
+model WhatsAppGelenMesaj {
+  id             String           @id @default(uuid())
+  tenantId       String           @map("tenant_id")
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  baglantiId     String           @map("baglanti_id")
+  baglanti       WhatsAppBaglanti @relation(fields: [baglantiId], references: [id], onDelete: Cascade)
+  metaMessageId  String           @unique @map("meta_message_id")
+  messageType    String           @map("message_type")
+  senderMasked   String           @map("sender_masked")
+  receivedAt     DateTime         @map("received_at")
+  processedDurum String           @default("ALINDI") @map("processed_durum")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  @@index([tenantId])
+  @@index([baglantiId])
+  @@map("whatsapp_gelen_mesaj")
+}
+
+/// Meta Cloud API message template senkron kaydı.
+model WhatsAppMetaSablon {
+  id               String            @id @default(uuid())
+  tenantId         String            @map("tenant_id")
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  baglantiId       String?           @map("baglanti_id")
+  baglanti         WhatsAppBaglanti? @relation(fields: [baglantiId], references: [id], onDelete: SetNull)
+  metaName         String            @map("meta_name")
+  language         String
+  /// BEKLIYOR | ONAYLANDI | REDDEDILDI | DURAKLATILDI | DEVRE_DISI
+  statusNormalized String            @map("status_normalized")
+  category         String?
+  lastSyncedAt     DateTime          @map("last_synced_at")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  @@unique([tenantId, metaName, language])
+  @@index([tenantId])
+  @@index([baglantiId])
+  @@map("whatsapp_meta_sablon")
 }
 
 /// Woontegra platform yöneticisi (büro kullanıcısı değildir).

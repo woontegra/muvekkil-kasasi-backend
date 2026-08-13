@@ -7,8 +7,7 @@ import {
   BildirimKanali,
   BildirimKuralTuru,
   BildirimProvider,
-  Prisma,
-  WhatsAppBaglantiDurumu
+  Prisma
 } from '@prisma/client'
 import { env } from '../config/env.js'
 import { prisma } from '../lib/prisma.js'
@@ -16,6 +15,8 @@ import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { getTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { maskPhone, normalizeTurkiyePhone } from './phone.js'
 import { isWhatsAppCloudApiAllowed, resolveWhatsAppProvider } from './providers/whatsappProvider.js'
+import { hasApprovedMetaTemplate } from './connection.service.js'
+import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import { DEFAULT_TEMPLATES, renderTemplate, type TemplateVars } from './templates.js'
 import { minutesNowTr, ymdTr } from './time.js'
 
@@ -357,13 +358,16 @@ export async function processDueJobs(
         ? 'WHATSAPP_CLOUD_API'
         : 'MANUAL_WHATSAPP'
 
-    // Manuel WhatsApp otomatik worker ile gönderilmez (kullanıcı wa.me açar).
-    // Simülasyon hariç: Cloud API flag + ACTIVE hesap şart.
+    /**
+     * Cloud hazır: feature flag + baglanti BAGLI|ACTIVE.
+     * Otomasyon: onaylı Meta şablon varsa template tercih; yoksa Cloud text (BAGLI iken).
+     * Manuel: kullanıcı wa.me açar — worker göndermez (simülasyon hariç).
+     */
+    const baglanti = await prisma.whatsAppBaglanti.findUnique({
+      where: { tenantId: job.tenantId }
+    })
     const cloudReady =
-      isWhatsAppCloudApiAllowed() &&
-      preferred === 'WHATSAPP_CLOUD_API' &&
-      (await prisma.whatsAppBaglanti.findUnique({ where: { tenantId: job.tenantId } }))?.durum ===
-        WhatsAppBaglantiDurumu.ACTIVE
+      isWhatsAppCloudApiAllowed() && isWhatsAppBaglantiConnected(baglanti?.durum)
 
     if (!options.simulateOnly && !cloudReady) {
       result.skippedManual += 1
@@ -399,11 +403,33 @@ export async function processDueJobs(
     }
 
     const provider = resolveWhatsAppProvider(cloudReady ? 'WHATSAPP_CLOUD_API' : 'MANUAL_WHATSAPP')
+
+    // Meta onaylı şablon varsa template; yoksa serbest metin (Cloud text) — BAGLI iken.
+    let templateName: string | null = null
+    let templateLanguage: string | null = null
+    if (cloudReady && !options.simulateOnly) {
+      const hasApproved = await hasApprovedMetaTemplate(job.tenantId)
+      if (hasApproved) {
+        // İlk onaylı şablon adını kullan (senkron edilmiş Meta template)
+        const approved = await prisma.whatsAppMetaSablon.findFirst({
+          where: { tenantId: job.tenantId, statusNormalized: 'ONAYLANDI' },
+          orderBy: { lastSyncedAt: 'desc' }
+        })
+        if (approved) {
+          templateName = approved.metaName
+          templateLanguage = approved.language
+        }
+      }
+      // Onaylı Meta şablon yoksa: yerel metin Cloud text olarak gider (session / free-text yolu).
+    }
+
     const sendResult = await provider.send({
       tenantId: job.tenantId,
       toE164: phoneE164,
       text: rendered.text,
-      idempotencyKey: job.idempotencyKey
+      idempotencyKey: job.idempotencyKey,
+      templateName,
+      templateLanguage
     })
 
     const telefonMaskeli = maskPhone(phoneE164)
@@ -411,6 +437,10 @@ export async function processDueJobs(
 
     if (sendResult.ok || options.simulateOnly) {
       result.simulasyon += 1
+      const successProvider =
+        options.simulateOnly || sendResult.provider === 'MANUAL_WHATSAPP'
+          ? BildirimProvider.MANUAL_WHATSAPP
+          : BildirimProvider.WHATSAPP_CLOUD_API
       await prisma.$transaction([
         prisma.tahsilatBildirimDeneme.create({
           data: {
@@ -436,7 +466,7 @@ export async function processDueJobs(
             denemeSayisi: { increment: 1 },
             sonDenemeAt: denemeAt,
             telefonMaskeli,
-            provider: BildirimProvider.MANUAL_WHATSAPP,
+            provider: successProvider,
             providerAdi: sendResult.provider,
             providerMessageId: sendResult.providerMessageId ?? null,
             sonProviderHataKodu: null,

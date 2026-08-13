@@ -53,16 +53,31 @@ async function main(): Promise<void> {
   assert(link.deepLinkUrl!.includes(encodeURIComponent('Merhaba test')), 'url encoding')
 
   const cloud = new WhatsAppCloudApiProvider()
-  const blocked = await cloud.send({
-    tenantId: 't',
-    toE164: '905321112233',
-    text: 'x',
-    idempotencyKey: 'k2'
-  })
-  assert(!blocked.ok, 'cloud blocked when not configured/flag')
   if (!env.WHATSAPP_CLOUD_API_ENABLED) {
-    assert(blocked.code === 'FEATURE_DISABLED', 'feature flag closed')
+    const blocked = await cloud.send({
+      tenantId: 't',
+      toE164: '905321112233',
+      text: 'x',
+      idempotencyKey: 'k2'
+    })
+    assert(!blocked.ok && blocked.code === 'FEATURE_DISABLED', 'feature flag closed')
+  } else if (!env.WHATSAPP_PHONE_NUMBER_ID || !env.WHATSAPP_ACCESS_TOKEN) {
+    // Tenant provider global env kullanmaz; bağlantısız tenant → WHATSAPP_NOT_CONNECTED
+    const blocked = await cloud.send({
+      tenantId: '00000000-0000-0000-0000-000000000099',
+      toE164: '905321112233',
+      text: 'x',
+      idempotencyKey: 'k2'
+    })
+    assert(
+      !blocked.ok &&
+        (blocked.code === 'WHATSAPP_NOT_CONNECTED' ||
+          blocked.code === 'NOT_CONFIGURED' ||
+          blocked.code === 'FEATURE_DISABLED'),
+      'cloud not connected for tenant'
+    )
   }
+  // Credential + flag açıkken canlı gönderim yapılmaz; bağlantı testi: npm run whatsapp:cloud-test
 
   const resolved = resolveWhatsAppProvider(null)
   assert(resolved.kind === 'MANUAL_WHATSAPP', 'default provider manual')

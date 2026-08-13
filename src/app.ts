@@ -8,6 +8,16 @@ import { requestLogger } from './middleware/requestLogger.js'
 import { securityHeaders } from './middleware/securityHeaders.js'
 import healthRoutes from './routes/health.js'
 import { apiV1Router } from './routes/apiV1.js'
+import { whatsappWebhookRouter } from './tahsilatBildirim/webhook.routes.js'
+
+function whatsappRawBodyJson() {
+  return express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => {
+      ;(req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf)
+    }
+  })
+}
 
 export function createApp(): express.Express {
   const app = express()
@@ -24,15 +34,9 @@ export function createApp(): express.Express {
     next()
   })
 
-  app.use(
-    '/api/v1/integrations/whatsapp',
-    express.json({
-      limit: '1mb',
-      verify: (req, _res, buf) => {
-        ;(req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf)
-      }
-    })
-  )
+  // Preferred public webhook path + legacy integrations path (HMAC raw body)
+  app.use('/api/webhooks/whatsapp', whatsappRawBodyJson())
+  app.use('/api/v1/integrations/whatsapp', whatsappRawBodyJson())
   app.use(express.json({ limit: '1mb' }))
   app.use(cookieParser())
 
@@ -48,6 +52,7 @@ export function createApp(): express.Express {
   )
 
   app.use('/', healthRoutes)
+  app.use('/api/webhooks/whatsapp', whatsappWebhookRouter)
   app.use('/api/v1', apiV1Router)
 
   app.use('/api', (_req, res) => {

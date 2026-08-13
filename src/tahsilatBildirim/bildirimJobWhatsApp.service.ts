@@ -4,6 +4,7 @@ import { writeAuditLog } from '../audit/auditService.js'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import { buildBildirimMesaji } from './messageTemplate.service.js'
 import { maskPhone, normalizeTurkiyePhone } from './phone.js'
 import { resolveWhatsAppProvider } from './providers/whatsappProvider.js'
@@ -132,6 +133,109 @@ export async function openBildirimJobWhatsApp(input: {
     deepLinkUrl: sendResult.deepLinkUrl,
     telefonMaskeli: maskPhone(phone),
     durum: TERMINAL_DURUMLAR.includes(job.durum) ? job.durum : BildirimIsDurumu.SIMULASYON_TAMAMLANDI
+  }
+}
+
+/** Cloud API bağlıysa manuel hatırlatmayı gerçek Meta gönderimiyle yapar. */
+export async function sendBildirimJobViaCloudApi(input: {
+  tenantId: string
+  userId: string
+  jobId: string
+  req: Request
+  mesaj?: string
+}): Promise<Record<string, unknown>> {
+  const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId: input.tenantId } })
+  if (!baglanti || !isWhatsAppBaglantiConnected(baglanti.durum)) {
+    throw new AppError(422, 'WhatsApp Cloud bağlantısı yok.', 'WHATSAPP_NOT_CONNECTED')
+  }
+
+  const job = await loadJob(input.tenantId, input.jobId)
+  if (TERMINAL_DURUMLAR.includes(job.durum)) {
+    return { ok: true, jobId: job.id, durum: job.durum, already: true }
+  }
+
+  const phone = resolvePhone(job.muvekkil)
+  if (!phone) {
+    throw new AppError(422, 'Bu müvekkilin telefon numarası kayıtlı değil.', 'INVALID_PHONE')
+  }
+
+  const text = await renderMessageForJob(job, input.mesaj)
+  const provider = resolveWhatsAppProvider('WHATSAPP_CLOUD_API')
+  const sendResult = await provider.send({
+    tenantId: input.tenantId,
+    toE164: phone,
+    text,
+    idempotencyKey: `cloud-manual|${job.id}|${Date.now()}`
+  })
+
+  const telefonMaskeli = maskPhone(phone)
+  if (!sendResult.ok) {
+    await prisma.tahsilatBildirimIsi.update({
+      where: { id: job.id },
+      data: {
+        durum: BildirimIsDurumu.BASARISIZ,
+        hataOzeti: sendResult.message.slice(0, 400),
+        sonProviderHataKodu: sendResult.code,
+        provider: BildirimProvider.WHATSAPP_CLOUD_API,
+        providerAdi: 'WHATSAPP_CLOUD_API',
+        telefonMaskeli,
+        lockedAt: null,
+        lockedBy: null
+      }
+    })
+    throw new AppError(502, sendResult.message, sendResult.code)
+  }
+
+  await prisma.$transaction([
+    prisma.tahsilatBildirimDeneme.create({
+      data: {
+        tenantId: input.tenantId,
+        isId: job.id,
+        provider: 'WHATSAPP_CLOUD_API',
+        basariliMi: true,
+        telefonMaskeli,
+        sablonOzeti: null,
+        mesajOzeti: 'MASKED',
+        sonucKodu: sendResult.code,
+        sonucMesaji: sendResult.message
+      }
+    }),
+    prisma.tahsilatBildirimIsi.update({
+      where: { id: job.id },
+      data: {
+        durum: BildirimIsDurumu.GONDERILDI,
+        provider: BildirimProvider.WHATSAPP_CLOUD_API,
+        providerAdi: 'WHATSAPP_CLOUD_API',
+        providerMessageId: sendResult.providerMessageId ?? null,
+        telefonMaskeli,
+        sonProviderHataKodu: null,
+        hataOzeti: null,
+        lockedAt: null,
+        lockedBy: null,
+        denemeSayisi: { increment: 1 },
+        sonDenemeAt: new Date()
+      }
+    })
+  ])
+
+  const meta = getRequestMeta(input.req)
+  await writeAuditLog({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    action: 'TAHSILAT_WHATSAPP_CLOUD_SENT',
+    entityType: 'TahsilatBildirimIsi',
+    entityId: job.id,
+    newValue: { provider: 'WHATSAPP_CLOUD_API', hasMessageId: Boolean(sendResult.providerMessageId) },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+
+  return {
+    ok: true,
+    jobId: job.id,
+    durum: BildirimIsDurumu.GONDERILDI,
+    providerMessageId: sendResult.providerMessageId ?? null,
+    telefonMaskeli
   }
 }
 

@@ -14,6 +14,7 @@ import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { DEFAULT_TEMPLATES } from './templates.js'
+import { getPublicConnectionStatus } from './connection.public.js'
 
 const DEFAULT_RULES: Array<{ kuralTuru: BildirimKuralTuru; gunOffset: number }> = [
   { kuralTuru: BildirimKuralTuru.VADEDEN_ONCE, gunOffset: 3 },
@@ -149,12 +150,7 @@ export async function getSettings(tenantId: string): Promise<{
     ayar: serializeAyar(ayar),
     kurallar: kurallar.map(serializeKural),
     sablonlar: sablonlar.map(serializeSablon),
-    whatsapp: {
-      aktifProvider: 'MANUAL_WHATSAPP',
-      gonderimYontemi: 'Manuel WhatsApp',
-      cloudApiEnabled: false,
-      bilgi: 'Hatırlatmalar program tarafından hazırlanır. Gönderim WhatsApp üzerinden sizin tarafınızdan tamamlanır.'
-    }
+    whatsapp: await getWhatsAppDurum(tenantId)
   }
 }
 
@@ -312,14 +308,26 @@ export async function updateTemplate(
 export async function getWhatsAppDurum(tenantId: string): Promise<Record<string, unknown>> {
   await ensureTenantBildirimDefaults(tenantId)
   const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
+  if (!baglanti) {
+    return {
+      durum: WhatsAppBaglantiDurumu.DISABLED,
+      wabaIdMasked: null,
+      phoneNumberIdMasked: null,
+      sonHataOzeti: null,
+      aktifProvider: 'MANUAL_WHATSAPP',
+      cloudApiEnabled: env.WHATSAPP_CLOUD_API_ENABLED,
+      gercekGonderimAktif: false,
+      connected: false,
+      provider: 'META_CLOUD',
+      bilgi: 'WhatsApp Cloud API bağlantısı henüz kurulmadı.'
+    }
+  }
+
+  const publicStatus = getPublicConnectionStatus(baglanti)
   return {
-    durum: baglanti?.durum ?? WhatsAppBaglantiDurumu.DISABLED,
-    wabaIdMasked: baglanti?.wabaIdMasked ?? null,
-    phoneNumberIdMasked: baglanti?.phoneNumberIdMasked ?? null,
-    sonHataOzeti: baglanti?.sonHataOzeti ?? null,
-    aktifProvider: 'MANUAL_WHATSAPP',
-    cloudApiEnabled: env.WHATSAPP_CLOUD_API_ENABLED,
-    gercekGonderimAktif: false,
-    bilgi: 'Bildirimler WhatsApp üzerinden, kendi WhatsApp hesabınız kullanılarak gönderilir.'
+    ...publicStatus,
+    bilgi: publicStatus.connected
+      ? 'WhatsApp Cloud API bağlı; otomatik gönderim (flag açıkken) Cloud üzerinden yapılır.'
+      : 'Bildirimler WhatsApp üzerinden, kendi WhatsApp hesabınız kullanılarak gönderilir.'
   }
 }
