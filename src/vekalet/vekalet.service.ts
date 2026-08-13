@@ -93,10 +93,17 @@ async function loadTaksitOdemeler(taksitId: string): Promise<OdemeRow[]> {
 export async function serializeTaksitApiResponse(t: VekaletTaksiti): Promise<Record<string, unknown>> {
   const odemeler = await loadTaksitOdemeler(t.id)
   const { getTaksitOtomatikBildirimAktif } = await import('../tahsilatBildirim/taksitBildirimColumn.js')
+  const { getTaksitHatirlatmaPlan } = await import('../tahsilatBildirim/bildirimPlan.service.js')
   const otomatikBildirimAktif = await getTaksitOtomatikBildirimAktif(t.id)
-  return serializeVekaletTaksitiWithOzet({ ...t, otomatikBildirimAktif } as VekaletTaksiti & {
+  const plan = await getTaksitHatirlatmaPlan(t.tenantId, t.id).catch(() => null)
+  const base = serializeVekaletTaksitiWithOzet({ ...t, otomatikBildirimAktif } as VekaletTaksiti & {
     otomatikBildirimAktif: boolean
   }, odemeler)
+  return {
+    ...base,
+    hatirlatmaModu: plan?.mode ?? 'VARSAYILAN',
+    hatirlatmaOzet: plan?.ozet ?? 'Büro ayarı'
+  }
 }
 
 export async function syncTaksitOdemeDurumu(

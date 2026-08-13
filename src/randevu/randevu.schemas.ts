@@ -19,6 +19,22 @@ const optionalUuid = z.preprocess(
   z.string().uuid('Geçersiz id.').nullable()
 )
 
+const hatirlatmaPlanSchema = z
+  .object({
+    mode: z.enum(['VARSAYILAN', 'OZEL', 'KAPALI']),
+    kurallar: z
+      .array(
+        z.object({
+          ruleKey: z.string().min(1).max(32),
+          aktifMi: z.boolean(),
+          offsetDk: z.number().int().min(1).max(60 * 24 * 30),
+          metaSablonId: z.string().uuid().nullable().optional()
+        })
+      )
+      .optional()
+  })
+  .optional()
+
 const randevuWriteBase = z
   .object({
     baslik: z.string().trim().min(1, 'Başlık zorunludur.').max(500),
@@ -28,7 +44,8 @@ const randevuWriteBase = z
     aciklama: optionalNullableString,
     muvekkilId: optionalUuid,
     dosyaId: optionalUuid,
-    sorumluUserId: optionalUuid
+    sorumluUserId: optionalUuid,
+    hatirlatmaPlan: hatirlatmaPlanSchema
   })
   .superRefine((data, ctx) => {
     const start = Date.parse(data.baslangicAt)

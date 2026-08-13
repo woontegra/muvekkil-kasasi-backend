@@ -6,16 +6,21 @@
 import 'dotenv/config'
 import { prisma } from '../src/lib/prisma.js'
 import { processDueJobs } from '../src/tahsilatBildirim/worker.service.js'
+import { processDueRandevuJobs } from '../src/randevu/randevuBildirim.worker.js'
 
 async function main(): Promise<void> {
   await prisma.$connect()
-  const result = await processDueJobs({
+  const tahsilat = await processDueJobs({
     limit: 100,
     workerId: `cli-${process.pid}`
   })
+  const randevu = await processDueRandevuJobs({
+    limit: 100,
+    workerId: `cli-randevu-${process.pid}`
+  })
   // eslint-disable-next-line no-console
   console.info(
-    `[bildirim:worker] processed=${result.processed} simulasyon=${result.simulasyon} basarisiz=${result.basarisiz} atlananTelefon=${result.atlananTelefon} atlananIzin=${result.atlananIzin} atlananDosya=${result.atlananDosya} deferredWindow=${result.deferredWindow}`
+    `[bildirim:worker] tahsilat processed=${tahsilat.processed} simulasyon=${tahsilat.simulasyon} basarisiz=${tahsilat.basarisiz} | randevu processed=${randevu.processed} simulasyon=${randevu.simulasyon} basarisiz=${randevu.basarisiz}`
   )
 }
 

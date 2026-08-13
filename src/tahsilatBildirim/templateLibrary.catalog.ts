@@ -14,7 +14,9 @@ export const APP_VAR_TO_META_PARAM: Record<keyof TemplateVars, string> = {
   odenenTutar: 'odenen_tutar',
   kalanTutar: 'kalan_tutar',
   vadeTarihi: 'vade_tarihi',
-  gecikmeGunu: 'gecikme_gunu'
+  gecikmeGunu: 'gecikme_gunu',
+  randevuTarihi: 'randevu_tarihi',
+  randevuSaati: 'randevu_saati'
 }
 
 export type TemplateLibraryKey =
@@ -24,6 +26,9 @@ export type TemplateLibraryKey =
   | 'TAHSILAT_KISMI_ODEME'
   | 'TAHSILAT_GENEL_HATIRLATMA'
   | 'TAHSILAT_ODEME_ALINDI'
+  | 'RANDEVU_HATIRLATMA'
+
+export type TemplateLibraryGroup = 'TAHSILAT' | 'RANDEVU'
 
 export type TemplateLibraryEntry = {
   libraryKey: TemplateLibraryKey
@@ -43,6 +48,8 @@ export type TemplateLibraryEntry = {
   exampleValues: Partial<Record<keyof TemplateVars, string>>
   /** Otomasyon kuralı önerisi; null = yalnızca manuel eşleme. */
   suggestedKuralTuru: BildirimKuralTuru | null
+  /** UI gruplama */
+  templateGroup: TemplateLibraryGroup
   parameterFormat: 'named'
 }
 
@@ -63,18 +70,22 @@ const SAMPLE: Required<TemplateVars> = {
   odenenTutar: '5000.00',
   kalanTutar: '10000.00',
   vadeTarihi: '15.09.2026',
-  gecikmeGunu: '3'
+  gecikmeGunu: '3',
+  randevuTarihi: '14.08.2026',
+  randevuSaati: '15:00'
 }
 
 function entry(
-  partial: Omit<TemplateLibraryEntry, 'bodyMetaText' | 'category' | 'language' | 'parameterFormat' | 'exampleValues'> & {
+  partial: Omit<TemplateLibraryEntry, 'bodyMetaText' | 'category' | 'language' | 'parameterFormat' | 'exampleValues' | 'templateGroup'> & {
     exampleValues?: Partial<Record<keyof TemplateVars, string>>
+    templateGroup?: TemplateLibraryGroup
   }
 ): TemplateLibraryEntry {
   return {
     category: 'UTILITY',
     language: 'tr',
     parameterFormat: 'named',
+    templateGroup: partial.templateGroup ?? 'TAHSILAT',
     bodyMetaText: metaBodyFromApp(partial.bodyAppText, partial.variables),
     exampleValues: Object.fromEntries(
       partial.variables.map((v) => [v, partial.exampleValues?.[v] ?? SAMPLE[v]])
@@ -149,6 +160,18 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
       'Sayın {muvekkilAdi}, {odenenTutar} TL tutarındaki ödemeniz alınmıştır. {dosyaBilgisi} için kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. {buroAdi}',
     variables: ['muvekkilAdi', 'odenenTutar', 'dosyaBilgisi', 'kalanTutar', 'buroAdi'],
     suggestedKuralTuru: null
+  }),
+  entry({
+    libraryKey: 'RANDEVU_HATIRLATMA',
+    displayName: 'Randevu Hatırlatma',
+    shortDescription: 'Planlanan randevu için bilgilendirme.',
+    suggestedUse: 'Randevu otomatik hatırlatmaları',
+    metaTemplateName: 'mk_randevu_hatirlatma_v1',
+    bodyAppText:
+      'Sayın {muvekkilAdi}, {randevuTarihi} tarihinde saat {randevuSaati} için planlanan randevunuzu hatırlatmak isteriz. {buroAdi}',
+    variables: ['muvekkilAdi', 'randevuTarihi', 'randevuSaati', 'buroAdi'],
+    suggestedKuralTuru: null,
+    templateGroup: 'RANDEVU'
   })
 ] as const
 

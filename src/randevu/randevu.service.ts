@@ -4,6 +4,9 @@ import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getMuvekkilById } from '../muvekkil/muvekkil.service.js'
 import type { CreateRandevuBody, ListRandevuQuery, UpdateRandevuBody } from './randevu.schemas.js'
+import { replanRandevuJobs, cancelPendingRandevuJobs } from './randevuBildirim.planner.js'
+import { setRandevuHatirlatmaPlan } from '../tahsilatBildirim/bildirimPlan.service.js'
+import type { BildirimPlanModu } from '@prisma/client'
 
 type RandevuWithRelations = Randevu & {
   muvekkil: Pick<Muvekkil, 'id' | 'gorunenAd'> | null
@@ -19,7 +22,10 @@ const randevuInclude = {
   olusturanUser: { select: { id: true, adSoyad: true } }
 } satisfies Prisma.RandevuInclude
 
-export function serializeRandevu(r: RandevuWithRelations): Record<string, unknown> {
+export function serializeRandevu(
+  r: RandevuWithRelations,
+  extra?: { hatirlatmaOzet?: string }
+): Record<string, unknown> {
   return {
     id: r.id,
     tenantId: r.tenantId,
@@ -38,7 +44,8 @@ export function serializeRandevu(r: RandevuWithRelations): Record<string, unknow
     muvekkilAd: r.muvekkil?.gorunenAd ?? null,
     dosyaBaslik: r.dosya?.konuBasligi ?? null,
     sorumluAdSoyad: r.sorumluUser?.adSoyad ?? null,
-    olusturanAdSoyad: r.olusturanUser.adSoyad
+    olusturanAdSoyad: r.olusturanUser.adSoyad,
+    hatirlatmaOzet: extra?.hatirlatmaOzet ?? null
   }
 }
 
@@ -122,7 +129,20 @@ export async function listRandevular(
     orderBy: [{ baslangicAt: 'asc' }, { baslik: 'asc' }]
   })
 
-  return items
+  const { getRandevuHatirlatmaPlan } = await import('../tahsilatBildirim/bildirimPlan.service.js')
+  const ozetMap = new Map<string, string>()
+  await Promise.all(
+    items.map(async (r) => {
+      try {
+        const p = await getRandevuHatirlatmaPlan(tenantId, r.id)
+        ozetMap.set(r.id, p.ozet)
+      } catch {
+        ozetMap.set(r.id, 'Büro ayarı')
+      }
+    })
+  )
+
+  return items.map((r) => Object.assign(r, { _hatirlatmaOzet: ozetMap.get(r.id) }))
 }
 
 export async function getRandevuById(tenantId: string, id: string): Promise<RandevuWithRelations | null> {
@@ -157,11 +177,21 @@ export async function createRandevu(
     include: randevuInclude
   })
 
+  if (body.hatirlatmaPlan) {
+    await applyRandevuHatirlatmaPlan(tenantId, userId, created.id, {
+      mode: body.hatirlatmaPlan.mode as BildirimPlanModu,
+      kurallar: body.hatirlatmaPlan.kurallar
+    }, _req)
+  } else {
+    await replanRandevuJobs(tenantId, created.id)
+  }
+
   return created
 }
 
 export async function updateRandevu(
   tenantId: string,
+  userId: string,
   id: string,
   body: UpdateRandevuBody,
   _req?: Request
@@ -188,6 +218,15 @@ export async function updateRandevu(
     include: randevuInclude
   })
 
+  if (body.hatirlatmaPlan) {
+    await applyRandevuHatirlatmaPlan(tenantId, userId, id, {
+      mode: body.hatirlatmaPlan.mode as BildirimPlanModu,
+      kurallar: body.hatirlatmaPlan.kurallar
+    }, _req)
+  } else {
+    await replanRandevuJobs(tenantId, id)
+  }
+
   return updated
 }
 
@@ -200,5 +239,40 @@ export async function deactivateRandevu(tenantId: string, id: string, _req?: Req
   await prisma.randevu.update({
     where: { id },
     data: { aktifMi: false }
+  })
+  await cancelPendingRandevuJobs(tenantId, id, 'Randevu iptal edildi')
+}
+
+async function applyRandevuHatirlatmaPlan(
+  tenantId: string,
+  userId: string,
+  randevuId: string,
+  plan: {
+    mode: BildirimPlanModu
+    kurallar?: Array<{
+      ruleKey: string
+      aktifMi: boolean
+      offsetDk: number
+      metaSablonId?: string | null
+    }>
+  },
+  req?: Request
+): Promise<void> {
+  if (!req) {
+    await replanRandevuJobs(tenantId, randevuId)
+    return
+  }
+  await setRandevuHatirlatmaPlan({
+    tenantId,
+    userId,
+    randevuId,
+    mode: plan.mode,
+    kurallar: plan.kurallar?.map((k) => ({
+      ruleKey: k.ruleKey,
+      aktifMi: k.aktifMi,
+      offsetDk: k.offsetDk,
+      metaSablonId: k.metaSablonId ?? null
+    })),
+    req
   })
 }

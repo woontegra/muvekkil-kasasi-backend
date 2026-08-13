@@ -17,6 +17,11 @@ import {
   serializeRandevu,
   updateRandevu
 } from './randevu.service.js'
+import {
+  getRandevuHatirlatmaPlan,
+  setRandevuHatirlatmaPlan
+} from '../tahsilatBildirim/bildirimPlan.service.js'
+import { BildirimPlanModu } from '@prisma/client'
 
 export const randevularRouter = Router()
 
@@ -27,6 +32,51 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
     void fn(req, res, next).catch(next)
   }
 }
+
+const YONETICI = [UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI] as const
+
+randevularRouter.get(
+  '/:id/hatirlatma-plan',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const data = await getRandevuHatirlatmaPlan(req.auth!.tenantId, id)
+    res.json({ ok: true, ...data })
+  })
+)
+
+randevularRouter.patch(
+  '/:id/hatirlatma-plan',
+  requireAuth,
+  requireRole(...YONETICI, UserRole.KATIP_PERSONEL),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = z
+      .object({
+        mode: z.nativeEnum(BildirimPlanModu),
+        kurallar: z
+          .array(
+            z.object({
+              ruleKey: z.string(),
+              aktifMi: z.boolean(),
+              offsetDk: z.number().int().min(1),
+              metaSablonId: z.string().uuid().nullable()
+            })
+          )
+          .optional()
+      })
+      .parse(req.body)
+    const result = await setRandevuHatirlatmaPlan({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      randevuId: id,
+      mode: body.mode,
+      kurallar: body.kurallar,
+      req
+    })
+    res.json({ ok: true, ...result })
+  })
+)
 
 randevularRouter.get(
   '/',
@@ -42,7 +92,9 @@ randevularRouter.get(
     const items = await listRandevular(tenantId, query)
     res.json({
       ok: true,
-      items: items.map((r) => serializeRandevu(r)),
+      items: items.map((r) =>
+        serializeRandevu(r, { hatirlatmaOzet: (r as { _hatirlatmaOzet?: string })._hatirlatmaOzet })
+      ),
       total: items.length
     })
   })
@@ -84,7 +136,7 @@ randevularRouter.patch(
     const { id } = idParamSchema.parse(req.params)
     const body = updateRandevuBodySchema.parse(req.body)
     const tenantId = req.auth!.tenantId
-    const updated = await updateRandevu(tenantId, id, body, req)
+    const updated = await updateRandevu(tenantId, req.auth!.sub, id, body, req)
     res.json({ ok: true, randevu: serializeRandevu(updated) })
   })
 )

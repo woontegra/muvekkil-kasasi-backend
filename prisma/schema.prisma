@@ -87,6 +87,11 @@ model Tenant {
   smsKrediHareketleri    SmsKrediHareketi[]
   refreshSessions            RefreshSession[]
   randevular                 Randevu[]
+  bildirimPlanEntities       BildirimPlanEntity[]
+  bildirimPlanKurallari      BildirimPlanKural[]
+  randevuBildirimAyar        RandevuBildirimAyar?
+  randevuBildirimVarsayilanKurallari RandevuBildirimVarsayilanKural[]
+  randevuBildirimIsleri      RandevuBildirimIsi[]
 
   @@map("tenant")
 }
@@ -307,6 +312,7 @@ model Muvekkil {
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
+  randevuBildirimIsleri  RandevuBildirimIsi[]
   randevular             Randevu[]
 
   @@index([tenantId, aktifMi])
@@ -383,6 +389,7 @@ model Randevu {
   aktifMi         Boolean   @default(true) @map("aktif_mi")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
+  randevuBildirimIsleri RandevuBildirimIsi[]
 
   @@index([tenantId, baslangicAt])
   @@index([sorumluUserId, baslangicAt])
@@ -964,6 +971,23 @@ enum BildirimIsDurumu {
   ATLANDI
 }
 
+/// Taksit / randevu hatırlatma plan modu.
+enum BildirimPlanModu {
+  VARSAYILAN
+  OZEL
+  KAPALI
+}
+
+enum BildirimEntityType {
+  VEKALET_TAKSITI
+  RANDEVU
+}
+
+enum BildirimPlanKaynagi {
+  VARSAYILAN
+  OZEL
+}
+
 /// Tenant WhatsApp hesap durumu. Eski değerler migration uyumu için korunur.
 enum WhatsAppBaglantiDurumu {
   BAGLI_DEGIL
@@ -1074,8 +1098,11 @@ model TahsilatBildirimIsi {
   raporSonrakiSorguAt DateTime?       @map("rapor_sonraki_sorgu_at")
   raporSorguDeneme   Int              @default(0) @map("rapor_sorgu_deneme")
   manuelTetikleme    Boolean          @default(false) @map("manuel_tetikleme")
-  /// tenant|taksit|kural|kanal|planYmd — DB unique mükerrerlik
+  /// tenant|taksit|kural|kanal|planYmd|kaynak|versiyon — DB unique mükerrerlik
   idempotencyKey     String           @unique @map("idempotency_key")
+  /// VARSAYILAN tenant kuralı veya OZEL taksit planı.
+  planKaynagi        BildirimPlanKaynagi @default(VARSAYILAN) @map("plan_kaynagi")
+  planVersion        Int              @default(1) @map("plan_version")
   lockedAt           DateTime?        @map("locked_at")
   lockedBy           String?          @map("locked_by")
   createdAt          DateTime         @default(now()) @map("created_at")
@@ -1109,6 +1136,113 @@ model TahsilatBildirimDeneme {
   @@index([tenantId, createdAt])
   @@index([isId, createdAt])
   @@map("tahsilat_bildirim_deneme")
+}
+
+/// Entity bazlı bildirim plan modu (taksit / randevu).
+model BildirimPlanEntity {
+  id           String             @id @default(uuid())
+  tenantId     String             @map("tenant_id")
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  entityType   BildirimEntityType @map("entity_type")
+  entityId     String             @map("entity_id")
+  mode         BildirimPlanModu   @default(VARSAYILAN)
+  kanal        BildirimKanali     @default(WHATSAPP)
+  /// Override değişince artırılır; idempotency ve replan için.
+  planVersion  Int                @default(1) @map("plan_version")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  kurallar     BildirimPlanKural[]
+
+  @@unique([tenantId, entityType, entityId, kanal])
+  @@index([tenantId, entityType])
+  @@map("bildirim_plan_entity")
+}
+
+/// Özel plan kuralları (mode=OZEL).
+model BildirimPlanKural {
+  id              String             @id @default(uuid())
+  tenantId        String             @map("tenant_id")
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planEntityId    String             @map("plan_entity_id")
+  planEntity      BildirimPlanEntity @relation(fields: [planEntityId], references: [id], onDelete: Cascade)
+  /// VEKALET_TAKSITI: VADEDEN_ONCE | VADE_GUNU | VADE_SONRASI. RANDEVU: OFFSET_30 | OFFSET_60 | OFFSET_120 | OFFSET_1440 | CUSTOM
+  ruleKey         String             @map("rule_key")
+  aktifMi         Boolean            @default(true) @map("aktif_mi")
+  /// Taksit: gün offset. Randevu CUSTOM: birim sayısı.
+  gunOffset       Int                @default(0) @map("gun_offset")
+  /// Randevu: dakika önce (30, 60, 120, 1440 veya custom).
+  offsetDk        Int?               @map("offset_dk")
+  /// Taksit: gönderim saati dk. Randevu: kullanılmaz (offsetDk ile hesaplanır).
+  gonderimSaatiDk Int                @default(600) @map("gonderim_saati_dk")
+  metaSablonId    String?            @map("meta_sablon_id")
+  metaSablon      WhatsAppMetaSablon? @relation(fields: [metaSablonId], references: [id], onDelete: SetNull)
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  @@unique([planEntityId, ruleKey])
+  @@index([tenantId])
+  @@map("bildirim_plan_kural")
+}
+
+/// Büro genel randevu WhatsApp hatırlatma ayarı.
+model RandevuBildirimAyar {
+  tenantId       String   @id @map("tenant_id")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  otomasyonAktif Boolean  @default(false) @map("otomasyon_aktif")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("randevu_bildirim_ayar")
+}
+
+/// Büro varsayılan randevu hatırlatma offsetleri.
+model RandevuBildirimVarsayilanKural {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  offsetDk     Int      @map("offset_dk")
+  aktifMi      Boolean  @default(false) @map("aktif_mi")
+  metaSablonId String?  @map("meta_sablon_id")
+  metaSablon   WhatsAppMetaSablon? @relation(fields: [metaSablonId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([tenantId, offsetDk])
+  @@map("randevu_bildirim_varsayilan_kural")
+}
+
+/// Randevu WhatsApp hatırlatma iş kuyruğu.
+model RandevuBildirimIsi {
+  id                String              @id @default(uuid())
+  tenantId          String              @map("tenant_id")
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  randevuId         String              @map("randevu_id")
+  randevu           Randevu             @relation(fields: [randevuId], references: [id], onDelete: Cascade)
+  muvekkilId        String              @map("muvekkil_id")
+  muvekkil          Muvekkil            @relation(fields: [muvekkilId], references: [id], onDelete: Cascade)
+  kanal             BildirimKanali      @default(WHATSAPP)
+  provider          BildirimProvider?   @map("provider")
+  offsetDk          Int                 @map("offset_dk")
+  planlananAt       DateTime            @map("planlanan_at")
+  durum             BildirimIsDurumu    @default(PLANLANDI)
+  planKaynagi       BildirimPlanKaynagi @default(VARSAYILAN) @map("plan_kaynagi")
+  planVersion       Int                 @default(1) @map("plan_version")
+  iptalNedeni       String?             @map("iptal_nedeni")
+  atlamaNedeni      String?             @map("atlama_nedeni")
+  hataOzeti         String?             @map("hata_ozeti")
+  denemeSayisi      Int                 @default(0) @map("deneme_sayisi")
+  telefonMaskeli    String?             @map("telefon_maskeli")
+  providerMessageId String?             @map("provider_message_id")
+  metaSablonId      String?             @map("meta_sablon_id")
+  idempotencyKey    String              @unique @map("idempotency_key")
+  lockedAt          DateTime?           @map("locked_at")
+  lockedBy          String?             @map("locked_by")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  @@index([tenantId, durum, planlananAt])
+  @@index([tenantId, randevuId, durum])
+  @@map("randevu_bildirim_isi")
 }
 
 enum SmsKrediHareketTuru {
@@ -1262,6 +1396,8 @@ model WhatsAppMetaSablon {
   createdAt        DateTime          @default(now()) @map("created_at")
   updatedAt        DateTime          @updatedAt @map("updated_at")
   kurallar         TahsilatBildirimKurali[]
+  bildirimPlanKurallari BildirimPlanKural[]
+  randevuBildirimVarsayilanKurallari RandevuBildirimVarsayilanKural[]
 
   @@unique([tenantId, metaName, language])
   @@index([tenantId])

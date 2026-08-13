@@ -9,6 +9,8 @@ export type TemplateVars = {
   kalanTutar?: string
   vadeTarihi?: string
   gecikmeGunu?: string
+  randevuTarihi?: string
+  randevuSaati?: string
 }
 
 export const DEFAULT_TEMPLATES: Record<BildirimKuralTuru, string> = {

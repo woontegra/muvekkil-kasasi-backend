@@ -103,6 +103,53 @@ vekaletTaksitleriRouter.patch(
   })
 )
 
+const taksitHatirlatmaPlanBodySchema = z.object({
+  mode: z.enum(['VARSAYILAN', 'OZEL', 'KAPALI']),
+  kurallar: z
+    .array(
+      z.object({
+        kuralTuru: z.enum(['VADEDEN_ONCE', 'VADE_GUNU', 'VADE_SONRASI']),
+        aktifMi: z.boolean(),
+        gunOffset: z.number().int().min(0).max(365),
+        gonderimSaatiDk: z.number().int().min(0).max(1439),
+        metaSablonId: z.string().uuid().nullable()
+      })
+    )
+    .optional()
+})
+
+vekaletTaksitleriRouter.get(
+  '/:id/hatirlatma-plan',
+  requireAuth,
+  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const { getTaksitHatirlatmaPlan } = await import('../tahsilatBildirim/bildirimPlan.service.js')
+    const data = await getTaksitHatirlatmaPlan(req.auth!.tenantId, id)
+    res.json({ ok: true, ...data })
+  })
+)
+
+vekaletTaksitleriRouter.patch(
+  '/:id/hatirlatma-plan',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = taksitHatirlatmaPlanBodySchema.parse(req.body)
+    const { setTaksitHatirlatmaPlan } = await import('../tahsilatBildirim/bildirimPlan.service.js')
+    const result = await setTaksitHatirlatmaPlan({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      taksitId: id,
+      mode: body.mode,
+      kurallar: body.kurallar,
+      req
+    })
+    res.json({ ok: true, ...result })
+  })
+)
+
 vekaletTaksitleriRouter.put(
   '/:id',
   requireAuth,

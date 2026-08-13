@@ -12,6 +12,9 @@ import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { mapTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { addDaysYmd, planAtFromYmdAndMinutes, ymdTr } from './time.js'
 import { isWhatsAppBaglantiConnected } from './connection.public.js'
+import { BildirimPlanModu } from '@prisma/client'
+import { loadEffectiveTaksitRules, resolveTaksitPlanMode } from './bildirimPlan.service.js'
+import type { EffectiveTaksitRule } from './bildirimPlan.service.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
   return tutarlar.reduce((s, o) => s + Number(o.tutar), 0)
@@ -39,9 +42,11 @@ function idempotencyKey(
   taksitId: string,
   kuralTuru: BildirimKuralTuru,
   kanal: BildirimKanali,
-  planYmd: string
+  planYmd: string,
+  planKaynagi: string,
+  planVersion: number
 ): string {
-  return `${tenantId}|${taksitId}|${kuralTuru}|${kanal}|${planYmd}`
+  return `${tenantId}|${taksitId}|${kuralTuru}|${kanal}|${planYmd}|${planKaynagi}|v${planVersion}`
 }
 
 export type PlanJobsResult = {
@@ -106,13 +111,6 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
     return { tenantId, skipped: true, reason: 'otomasyon_kapali', created: 0, cancelled }
   }
 
-  const rules = await prisma.tahsilatBildirimKurali.findMany({
-    where: { tenantId, aktifMi: true, kanal: BildirimKanali.WHATSAPP }
-  })
-  if (rules.length === 0) {
-    return { tenantId, skipped: false, created: 0, cancelled }
-  }
-
   const todayYmd = ymdTr(new Date())
 
   const baglanti = await prisma.whatsAppBaglanti.findUnique({
@@ -141,6 +139,9 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
   const taksitAktifMap = await mapTaksitOtomatikBildirimAktif(taksitler.map((t) => t.id))
 
   for (const taksit of taksitler) {
+    const planMode = await resolveTaksitPlanMode(tenantId, taksit.id)
+    if (planMode.mode === BildirimPlanModu.KAPALI) continue
+
     const elig = evaluateAutoBildirimEligibility({
       tenantOtomasyonAktif: true,
       muvekkilIzni: taksit.muvekkil.otomatikBildirimIzni,
@@ -152,43 +153,84 @@ export async function planJobsForTenant(tenantId: string): Promise<PlanJobsResul
     const kalan = Math.max(0, Number(taksit.tutar) - sumOdeme(taksit.odemeler))
     if (kalan <= 0.001) continue
 
+    const effectiveRules = await loadEffectiveTaksitRules(tenantId, taksit.id)
+    if (!effectiveRules?.length) continue
+
     const vadeYmd = ymdTr(taksit.vadeTarihi)
 
-    for (const rule of rules) {
-      const planYmd = targetYmdForRule(vadeYmd, rule.kuralTuru, rule.gunOffset)
-      if (planYmd !== todayYmd) continue
-
-      const key = idempotencyKey(tenantId, taksit.id, rule.kuralTuru, BildirimKanali.WHATSAPP, planYmd)
-      const planlananAt = planAtFromYmdAndMinutes(planYmd, rule.gonderimSaatiDk)
-
-      try {
-        await prisma.tahsilatBildirimIsi.create({
-          data: {
-            tenantId,
-            muvekkilId: taksit.muvekkilId,
-            dosyaId: taksit.dosyaId,
-            taksitId: taksit.id,
-            kanal: BildirimKanali.WHATSAPP,
-            provider: providerValue,
-            kuralTuru: rule.kuralTuru,
-            planlananAt,
-            kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
-            durum: BildirimIsDurumu.PLANLANDI,
-            idempotencyKey: key,
-            providerAdi: providerValue
-          }
-        })
-        created += 1
-      } catch (e) {
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-          continue
+    for (const rule of effectiveRules.filter((r) => r.aktifMi)) {
+      await createTaksitJobFromRule({
+        tenantId,
+        taksit,
+        rule,
+        vadeYmd,
+        todayYmd,
+        kalan,
+        providerValue,
+        onCreated: () => {
+          created += 1
         }
-        throw e
-      }
+      })
     }
   }
 
   return { tenantId, skipped: false, created, cancelled }
+}
+
+async function createTaksitJobFromRule(input: {
+  tenantId: string
+  taksit: {
+    id: string
+    muvekkilId: string
+    dosyaId: string
+  }
+  rule: EffectiveTaksitRule
+  vadeYmd: string
+  todayYmd: string
+  kalan: number
+  providerValue: string
+  onCreated: () => void
+}): Promise<void> {
+  const planYmd = targetYmdForRule(input.vadeYmd, input.rule.kuralTuru, input.rule.gunOffset)
+  if (planYmd !== input.todayYmd) return
+
+  const key = idempotencyKey(
+    input.tenantId,
+    input.taksit.id,
+    input.rule.kuralTuru,
+    BildirimKanali.WHATSAPP,
+    planYmd,
+    input.rule.planKaynagi,
+    input.rule.planVersion
+  )
+  const planlananAt = planAtFromYmdAndMinutes(planYmd, input.rule.gonderimSaatiDk)
+
+  try {
+    await prisma.tahsilatBildirimIsi.create({
+      data: {
+        tenantId: input.tenantId,
+        muvekkilId: input.taksit.muvekkilId,
+        dosyaId: input.taksit.dosyaId,
+        taksitId: input.taksit.id,
+        kanal: BildirimKanali.WHATSAPP,
+        provider: input.providerValue as 'WHATSAPP_CLOUD_API' | 'MANUAL_WHATSAPP',
+        kuralTuru: input.rule.kuralTuru,
+        planlananAt,
+        kalanTutarSnapshot: new Prisma.Decimal(input.kalan.toFixed(2)),
+        durum: BildirimIsDurumu.PLANLANDI,
+        idempotencyKey: key,
+        planKaynagi: input.rule.planKaynagi,
+        planVersion: input.rule.planVersion,
+        providerAdi: input.providerValue
+      }
+    })
+    input.onCreated()
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return
+    }
+    throw e
+  }
 }
 
 export async function planJobsForAllTenants(): Promise<{

@@ -223,3 +223,37 @@ tahsilatBildirimRouter.get(
     res.json({ ok: true, ...durum })
   })
 )
+
+tahsilatBildirimRouter.get(
+  '/randevu-ayarlar',
+  requireAuth,
+  requireRole(...OKUMA),
+  asyncHandler(async (req, res) => {
+    const { getRandevuBildirimSettings } = await import('../randevu/randevuBildirim.settings.js')
+    const data = await getRandevuBildirimSettings(req.auth!.tenantId)
+    res.json({ ok: true, ...data })
+  })
+)
+
+tahsilatBildirimRouter.patch(
+  '/randevu-ayarlar',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        otomasyonAktif: z.boolean(),
+        varsayilanKurallar: z.array(
+          z.object({
+            offsetDk: z.number().int().min(1),
+            aktifMi: z.boolean(),
+            metaSablonId: z.string().uuid().nullable()
+          })
+        )
+      })
+      .parse(req.body)
+    const { updateRandevuBildirimSettings } = await import('../randevu/randevuBildirim.settings.js')
+    const data = await updateRandevuBildirimSettings(req.auth!.tenantId, body)
+    res.json({ ok: true, ...data })
+  })
+)

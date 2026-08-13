@@ -96,6 +96,7 @@ export async function listTemplateLibraryForTenant(tenantId: string): Promise<{
       displayName: entry.displayName,
       shortDescription: entry.shortDescription,
       suggestedUse: entry.suggestedUse,
+      templateGroup: entry.templateGroup,
       category: entry.category,
       language: entry.language,
       metaTemplateName: entry.metaTemplateName,

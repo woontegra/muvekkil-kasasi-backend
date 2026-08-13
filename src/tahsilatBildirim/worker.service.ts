@@ -6,6 +6,7 @@ import {
   BildirimIsDurumu,
   BildirimKanali,
   BildirimKuralTuru,
+  BildirimPlanKaynagi,
   BildirimProvider,
   Prisma
 } from '@prisma/client'
@@ -13,6 +14,7 @@ import { env } from '../config/env.js'
 import { prisma } from '../lib/prisma.js'
 import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { getTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
+import { loadEffectiveTaksitRules } from './bildirimPlan.service.js'
 import { maskPhone, normalizeTurkiyePhone } from './phone.js'
 import { isWhatsAppCloudApiAllowed, resolveWhatsAppProvider } from './providers/whatsappProvider.js'
 import { isWhatsAppBaglantiConnected } from './connection.public.js'
@@ -419,22 +421,42 @@ export async function processDueJobs(
     // Yalnızca kurala atanmış ONAYLANDI Meta template + components.
     if (!options.simulateOnly && cloudReady) {
       const sharedImportConn = Boolean(baglanti && !baglanti.webhookOverrideActive)
-      const kural = await prisma.tahsilatBildirimKurali.findUnique({
-        where: {
-          tenantId_kuralTuru_kanal: {
-            tenantId: job.tenantId,
-            kuralTuru: job.kuralTuru,
-            kanal: BildirimKanali.WHATSAPP
-          }
-        },
-        include: { metaSablon: true }
-      })
 
-      const metaSablon = kural?.metaSablon ?? null
+      let metaSablon: {
+        libraryKey: string | null
+        metaName: string
+        language: string
+        statusNormalized: string
+      } | null = null
+      let fallbackLibraryKey: string | null = null
+
+      if (job.planKaynagi === BildirimPlanKaynagi.OZEL) {
+        const rules = await loadEffectiveTaksitRules(job.tenantId, job.taksitId)
+        const rule = rules?.find((r) => r.kuralTuru === job.kuralTuru && r.aktifMi)
+        if (rule?.metaSablonId) {
+          metaSablon = await prisma.whatsAppMetaSablon.findFirst({
+            where: { id: rule.metaSablonId, tenantId: job.tenantId }
+          })
+        }
+      } else {
+        const kural = await prisma.tahsilatBildirimKurali.findUnique({
+          where: {
+            tenantId_kuralTuru_kanal: {
+              tenantId: job.tenantId,
+              kuralTuru: job.kuralTuru,
+              kanal: BildirimKanali.WHATSAPP
+            }
+          },
+          include: { metaSablon: true }
+        })
+        metaSablon = kural?.metaSablon ?? null
+        fallbackLibraryKey = kural?.libraryKey ?? null
+      }
+
       const libraryKey =
         metaSablon?.libraryKey ||
         (metaSablon ? getLibraryEntryByMetaName(metaSablon.metaName)?.libraryKey : null) ||
-        kural?.libraryKey ||
+        fallbackLibraryKey ||
         null
       const entry = libraryKey ? getLibraryEntry(libraryKey) : null
 

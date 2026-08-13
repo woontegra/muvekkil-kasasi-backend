@@ -28,7 +28,7 @@ function assert(cond: unknown, msg: string): void {
 }
 
 function main() {
-  assert(TEMPLATE_LIBRARY.length === 6, 'catalog has 6 templates')
+  assert(TEMPLATE_LIBRARY.length === 7, 'catalog has 7 templates')
   assert(
     TEMPLATE_LIBRARY.every((e) => e.category === 'UTILITY' && e.language === 'tr'),
     'utility tr'
@@ -88,9 +88,9 @@ function main() {
 
   // Duplicate key / isolation invariants (pure)
   const names = new Set(TEMPLATE_LIBRARY.map((e) => e.metaTemplateName))
-  assert(names.size === 6, 'unique meta names')
+  assert(names.size === 7, 'unique meta names')
   const keys = new Set(TEMPLATE_LIBRARY.map((e) => e.libraryKey))
-  assert(keys.size === 6, 'unique library keys')
+  assert(keys.size === 7, 'unique library keys')
 
   console.log(
     JSON.stringify({
