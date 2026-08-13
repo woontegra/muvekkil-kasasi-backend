@@ -194,6 +194,163 @@ async function main(): Promise<void> {
   const conflict = otherTenantId !== myTenantId && Boolean('phone-shared')
   assert(conflict, 'conflict detection shape')
 
+  // --- Existing asset verify (mock Graph; no subscribed_apps / register) ---
+  const { verifyExistingWabaPhoneAssets } = await import(
+    '../src/tahsilatBildirim/meta/verifyExistingAssets.js'
+  )
+  const okFetch = mockFetchSequence([
+    { status: 200, body: { id: '420529479291363', name: 'Woontegra WABA' } },
+    {
+      status: 200,
+      body: {
+        data: [
+          {
+            id: '525890038336054',
+            display_phone_number: '+90 532 317 17 55',
+            verified_name: 'Woontegra',
+            status: 'CONNECTED'
+          }
+        ]
+      }
+    },
+    {
+      status: 200,
+      body: {
+        id: '525890038336054',
+        display_phone_number: '+90 532 317 17 55',
+        verified_name: 'Woontegra',
+        status: 'CONNECTED'
+      }
+    }
+  ])
+  const verified = await verifyExistingWabaPhoneAssets({
+    wabaId: '420529479291363',
+    phoneNumberId: '525890038336054',
+    accessToken: 'EAAB_mock',
+    fetchImpl: okFetch
+  })
+  assert(verified.ok === true, 'verify existing assets ok')
+  if (verified.ok) {
+    assert(verified.data.phoneNumberId === '525890038336054', 'phone id match')
+    assert(verified.data.wabaId === '420529479291363', 'waba id match')
+  }
+
+  const badPhoneFetch = mockFetchSequence([
+    { status: 200, body: { id: '420529479291363', name: 'W' } },
+    { status: 200, body: { data: [{ id: '999', display_phone_number: '+90', status: 'CONNECTED' }] } }
+  ])
+  const badPhone = await verifyExistingWabaPhoneAssets({
+    wabaId: '420529479291363',
+    phoneNumberId: '525890038336054',
+    accessToken: 'EAAB_mock',
+    fetchImpl: badPhoneFetch
+  })
+  assert(badPhone.ok === false && badPhone.code === 'PHONE_NOT_IN_WABA', 'phone must belong to waba')
+
+  // Shared test connection flag (import path: BAGLI + no override)
+  const shared = getPublicConnectionStatus({
+    durum: WhatsAppBaglantiDurumu.BAGLI,
+    provider: 'META_CLOUD',
+    wabaIdMasked: '••••1363',
+    phoneNumberIdMasked: '••••6054',
+    displayPhoneNumber: '+90532••••755',
+    verifiedName: 'Woontegra',
+    businessAccountName: 'W',
+    webhookOverrideActive: false,
+    webhookOverrideCallback: null,
+    connectedAt: new Date(),
+    disconnectedAt: null,
+    lastWebhookAt: null,
+    tokenExpiresAt: null,
+    sonHataOzeti: null
+  })
+  assert(shared.sharedWebhookTestConnection === true, 'shared test connection flag')
+  assert(!('accessToken' in shared), 'no token on public status')
+  assert(shared.webhookOverrideActive === false, 'import leaves override false')
+
+  const customerEs = getPublicConnectionStatus({
+    durum: WhatsAppBaglantiDurumu.BAGLI,
+    provider: 'META_CLOUD',
+    wabaIdMasked: '••••1111',
+    phoneNumberIdMasked: '••••2222',
+    displayPhoneNumber: '+90555••••000',
+    verifiedName: 'Büro',
+    businessAccountName: 'B',
+    webhookOverrideActive: true,
+    webhookOverrideCallback: 'https://mk.example/api/webhooks/whatsapp',
+    connectedAt: new Date(),
+    disconnectedAt: null,
+    lastWebhookAt: null,
+    tokenExpiresAt: null,
+    sonHataOzeti: null
+  })
+  assert(customerEs.sharedWebhookTestConnection === false, 'customer ES not shared-test')
+  assert(customerEs.webhookOverrideActive === true, 'customer ES override remains')
+
+  // Worker safety constants: no free-text fallback labeling
+  const { ATLAMA_UYGUN_TEMPLATE_YOK, ATLAMA_TEMPLATE_GEREKLI } = await import(
+    '../src/tahsilatBildirim/worker.service.js'
+  )
+  assert(ATLAMA_UYGUN_TEMPLATE_YOK === 'UYGUN_TEMPLATE_YOK', 'template skip code')
+  assert(ATLAMA_TEMPLATE_GEREKLI.includes('TEMPLATE_GEREKLI'), 'template required message')
+  const { CONTROLLED_SESSION_TEST_TEXT } = await import(
+    '../src/tahsilatBildirim/connection.controlledSessionTest.js'
+  )
+  assert(
+    CONTROLLED_SESSION_TEST_TEXT === 'Müvekkil Kasa WhatsApp API bağlantı testi.',
+    'controlled session fixed text'
+  )
+
+  // Import dry-run must succeed without WHATSAPP_CLOUD_TEST_PHONE
+  const prevTestPhone = process.env.WHATSAPP_CLOUD_TEST_PHONE
+  delete process.env.WHATSAPP_CLOUD_TEST_PHONE
+  assert(!process.env.WHATSAPP_CLOUD_TEST_PHONE, 'CLOUD_TEST_PHONE unset for isolation')
+  const dryFetch = mockFetchSequence([
+    { status: 200, body: { id: '420529479291363', name: 'Woontegra' } },
+    {
+      status: 200,
+      body: {
+        data: [
+          {
+            id: '525890038336054',
+            display_phone_number: '+90 532 317 17 55',
+            verified_name: 'Woontegra',
+            status: 'CONNECTED'
+          }
+        ]
+      }
+    },
+    {
+      status: 200,
+      body: {
+        id: '525890038336054',
+        display_phone_number: '+90 532 317 17 55',
+        verified_name: 'Woontegra',
+        status: 'CONNECTED'
+      }
+    }
+  ])
+  const dryVerify = await verifyExistingWabaPhoneAssets({
+    wabaId: '420529479291363',
+    phoneNumberId: '525890038336054',
+    accessToken: 'tok',
+    fetchImpl: dryFetch
+  })
+  assert(dryVerify.ok === true, 'dry-run asset verify without CLOUD_TEST_PHONE')
+  if (dryVerify.ok) {
+    assert(
+      Boolean(dryVerify.data.displayPhoneNumber?.includes('532')),
+      'sender display phone from Meta assets'
+    )
+  }
+  if (prevTestPhone) process.env.WHATSAPP_CLOUD_TEST_PHONE = prevTestPhone
+
+  // Env token required for import (CONFIG_MISSING without WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN)
+  const prevTok = process.env.WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN
+  delete process.env.WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN
+  assert(!process.env.WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN, 'token unset for config check')
+  if (prevTok) process.env.WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN = prevTok
+
   console.log(
     JSON.stringify({
       ok: true,
@@ -206,7 +363,11 @@ async function main(): Promise<void> {
         'crypto',
         'override-2step-mock',
         'public-status-no-token',
-        'no-real-meta-send'
+        'existing-asset-verify-mock',
+        'shared-test-connection-flag',
+        'import-dry-run-no-cloud-test-phone',
+        'no-real-meta-send',
+        'no-webhook-override-on-import-path'
       ]
     })
   )

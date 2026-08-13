@@ -22,10 +22,12 @@ export type WabaDetails = {
 }
 
 export type MetaTemplateRow = {
+  id: string | null
   name: string
   language: string
   status: string
   category: string | null
+  rejectedReason: string | null
 }
 
 /**
@@ -208,6 +210,13 @@ export function normalizeMetaTemplateStatus(raw: string | undefined | null): str
   }
 }
 
+/** Meta rejection reason — güvenli kısaltma. */
+export function normalizeMetaRejectionReason(raw: string | undefined | null): string | null {
+  const t = (raw ?? '').trim()
+  if (!t) return null
+  return t.slice(0, 500)
+}
+
 export async function fetchWabaMessageTemplates(
   wabaId: string,
   accessToken: string,
@@ -215,15 +224,20 @@ export async function fetchWabaMessageTemplates(
 ): Promise<{ ok: boolean; templates: MetaTemplateRow[]; errorSummary: string | null }> {
   const result = await graphFetch<{
     data?: Array<{
+      id?: string
       name?: string
       language?: string
       status?: string
       category?: string
+      rejected_reason?: string
     }>
   }>(`${encodeURIComponent(wabaId)}/message_templates`, {
     method: 'GET',
     accessToken,
-    query: { fields: 'name,language,status,category', limit: '100' },
+    query: {
+      fields: 'id,name,language,status,category,rejected_reason',
+      limit: '100'
+    },
     fetchImpl
   })
 
@@ -234,11 +248,61 @@ export async function fetchWabaMessageTemplates(
   const templates: MetaTemplateRow[] = (result.data?.data ?? [])
     .filter((t) => t.name && t.language)
     .map((t) => ({
+      id: t.id?.trim() || null,
       name: t.name!,
       language: t.language!,
       status: t.status ?? 'PENDING',
-      category: t.category ?? null
+      category: t.category ?? null,
+      rejectedReason: normalizeMetaRejectionReason(t.rejected_reason ?? null)
     }))
 
   return { ok: true, templates, errorSummary: null }
+}
+
+/**
+ * POST /{waba-id}/message_templates — tenant WABA’sında template oluştur.
+ */
+export async function createWabaMessageTemplate(opts: {
+  wabaId: string
+  accessToken: string
+  payload: Record<string, unknown>
+  fetchImpl?: typeof fetch
+}): Promise<
+  | { ok: true; id: string | null; status: string | null; alreadyExists: boolean }
+  | { ok: false; errorSummary: string | null; errorCode: number | null; alreadyExists: boolean }
+> {
+  const result = await graphFetch<{ id?: string; status?: string }>(
+    `${encodeURIComponent(opts.wabaId)}/message_templates`,
+    {
+      method: 'POST',
+      accessToken: opts.accessToken,
+      body: opts.payload,
+      fetchImpl: opts.fetchImpl,
+      version: graphVersion()
+    }
+  )
+
+  if (result.ok) {
+    return {
+      ok: true,
+      id: result.data?.id?.trim() || null,
+      status: result.data?.status ?? 'PENDING',
+      alreadyExists: false
+    }
+  }
+
+  const summary = (result.errorSummary ?? '').toLowerCase()
+  const already =
+    summary.includes('already exists') ||
+    summary.includes('duplicate') ||
+    summary.includes('name is already') ||
+    result.errorCode === 2388044 ||
+    result.errorCode === 100
+
+  return {
+    ok: false,
+    errorSummary: result.errorSummary,
+    errorCode: result.errorCode,
+    alreadyExists: already
+  }
 }

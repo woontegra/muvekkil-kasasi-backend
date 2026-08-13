@@ -96,16 +96,22 @@ const envSchema = z.object({
    */
   WHATSAPP_TOKEN_ENCRYPTION_KEY: optionalNonEmpty,
   /**
-   * Yalnızca `npm run whatsapp:cloud-test` için test alıcı numarası.
-   * Kod içine gömülmez; yoksa test mesaj göndermez.
+   * Yalnızca SUPER_ADMIN isteğe bağlı outbound-test endpoint’inin ALICI numarası.
+   * Import, worker, template gönderimi veya production kurulumu buna BAĞLI DEĞİLDİR.
+   * Yoksa yalnızca outbound-test reddedilir; başka hiçbir akış CONFIG_MISSING vermez.
    */
   WHATSAPP_CLOUD_TEST_PHONE: optionalNonEmpty,
   /**
-   * Bağlantı testi template adı. Boşsa Meta test şablonu `hello_world` kullanılır.
-   * 24s dışı soğuk mesajda serbest metin yerine template gerekir.
+   * Woontegra dahili tenant mevcut-WABA import — tek zorunlu secret (System User token).
+   * MailCenter tokenı kopyalanmaz; frontend’e dönmez / loglanmaz.
+   */
+  WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN: optionalNonEmpty,
+  /**
+   * Yalnızca isteğe bağlı outbound-test / `whatsapp:cloud-test` template adı.
+   * Production worker buna bağlı değildir.
    */
   WHATSAPP_CLOUD_TEST_TEMPLATE_NAME: optionalNonEmpty,
-  /** Template dil kodu (varsayılan en_US — Meta hello_world). */
+  /** Yalnızca isteğe bağlı outbound-test template dili (varsayılan en_US). */
   WHATSAPP_CLOUD_TEST_TEMPLATE_LANG: optionalNonEmpty,
   /** Otomatik WhatsApp hatırlatma planlama/worker — Meta onayı öncesi false. */
   WHATSAPP_AUTOMATION_ENABLED: z.preprocess((v) => {

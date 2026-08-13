@@ -58,6 +58,8 @@ export function getPublicConnectionStatus(baglanti: {
     sonHataOzeti: baglanti.sonHataOzeti,
     cloudApiEnabled: env.WHATSAPP_CLOUD_API_ENABLED,
     aktifProvider: connected ? 'WHATSAPP_CLOUD_API' : 'MANUAL_WHATSAPP',
-    gercekGonderimAktif: connected && env.WHATSAPP_CLOUD_API_ENABLED
+    gercekGonderimAktif: connected && env.WHATSAPP_CLOUD_API_ENABLED,
+    /** BAGLI + override yok → paylaşılan/test bağlantısı (import yolu). */
+    sharedWebhookTestConnection: connected && !baglanti.webhookOverrideActive
   }
 }

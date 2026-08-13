@@ -4,6 +4,10 @@ import { z } from 'zod'
 import { serializeTenant } from '../auth/auth.service.js'
 import { requireAdminAuth } from '../middleware/requireAdminAuth.js'
 import { requireAdminRoles } from '../middleware/requireAdminRoles.js'
+import { adminWhatsAppOutboundTestRateLimit } from '../middleware/rateLimits.js'
+import { importExistingMetaConnection } from '../tahsilatBildirim/connection.importExisting.js'
+import { sendAdminOutboundCloudTest } from '../tahsilatBildirim/connection.outboundTest.js'
+import { sendControlledSessionCloudTextTest } from '../tahsilatBildirim/connection.controlledSessionTest.js'
 import { adminAuthRouter } from './adminAuth.routes.js'
 import { getAdminMe } from './adminAuth.service.js'
 import { getAdminDashboardStats } from './adminDashboard.service.js'
@@ -342,5 +346,118 @@ adminRouter.post(
     const tenantId = z.string().uuid().parse(req.query.tenantId)
     const out = await adminResetUserPassword(userId, tenantId, body.yeniSifre, req.adminAuth!.sub, req)
     res.json({ ok: true, geciciSifre: out.geciciSifre })
+  })
+)
+
+/**
+ * Mevcut Meta WABA/Phone → tenant import (SUPER_ADMIN).
+ * Zorunlu env: yalnızca WHATSAPP_WOONTEGRA_SYSTEM_USER_TOKEN.
+ * WHATSAPP_CLOUD_TEST_PHONE gerekmez. Webhook override yok.
+ * dryRun=true: yalnızca read-only Meta doğrulama; DB yazılmaz.
+ */
+adminRouter.post(
+  '/whatsapp/import-existing-connection',
+  requireAdminAuth,
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        tenantId: z.string().uuid(),
+        wabaId: z.string().min(1).max(128),
+        phoneNumberId: z.string().min(1).max(128),
+        dryRun: z.boolean().optional(),
+        accessToken: z.unknown().optional(),
+        token: z.unknown().optional()
+      })
+      .strict()
+      .parse(req.body ?? {})
+    if (body.accessToken != null || body.token != null) {
+      res.status(400).json({
+        ok: false,
+        code: 'TOKEN_NOT_ALLOWED',
+        message: 'Access token body ile gönderilemez; yalnızca sunucu env kullanılır.'
+      })
+      return
+    }
+    const dryRun =
+      body.dryRun === true ||
+      String(req.query.dryRun ?? '').toLowerCase() === 'true'
+    const baglanti = await importExistingMetaConnection(
+      req.adminAuth!.sub,
+      {
+        tenantId: body.tenantId,
+        wabaId: body.wabaId,
+        phoneNumberId: body.phoneNumberId
+      },
+      req,
+      { dryRun }
+    )
+    res.json({ ok: true, dryRun, baglanti })
+  })
+)
+
+/**
+ * İsteğe bağlı outbound Cloud API testi (SUPER_ADMIN).
+ * Alıcı yalnızca WHATSAPP_CLOUD_TEST_PHONE (import/worker’a bağlı değil).
+ * confirm=true zorunlu. Production gönderim müvekkil telefonundan yapılır.
+ */
+adminRouter.post(
+  '/whatsapp/outbound-test',
+  requireAdminAuth,
+  superOnly,
+  adminWhatsAppOutboundTestRateLimit,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        tenantId: z.string().uuid(),
+        confirm: z.literal(true),
+        to: z.unknown().optional(),
+        phone: z.unknown().optional()
+      })
+      .strict()
+      .parse(req.body ?? {})
+    if (body.to != null || body.phone != null) {
+      res.status(400).json({
+        ok: false,
+        code: 'RECIPIENT_NOT_ALLOWED',
+        message: 'Alıcı yalnızca WHATSAPP_CLOUD_TEST_PHONE env ile belirlenir.'
+      })
+      return
+    }
+    const out = await sendAdminOutboundCloudTest(
+      req.adminAuth!.sub,
+      { tenantId: body.tenantId, confirm: true },
+      req
+    )
+    res.json(out)
+  })
+)
+
+/**
+ * Kontrollü tek session Cloud text testi (SUPER_ADMIN).
+ * Woontegra import bağlantısı: tenantId → encrypted token + phoneNumberId.
+ * Body `to` zorunlu; WHATSAPP_CLOUD_TEST_PHONE kullanılmaz.
+ * Meta template yok; webhook override değiştirilmez. confirm=true zorunlu.
+ */
+adminRouter.post(
+  '/whatsapp/controlled-session-test',
+  requireAdminAuth,
+  superOnly,
+  adminWhatsAppOutboundTestRateLimit,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        tenantId: z.string().uuid(),
+        to: z.string().min(10).max(32),
+        confirm: z.literal(true)
+      })
+      .strict()
+      .parse(req.body ?? {})
+    const out = await sendControlledSessionCloudTextTest(
+      req.adminAuth!.sub,
+      { tenantId: body.tenantId, to: body.to, confirm: true },
+      req
+    )
+    res.json(out)
   })
 )

@@ -165,7 +165,7 @@ export async function sendBildirimJobViaCloudApi(input: {
     tenantId: input.tenantId,
     toE164: phone,
     text,
-    idempotencyKey: `cloud-manual|${job.id}|${Date.now()}`
+    idempotencyKey: `cloud-manual|${job.id}`
   })
 
   const telefonMaskeli = maskPhone(phone)

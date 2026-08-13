@@ -31,6 +31,8 @@ import {
   isWhatsAppBaglantiConnected,
   maskMetaId
 } from './connection.public.js'
+import { getLibraryEntryByMetaName } from './templateLibrary.catalog.js'
+import { componentsSnapshotForEntry } from './templateLibrary.components.js'
 
 export {
   getPublicConnectionStatus,
@@ -48,7 +50,8 @@ export async function getConnectionDurum(tenantId: string): Promise<Record<strin
       connected: false,
       aktifProvider: 'MANUAL_WHATSAPP',
       cloudApiEnabled: env.WHATSAPP_CLOUD_API_ENABLED,
-      gercekGonderimAktif: false
+      gercekGonderimAktif: false,
+      sharedWebhookTestConnection: false
     }
   }
   return getPublicConnectionStatus(baglanti)
@@ -301,6 +304,7 @@ export async function syncTemplates(
 
   for (const t of fetched.templates) {
     const statusNormalized = normalizeMetaTemplateStatus(t.status)
+    const libraryHit = getLibraryEntryByMetaName(t.name)
     const row = await prisma.whatsAppMetaSablon.upsert({
       where: {
         tenantId_metaName_language: {
@@ -316,12 +320,30 @@ export async function syncTemplates(
         language: t.language,
         statusNormalized,
         category: t.category,
+        libraryKey: libraryHit?.libraryKey ?? null,
+        providerWabaId: baglanti.wabaId,
+        metaTemplateId: t.id,
+        rejectionReason: t.rejectedReason,
+        componentsSnapshot: libraryHit
+          ? (componentsSnapshotForEntry(libraryHit) as Prisma.InputJsonValue)
+          : undefined,
+        parameterFormat: libraryHit?.parameterFormat ?? null,
+        approvedAt: statusNormalized === 'ONAYLANDI' ? now : null,
         lastSyncedAt: now
       },
       update: {
         baglantiId: baglanti.id,
         statusNormalized,
         category: t.category,
+        libraryKey: libraryHit?.libraryKey ?? undefined,
+        providerWabaId: baglanti.wabaId,
+        metaTemplateId: t.id,
+        rejectionReason: t.rejectedReason,
+        componentsSnapshot: libraryHit
+          ? (componentsSnapshotForEntry(libraryHit) as Prisma.InputJsonValue)
+          : undefined,
+        parameterFormat: libraryHit?.parameterFormat ?? undefined,
+        approvedAt: statusNormalized === 'ONAYLANDI' ? now : undefined,
         lastSyncedAt: now
       }
     })
@@ -332,6 +354,8 @@ export async function syncTemplates(
       language: row.language,
       statusNormalized: row.statusNormalized,
       category: row.category,
+      libraryKey: row.libraryKey,
+      rejectionReason: row.rejectionReason,
       lastSyncedAt: row.lastSyncedAt.toISOString()
     })
   }

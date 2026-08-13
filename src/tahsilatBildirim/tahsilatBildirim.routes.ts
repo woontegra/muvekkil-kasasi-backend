@@ -84,6 +84,28 @@ tahsilatBildirimRouter.patch(
 )
 
 tahsilatBildirimRouter.patch(
+  '/kurallar/:id/meta-sablon',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const body = z
+      .object({ metaSablonId: z.string().uuid().nullable() })
+      .strict()
+      .parse(req.body ?? {})
+    const { assignApprovedTemplateToKural } = await import('./templateLibrary.service.js')
+    const result = await assignApprovedTemplateToKural({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      kuralId: id,
+      metaSablonId: body.metaSablonId,
+      req
+    })
+    res.json({ ok: true, ...result })
+  })
+)
+
+tahsilatBildirimRouter.patch(
   '/sablonlar/:id',
   requireAuth,
   requireRole(...YONETICI),

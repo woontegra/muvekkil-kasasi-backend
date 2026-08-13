@@ -84,3 +84,21 @@ export const manualSmsRateLimit: RequestHandler = rateLimit({
     message: 'SMS gönderim isteği limiti aşıldı.'
   }
 })
+
+/** SUPER_ADMIN WhatsApp outbound test — dakikada az deneme. */
+export const adminWhatsAppOutboundTestRateLimit: RequestHandler = rateLimit({
+  windowMs: 60 * 1000,
+  limit: env.NODE_ENV === 'production' ? 3 : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const admin = (req as Request & { adminAuth?: { sub?: string } }).adminAuth
+    const ipKey = req.ip ? ipKeyGenerator(req.ip) : 'no-ip'
+    return `wa-out-test:${admin?.sub ?? ipKey}`
+  },
+  message: {
+    ok: false,
+    code: 'RATE_LIMITED',
+    message: 'WhatsApp test gönderim limiti aşıldı.'
+  }
+})

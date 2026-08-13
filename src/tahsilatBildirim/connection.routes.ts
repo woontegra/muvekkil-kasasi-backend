@@ -91,6 +91,45 @@ whatsappBaglantiRouter.post(
   })
 )
 
+whatsappBaglantiRouter.get(
+  '/hazir-sablon-kutuphanesi',
+  requireAuth,
+  requireRole(...OKUMA),
+  asyncHandler(async (req, res) => {
+    const { listTemplateLibraryForTenant } = await import('./templateLibrary.service.js')
+    const data = await listTemplateLibraryForTenant(req.auth!.tenantId)
+    res.json({ ok: true, ...data })
+  })
+)
+
+whatsappBaglantiRouter.post(
+  '/hazir-sablon-kutuphanesi/:libraryKey/meta-onayina-gonder',
+  requireAuth,
+  requireRole(...YONETICI),
+  asyncHandler(async (req, res) => {
+    const libraryKey = z.string().min(1).max(64).parse(req.params.libraryKey)
+    const { submitLibraryTemplateToMeta } = await import('./templateLibrary.service.js')
+    const result = await submitLibraryTemplateToMeta(
+      req.auth!.tenantId,
+      req.auth!.sub,
+      libraryKey,
+      req
+    )
+    res.json(result)
+  })
+)
+
+whatsappBaglantiRouter.get(
+  '/onayli-sablonlar',
+  requireAuth,
+  requireRole(...OKUMA),
+  asyncHandler(async (req, res) => {
+    const { listApprovedTemplatesForAutomation } = await import('./templateLibrary.service.js')
+    const templates = await listApprovedTemplatesForAutomation(req.auth!.tenantId)
+    res.json({ ok: true, templates })
+  })
+)
+
 whatsappBaglantiRouter.post(
   '/baglantiyi-kaldir',
   requireAuth,

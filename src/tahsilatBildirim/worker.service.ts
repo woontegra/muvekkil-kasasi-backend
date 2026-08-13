@@ -15,9 +15,10 @@ import { evaluateAutoBildirimEligibility } from './eligibility.service.js'
 import { getTaksitOtomatikBildirimAktif } from './taksitBildirimColumn.js'
 import { maskPhone, normalizeTurkiyePhone } from './phone.js'
 import { isWhatsAppCloudApiAllowed, resolveWhatsAppProvider } from './providers/whatsappProvider.js'
-import { hasApprovedMetaTemplate } from './connection.service.js'
 import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import { DEFAULT_TEMPLATES, renderTemplate, type TemplateVars } from './templates.js'
+import { getLibraryEntry, getLibraryEntryByMetaName } from './templateLibrary.catalog.js'
+import { buildSendBodyComponentsFromVars } from './templateLibrary.components.js'
 import { minutesNowTr, ymdTr } from './time.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
@@ -69,8 +70,16 @@ export type ProcessDueJobsResult = {
   skippedAlreadyDone: number
   deferredWindow: number
   skippedManual: number
+  /** Otomatik Cloud: onaylı Meta utility + components mapping yok → ATLANDI (text fallback yok). */
+  skippedTemplateRequired: number
   skippedSmsDeprecated: number
 }
+
+/** Kullanıcıya gösterilen atlama kodu — teknik BASARISIZ değil. */
+export const ATLAMA_UYGUN_TEMPLATE_YOK = 'UYGUN_TEMPLATE_YOK'
+export const ATLAMA_TEMPLATE_GEREKLI =
+  'TEMPLATE_GEREKLI: Onaylı Meta utility şablonu ve değişken eşlemesi olmadan otomatik Cloud gönderim yapılmaz.'
+export const ATLAMA_TEMPLATE_DEGISKEN_EKSIK = 'TEMPLATE_DEGISKEN_EKSIK'
 
 type LockedRow = { id: string }
 
@@ -135,6 +144,7 @@ export async function processDueJobs(
     skippedAlreadyDone: 0,
     deferredWindow: 0,
     skippedManual: 0,
+    skippedTemplateRequired: 0,
     skippedSmsDeprecated: 0
   })
 
@@ -160,6 +170,7 @@ export async function processDueJobs(
     skippedAlreadyDone: 0,
     deferredWindow: 0,
     skippedManual: 0,
+    skippedTemplateRequired: 0,
     skippedSmsDeprecated: 0
   }
 
@@ -360,8 +371,10 @@ export async function processDueJobs(
 
     /**
      * Cloud hazır: feature flag + baglanti BAGLI|ACTIVE.
-     * Otomasyon: onaylı Meta şablon varsa template tercih; yoksa Cloud text (BAGLI iken).
-     * Manuel: kullanıcı wa.me açar — worker göndermez (simülasyon hariç).
+     * Otomatik Cloud: serbest text YOK (24s customer service window kuralı).
+     * Onaylı Meta utility + components mapping yoksa ATLANDI (TEMPLATE_GEREKLI) —
+     * BASARISIZ / GONDERILDI değil. Paylaşılan import bağlantısında rastgele Meta şablon seçilmez.
+     * Manuel: kullanıcı wa.me veya kontrollü session Cloud testi.
      */
     const baglanti = await prisma.whatsAppBaglanti.findUnique({
       where: { tenantId: job.tenantId }
@@ -402,34 +415,170 @@ export async function processDueJobs(
       continue
     }
 
-    const provider = resolveWhatsAppProvider(cloudReady ? 'WHATSAPP_CLOUD_API' : 'MANUAL_WHATSAPP')
+    // Gerçek otomatik Cloud gönderimi: serbest text YOK.
+    // Yalnızca kurala atanmış ONAYLANDI Meta template + components.
+    if (!options.simulateOnly && cloudReady) {
+      const sharedImportConn = Boolean(baglanti && !baglanti.webhookOverrideActive)
+      const kural = await prisma.tahsilatBildirimKurali.findUnique({
+        where: {
+          tenantId_kuralTuru_kanal: {
+            tenantId: job.tenantId,
+            kuralTuru: job.kuralTuru,
+            kanal: BildirimKanali.WHATSAPP
+          }
+        },
+        include: { metaSablon: true }
+      })
 
-    // Meta onaylı şablon varsa template; yoksa serbest metin (Cloud text) — BAGLI iken.
-    let templateName: string | null = null
-    let templateLanguage: string | null = null
-    if (cloudReady && !options.simulateOnly) {
-      const hasApproved = await hasApprovedMetaTemplate(job.tenantId)
-      if (hasApproved) {
-        // İlk onaylı şablon adını kullan (senkron edilmiş Meta template)
-        const approved = await prisma.whatsAppMetaSablon.findFirst({
-          where: { tenantId: job.tenantId, statusNormalized: 'ONAYLANDI' },
-          orderBy: { lastSyncedAt: 'desc' }
+      const metaSablon = kural?.metaSablon ?? null
+      const libraryKey =
+        metaSablon?.libraryKey ||
+        (metaSablon ? getLibraryEntryByMetaName(metaSablon.metaName)?.libraryKey : null) ||
+        kural?.libraryKey ||
+        null
+      const entry = libraryKey ? getLibraryEntry(libraryKey) : null
+
+      if (
+        !metaSablon ||
+        metaSablon.statusNormalized !== 'ONAYLANDI' ||
+        !entry ||
+        // Paylaşılan import: rastgele/eşleşmeyen şablon yok; library mapping zorunlu
+        (sharedImportConn && !metaSablon.libraryKey && !entry)
+      ) {
+        result.skippedTemplateRequired += 1
+        await prisma.tahsilatBildirimIsi.update({
+          where: { id },
+          data: {
+            durum: BildirimIsDurumu.ATLANDI,
+            provider: BildirimProvider.WHATSAPP_CLOUD_API,
+            providerAdi: 'WHATSAPP_CLOUD_API',
+            telefonMaskeli: maskPhone(phoneE164),
+            atlamaNedeni: sharedImportConn
+              ? `${ATLAMA_UYGUN_TEMPLATE_YOK}: ${ATLAMA_TEMPLATE_GEREKLI} (paylaşılan/import bağlantı)`
+              : `${ATLAMA_UYGUN_TEMPLATE_YOK}: ${ATLAMA_TEMPLATE_GEREKLI}`,
+            sonProviderHataKodu: ATLAMA_UYGUN_TEMPLATE_YOK,
+            hataOzeti: null,
+            lockedAt: null,
+            lockedBy: null
+          }
         })
-        if (approved) {
-          templateName = approved.metaName
-          templateLanguage = approved.language
-        }
+        continue
       }
-      // Onaylı Meta şablon yoksa: yerel metin Cloud text olarak gider (session / free-text yolu).
+
+      const built = buildSendBodyComponentsFromVars(entry, vars)
+      if (!built.ok) {
+        result.atlananSablon += 1
+        await prisma.tahsilatBildirimIsi.update({
+          where: { id },
+          data: {
+            durum: BildirimIsDurumu.ATLANDI,
+            provider: BildirimProvider.WHATSAPP_CLOUD_API,
+            providerAdi: 'WHATSAPP_CLOUD_API',
+            telefonMaskeli: maskPhone(phoneE164),
+            atlamaNedeni: `${ATLAMA_TEMPLATE_DEGISKEN_EKSIK}: ${built.missing.join(', ')}`,
+            sonProviderHataKodu: ATLAMA_TEMPLATE_DEGISKEN_EKSIK,
+            hataOzeti: null,
+            lockedAt: null,
+            lockedBy: null
+          }
+        })
+        continue
+      }
+
+      const provider = resolveWhatsAppProvider('WHATSAPP_CLOUD_API')
+      const sendResult = await provider.send({
+        tenantId: job.tenantId,
+        toE164: phoneE164,
+        text: rendered.text,
+        idempotencyKey: job.idempotencyKey,
+        templateName: metaSablon.metaName,
+        templateLanguage: metaSablon.language,
+        templateComponents: built.components as unknown as Array<Record<string, unknown>>
+      })
+
+      const telefonMaskeli = maskPhone(phoneE164)
+      const denemeAt = new Date()
+
+      if (sendResult.ok) {
+        result.simulasyon += 1
+        await prisma.$transaction([
+          prisma.tahsilatBildirimDeneme.create({
+            data: {
+              tenantId: job.tenantId,
+              isId: job.id,
+              provider: sendResult.provider,
+              basariliMi: true,
+              telefonMaskeli,
+              sablonOzeti: truncate(metaSablon.metaName, 200),
+              mesajOzeti: 'MASKED',
+              sonucKodu: sendResult.code,
+              sonucMesaji: sendResult.message
+            }
+          }),
+          prisma.tahsilatBildirimIsi.update({
+            where: { id },
+            data: {
+              durum: BildirimIsDurumu.GONDERILDI,
+              kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
+              denemeSayisi: { increment: 1 },
+              sonDenemeAt: denemeAt,
+              telefonMaskeli,
+              provider: BildirimProvider.WHATSAPP_CLOUD_API,
+              providerAdi: sendResult.provider,
+              providerMessageId: sendResult.providerMessageId ?? null,
+              sonProviderHataKodu: null,
+              lockedAt: null,
+              lockedBy: null,
+              hataOzeti: null,
+              atlamaNedeni: null
+            }
+          })
+        ])
+        continue
+      }
+
+      result.basarisiz += 1
+      await prisma.$transaction([
+        prisma.tahsilatBildirimDeneme.create({
+          data: {
+            tenantId: job.tenantId,
+            isId: job.id,
+            provider: sendResult.provider,
+            basariliMi: false,
+            telefonMaskeli,
+            sablonOzeti: truncate(metaSablon.metaName, 200),
+            mesajOzeti: 'MASKED',
+            sonucKodu: sendResult.code || 'FAILED',
+            sonucMesaji: sendResult.message
+          }
+        }),
+        prisma.tahsilatBildirimIsi.update({
+          where: { id },
+          data: {
+            durum: BildirimIsDurumu.BASARISIZ,
+            hataOzeti: sendResult.message,
+            sonProviderHataKodu: sendResult.code || null,
+            providerAdi: sendResult.provider,
+            telefonMaskeli,
+            denemeSayisi: { increment: 1 },
+            sonDenemeAt: denemeAt,
+            lockedAt: null,
+            lockedBy: null
+          }
+        })
+      ])
+      continue
     }
 
+    // simulateOnly: Meta’ya gitmeden yerel metin simülasyonu.
+    const provider = resolveWhatsAppProvider('MANUAL_WHATSAPP')
     const sendResult = await provider.send({
       tenantId: job.tenantId,
       toE164: phoneE164,
       text: rendered.text,
       idempotencyKey: job.idempotencyKey,
-      templateName,
-      templateLanguage
+      templateName: null,
+      templateLanguage: null
     })
 
     const telefonMaskeli = maskPhone(phoneE164)
@@ -437,10 +586,6 @@ export async function processDueJobs(
 
     if (sendResult.ok || options.simulateOnly) {
       result.simulasyon += 1
-      const successProvider =
-        options.simulateOnly || sendResult.provider === 'MANUAL_WHATSAPP'
-          ? BildirimProvider.MANUAL_WHATSAPP
-          : BildirimProvider.WHATSAPP_CLOUD_API
       await prisma.$transaction([
         prisma.tahsilatBildirimDeneme.create({
           data: {
@@ -458,17 +603,14 @@ export async function processDueJobs(
         prisma.tahsilatBildirimIsi.update({
           where: { id },
           data: {
-            durum:
-              options.simulateOnly || sendResult.provider === 'MANUAL_WHATSAPP'
-                ? BildirimIsDurumu.SIMULASYON_TAMAMLANDI
-                : BildirimIsDurumu.GONDERILDI,
+            durum: BildirimIsDurumu.SIMULASYON_TAMAMLANDI,
             kalanTutarSnapshot: new Prisma.Decimal(kalan.toFixed(2)),
             denemeSayisi: { increment: 1 },
             sonDenemeAt: denemeAt,
             telefonMaskeli,
-            provider: successProvider,
+            provider: BildirimProvider.MANUAL_WHATSAPP,
             providerAdi: sendResult.provider,
-            providerMessageId: sendResult.providerMessageId ?? null,
+            providerMessageId: null,
             sonProviderHataKodu: null,
             lockedAt: null,
             lockedBy: null,

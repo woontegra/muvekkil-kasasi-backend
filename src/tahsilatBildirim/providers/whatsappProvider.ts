@@ -17,6 +17,8 @@ export type WhatsAppSendPayload = {
    */
   templateName?: string | null
   templateLanguage?: string | null
+  /** Meta template BODY components (named/positional parameters). */
+  templateComponents?: Array<Record<string, unknown>> | null
 }
 
 export type WhatsAppSendResult = {
@@ -104,6 +106,9 @@ export class WhatsAppCloudApiProvider implements WhatsAppProvider {
     const templateName = payload.templateName?.trim() || null
     const useTemplate = Boolean(templateName)
     const language = (payload.templateLanguage?.trim() || 'en_US').slice(0, 16)
+    const components = payload.templateComponents?.length
+      ? payload.templateComponents
+      : undefined
 
     const body: Record<string, unknown> = useTemplate
       ? {
@@ -112,7 +117,8 @@ export class WhatsAppCloudApiProvider implements WhatsAppProvider {
           type: 'template',
           template: {
             name: templateName,
-            language: { code: language }
+            language: { code: language },
+            ...(components ? { components } : {})
           }
         }
       : {

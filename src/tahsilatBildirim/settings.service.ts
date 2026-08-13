@@ -35,7 +35,10 @@ export function serializeAyar(a: TahsilatBildirimAyar): Record<string, unknown> 
   }
 }
 
-export function serializeKural(k: TahsilatBildirimKurali): Record<string, unknown> {
+export function serializeKural(k: TahsilatBildirimKurali & {
+  metaSablonId?: string | null
+  libraryKey?: string | null
+}): Record<string, unknown> {
   return {
     id: k.id,
     tenantId: k.tenantId,
@@ -44,6 +47,8 @@ export function serializeKural(k: TahsilatBildirimKurali): Record<string, unknow
     gunOffset: k.gunOffset,
     gonderimSaatiDk: k.gonderimSaatiDk,
     kanal: k.kanal,
+    metaSablonId: k.metaSablonId ?? null,
+    libraryKey: k.libraryKey ?? null,
     createdAt: k.createdAt.toISOString(),
     updatedAt: k.updatedAt.toISOString()
   }

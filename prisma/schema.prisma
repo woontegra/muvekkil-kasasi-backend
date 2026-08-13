@@ -1011,11 +1011,17 @@ model TahsilatBildirimKurali {
   /// Gönderim saati (Europe/Istanbul), dakika cinsinden. Varsayılan 10:00 = 600.
   gonderimSaatiDk Int               @default(600) @map("gonderim_saati_dk")
   kanal           BildirimKanali    @default(WHATSAPP)
+  /// Onaylı Meta şablon seçimi (otomasyon).
+  metaSablonId    String?           @map("meta_sablon_id")
+  metaSablon      WhatsAppMetaSablon? @relation(fields: [metaSablonId], references: [id], onDelete: SetNull)
+  /// Katalog önerisi / seçilen libraryKey.
+  libraryKey      String?           @map("library_key")
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
 
   @@unique([tenantId, kuralTuru, kanal])
   @@index([tenantId, aktifMi])
+  @@index([metaSablonId])
   @@map("tahsilat_bildirim_kurali")
 }
 
@@ -1239,16 +1245,29 @@ model WhatsAppMetaSablon {
   baglanti         WhatsAppBaglanti? @relation(fields: [baglantiId], references: [id], onDelete: SetNull)
   metaName         String            @map("meta_name")
   language         String
-  /// BEKLIYOR | ONAYLANDI | REDDEDILDI | DURAKLATILDI | DEVRE_DISI
+  /// BEKLIYOR | ONAYLANDI | REDDEDILDI | DURAKLATILDI | DEVRE_DISI | GONDERILIYOR
   statusNormalized String            @map("status_normalized")
   category         String?
+  /// Hazır kütüphane anahtarı (global katalog).
+  libraryKey       String?           @map("library_key")
+  /// Submit anındaki WABA id (tenant isolation + duplicate koruması).
+  providerWabaId   String?           @map("provider_waba_id")
+  metaTemplateId   String?           @map("meta_template_id")
+  rejectionReason  String?           @map("rejection_reason")
+  componentsSnapshot Json?           @map("components_snapshot")
+  parameterFormat  String?           @map("parameter_format")
+  submittedAt      DateTime?         @map("submitted_at")
+  approvedAt       DateTime?         @map("approved_at")
   lastSyncedAt     DateTime          @map("last_synced_at")
   createdAt        DateTime          @default(now()) @map("created_at")
   updatedAt        DateTime          @updatedAt @map("updated_at")
+  kurallar         TahsilatBildirimKurali[]
 
   @@unique([tenantId, metaName, language])
   @@index([tenantId])
   @@index([baglantiId])
+  @@index([libraryKey])
+  @@index([providerWabaId])
   @@map("whatsapp_meta_sablon")
 }
 
