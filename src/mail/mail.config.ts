@@ -142,7 +142,24 @@ export function getSmtpConfigStatus(): ResolvedMailTransport {
   return getResolvedMailTransport()
 }
 
-const PRODUCTION_MK_FRONTEND_FALLBACK = 'https://app.muvekkilkasasi.com'
+/** Canlı SPA — app.muvekkilkasasi.com DNS çözülmüyor; Vercel production kullanılmalı. */
+const PRODUCTION_MK_FRONTEND_FALLBACK = 'https://muvekkil-kasasi-frontend.vercel.app'
+
+/** Eski/yanlış custom domain’ler — production reset linklerinde kullanma. */
+const BROKEN_PRODUCTION_FRONTEND_HOSTS = new Set([
+  'app.muvekkilkasasi.com',
+  'muvekkilkasasi.com',
+  'www.muvekkilkasasi.com'
+])
+
+function frontendHostIsBroken(base: string): boolean {
+  try {
+    const host = new URL(base.includes('://') ? base : `https://${base}`).hostname.toLowerCase()
+    return BROKEN_PRODUCTION_FRONTEND_HOSTS.has(host)
+  } catch {
+    return true
+  }
+}
 
 function isProductionEnv(): boolean {
   return env.NODE_ENV === 'production'
@@ -174,6 +191,7 @@ function normalizeFrontendBase(raw: string): string | null {
   base = base.replace(/[\s,;]+$/, '')
   if (!base || base === 'undefined' || base.includes('null')) return null
   if (isProductionEnv() && frontendUrlLooksLocalOrPrivate(base)) return null
+  if (isProductionEnv() && frontendHostIsBroken(base)) return null
   return base
 }
 

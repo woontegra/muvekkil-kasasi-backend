@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 import { env } from '../config/env.js'
+import { AppError } from '../middleware/errorHandler.js'
 import {
   buildPasswordResetUrl,
   getMkLoginUrl,
@@ -189,7 +190,11 @@ export async function sendPasswordResetEmail(params: SendPasswordResetEmailParam
       return
     }
     console.error('[mail] Password reset mail FAILED — SMTP not configured')
-    return
+    throw new AppError(
+      503,
+      'Şifre sıfırlama e-postası şu anda gönderilemiyor. Lütfen daha sonra tekrar deneyin.',
+      'MAIL_NOT_CONFIGURED'
+    )
   }
 
   try {
@@ -204,6 +209,11 @@ export async function sendPasswordResetEmail(params: SendPasswordResetEmailParam
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[mail] Password reset mail FAILED — recipient:', toMasked, '— error:', msg)
+    throw new AppError(
+      503,
+      'Şifre sıfırlama e-postası gönderilemedi. Lütfen daha sonra tekrar deneyin.',
+      'MAIL_SEND_FAILED'
+    )
   }
 }
 
