@@ -326,9 +326,25 @@ export async function submitLibraryTemplateToMeta(
   }
 }
 
+function parseCustomUsageArea(snapshot: Prisma.JsonValue | null): string | null {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null
+  const s = snapshot as Record<string, unknown>
+  if (s.kind !== 'CUSTOM_TEMPLATE') return null
+  return typeof s.usageArea === 'string' ? s.usageArea : null
+}
+
+function customTemplateSupportsKural(usageArea: string | null, kural: string): boolean {
+  if (!usageArea) return false
+  if (usageArea === 'MANUEL') return false
+  if (kural === 'VADEDEN_ONCE') return usageArea === 'VADEDEN_ONCE'
+  if (kural === 'VADE_GUNU') return usageArea === 'VADE_GUNU'
+  if (kural === 'VADE_SONRASI') return usageArea === 'VADE_SONRASI' || usageArea === 'KISMI_ODEME_SONRASI' || usageArea === 'ODEME_ALINDI'
+  return false
+}
+
 export async function listApprovedTemplatesForAutomation(
   tenantId: string,
-  opts?: { requireVariables?: string[] }
+  opts?: { requireVariables?: string[]; kuralTuru?: string; includeManual?: boolean }
 ): Promise<Array<Record<string, unknown>>> {
   const rows = await prisma.whatsAppMetaSablon.findMany({
     where: {
@@ -341,16 +357,22 @@ export async function listApprovedTemplatesForAutomation(
 
   return rows
     .filter((r) => {
+      const customUsageArea = parseCustomUsageArea(r.componentsSnapshot)
+      if (opts?.kuralTuru && !r.libraryKey) {
+        if (!customTemplateSupportsKural(customUsageArea, opts.kuralTuru)) return false
+      }
+      if (!opts?.includeManual && customUsageArea === 'MANUEL') return false
       if (!opts?.requireVariables?.length) return true
       const entry = r.libraryKey ? getLibraryEntry(r.libraryKey) : getLibraryEntry(
         TEMPLATE_LIBRARY.find((e) => e.metaTemplateName === r.metaName)?.libraryKey ?? ''
       )
+      if (!entry && !r.libraryKey) return true
       if (!entry) return false
       return opts.requireVariables.every((v) =>
         entry.variables.includes(v as keyof import('./templates.js').TemplateVars)
       )
     })
-    .map((r) => serializeMetaRow(r))
+    .map((r) => ({ ...serializeMetaRow(r), usageArea: parseCustomUsageArea(r.componentsSnapshot) }))
 }
 
 export async function assignApprovedTemplateToKural(input: {

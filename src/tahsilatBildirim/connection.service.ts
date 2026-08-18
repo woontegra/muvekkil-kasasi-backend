@@ -33,6 +33,7 @@ import {
 } from './connection.public.js'
 import { getLibraryEntryByMetaName } from './templateLibrary.catalog.js'
 import { componentsSnapshotForEntry } from './templateLibrary.components.js'
+import { parseCustomTemplateSnapshot } from './customTemplate.service.js'
 
 export {
   getPublicConnectionStatus,
@@ -305,6 +306,21 @@ export async function syncTemplates(
   for (const t of fetched.templates) {
     const statusNormalized = normalizeMetaTemplateStatus(t.status)
     const libraryHit = getLibraryEntryByMetaName(t.name)
+    const existing = await prisma.whatsAppMetaSablon.findUnique({
+      where: {
+        tenantId_metaName_language: {
+          tenantId,
+          metaName: t.name,
+          language: t.language
+        }
+      }
+    })
+    const isCustomTemplate = Boolean(parseCustomTemplateSnapshot(existing?.componentsSnapshot ?? null))
+    const snapshotForUpdate: Prisma.InputJsonValue | undefined = isCustomTemplate
+      ? (existing!.componentsSnapshot as Prisma.InputJsonValue)
+      : libraryHit
+        ? (componentsSnapshotForEntry(libraryHit) as Prisma.InputJsonValue)
+        : undefined
     const row = await prisma.whatsAppMetaSablon.upsert({
       where: {
         tenantId_metaName_language: {
@@ -324,10 +340,8 @@ export async function syncTemplates(
         providerWabaId: baglanti.wabaId,
         metaTemplateId: t.id,
         rejectionReason: t.rejectedReason,
-        componentsSnapshot: libraryHit
-          ? (componentsSnapshotForEntry(libraryHit) as Prisma.InputJsonValue)
-          : undefined,
-        parameterFormat: libraryHit?.parameterFormat ?? null,
+        componentsSnapshot: snapshotForUpdate,
+        parameterFormat: isCustomTemplate ? 'named' : libraryHit?.parameterFormat ?? null,
         approvedAt: statusNormalized === 'ONAYLANDI' ? now : null,
         lastSyncedAt: now
       },
@@ -335,14 +349,12 @@ export async function syncTemplates(
         baglantiId: baglanti.id,
         statusNormalized,
         category: t.category,
-        libraryKey: libraryHit?.libraryKey ?? undefined,
+        libraryKey: isCustomTemplate ? undefined : libraryHit?.libraryKey ?? undefined,
         providerWabaId: baglanti.wabaId,
         metaTemplateId: t.id,
         rejectionReason: t.rejectedReason,
-        componentsSnapshot: libraryHit
-          ? (componentsSnapshotForEntry(libraryHit) as Prisma.InputJsonValue)
-          : undefined,
-        parameterFormat: libraryHit?.parameterFormat ?? undefined,
+        componentsSnapshot: snapshotForUpdate,
+        parameterFormat: isCustomTemplate ? undefined : libraryHit?.parameterFormat ?? undefined,
         approvedAt: statusNormalized === 'ONAYLANDI' ? now : undefined,
         lastSyncedAt: now
       }
