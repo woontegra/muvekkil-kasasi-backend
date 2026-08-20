@@ -101,7 +101,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Otomatik “vadeden önce” hatırlatmaları',
     metaTemplateName: 'mk_tahsilat_vade_oncesi_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki {vadeTarihi} vadeli taksidinizden {kalanTutar} TL kalan tutar bulunmaktadır. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki {vadeTarihi} vadeli taksidinizden {kalanTutar} TL kalan tutar bulunmaktadır. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'dosyaBilgisi', 'vadeTarihi', 'kalanTutar', 'buroAdi'],
     suggestedKuralTuru: 'VADEDEN_ONCE'
   }),
@@ -112,7 +112,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Otomatik “vade günü” hatırlatmaları',
     metaTemplateName: 'mk_tahsilat_vade_gunu_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki taksidinizin vade tarihi bugündür. Kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki taksidinizin vade tarihi bugündür. Kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'dosyaBilgisi', 'kalanTutar', 'buroAdi'],
     suggestedKuralTuru: 'VADE_GUNU'
   }),
@@ -123,7 +123,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Otomatik “vade sonrası” hatırlatmaları',
     metaTemplateName: 'mk_tahsilat_gecikmis_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki {vadeTarihi} vadeli taksidiniz için {kalanTutar} TL kalan tutar bulunmaktadır. Ödeme {gecikmeGunu} gündür vadesini geçmiştir. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki {vadeTarihi} vadeli taksidiniz için {kalanTutar} TL kalan tutar bulunmaktadır. Ödeme {gecikmeGunu} gündür vadesini geçmiştir. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'dosyaBilgisi', 'vadeTarihi', 'kalanTutar', 'gecikmeGunu', 'buroAdi'],
     suggestedKuralTuru: 'VADE_SONRASI'
   }),
@@ -134,7 +134,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Manuel veya ileride kısmi ödeme tetikleri',
     metaTemplateName: 'mk_tahsilat_kismi_odeme_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, ödemeniz alınmıştır. {dosyaBilgisi} kapsamındaki taksidinizden kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, ödemeniz alınmıştır. {dosyaBilgisi} kapsamındaki taksidinizden kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'dosyaBilgisi', 'kalanTutar', 'buroAdi'],
     suggestedKuralTuru: null
   }),
@@ -145,7 +145,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Manuel hatırlatma veya esnek otomasyon',
     metaTemplateName: 'mk_tahsilat_genel_hatirlatma_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki taksidinizden {kalanTutar} TL kalan tutar bulunmaktadır. Vade tarihi {vadeTarihi}’dir. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, {dosyaBilgisi} kapsamındaki taksidinizden {kalanTutar} TL kalan tutar bulunmaktadır. Vade tarihi {vadeTarihi}’dir. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'dosyaBilgisi', 'kalanTutar', 'vadeTarihi', 'buroAdi'],
     suggestedKuralTuru: null
   }),
@@ -156,7 +156,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Ödeme alındı bildirimleri',
     metaTemplateName: 'mk_tahsilat_odeme_alindi_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {odenenTutar} TL tutarındaki ödemeniz alınmıştır. {dosyaBilgisi} için kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. {buroAdi}',
+      'Sayın {muvekkilAdi}, {odenenTutar} TL tutarındaki ödemeniz alınmıştır. {dosyaBilgisi} için kalan tutar {kalanTutar} TL’dir. Bilginize sunarız. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'odenenTutar', 'dosyaBilgisi', 'kalanTutar', 'buroAdi'],
     suggestedKuralTuru: null
   }),
@@ -167,7 +167,7 @@ export const TEMPLATE_LIBRARY: readonly TemplateLibraryEntry[] = [
     suggestedUse: 'Randevu otomatik hatırlatmaları',
     metaTemplateName: 'mk_randevu_hatirlatma_v1',
     bodyAppText:
-      'Sayın {muvekkilAdi}, {randevuTarihi} tarihinde saat {randevuSaati} için planlanan randevunuzu hatırlatmak isteriz. {buroAdi}',
+      'Sayın {muvekkilAdi}, {randevuTarihi} tarihinde saat {randevuSaati} için planlanan randevunuzu hatırlatmak isteriz. Bu mesaj {buroAdi} tarafından gönderilmiştir.',
     variables: ['muvekkilAdi', 'randevuTarihi', 'randevuSaati', 'buroAdi'],
     suggestedKuralTuru: null,
     templateGroup: 'RANDEVU'

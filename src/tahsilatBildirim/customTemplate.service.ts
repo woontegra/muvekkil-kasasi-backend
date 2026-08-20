@@ -132,11 +132,12 @@ function validateTemplateInput(input: CustomTemplateInput): {
     }
   }
 
-  // Meta create: positional {{1}}…{{n}} + nested body_text; named pN dönüşümü yok.
+  // Taslak: kenar kuralı zorunlu değil. Meta gönderiminde enforce edilir.
   const built = buildMetaCreateComponentsFromPositionalBody({
     bodyText: body,
     examples,
-    footerText: input.footerText
+    footerText: input.footerText,
+    enforceVariableEdges: false
   })
   if (!built.ok) {
     throw new AppError(422, built.message, built.code)
@@ -455,23 +456,20 @@ export async function submitCustomTemplateToMeta(
     }
   }
   const rowId = row.id
+  const rebuilt = buildMetaCreateComponentsFromPositionalBody({
+    bodyText: snap.bodyText,
+    examples: [...snap.variables].sort((a, b) => a.index - b.index).map((v) => v.exampleValue.trim()),
+    footerText: snap.footerText,
+    enforceVariableEdges: true
+  })
+  if (!rebuilt.ok) {
+    throw new AppError(422, rebuilt.message, rebuilt.code)
+  }
+
   await prisma.whatsAppMetaSablon.update({
     where: { id: rowId },
     data: { statusNormalized: 'GONDERILIYOR', lastSyncedAt: new Date() }
   })
-
-  const rebuilt = buildMetaCreateComponentsFromPositionalBody({
-    bodyText: snap.bodyText,
-    examples: [...snap.variables].sort((a, b) => a.index - b.index).map((v) => v.exampleValue.trim()),
-    footerText: snap.footerText
-  })
-  if (!rebuilt.ok) {
-    await prisma.whatsAppMetaSablon.update({
-      where: { id: rowId },
-      data: { statusNormalized: 'TASLAK', lastSyncedAt: new Date() }
-    })
-    throw new AppError(422, rebuilt.message, rebuilt.code)
-  }
 
   const payload: Record<string, unknown> = {
     name: row.metaName,

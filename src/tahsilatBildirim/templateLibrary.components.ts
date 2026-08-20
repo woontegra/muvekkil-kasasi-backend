@@ -26,9 +26,43 @@ export type PayloadValidationResult =
 
 const POSITIONAL_RE = /\{\{(\d+)\}\}/g
 
+export const BODY_VARIABLE_EDGE_MESSAGE =
+  'Mesaj metni bir değişkenle başlayamaz veya bitemez. Değişkenlerden önce ve sonra sabit bir açıklama ekleyin.'
+
 /** BODY metnindeki {{n}} indekslerini sırayla çıkarır (tekrarlar dahil). */
 export function extractPositionalIndices(text: string): number[] {
   return [...text.matchAll(POSITIONAL_RE)].map((m) => Number(m[1]))
+}
+
+function hasMeaningfulFixedText(segment: string): boolean {
+  // Boşluk / noktalama yeterli değil; en az bir harf veya rakam gerekir.
+  return /[\p{L}\p{N}]/u.test(segment)
+}
+
+/**
+ * Meta kuralı: BODY değişkenle başlayamaz/bitemez; kenarlarda anlamlı sabit metin zorunlu.
+ */
+export function validateBodyVariableEdges(bodyText: string): PayloadValidationResult {
+  const trimmed = bodyText.trim()
+  if (!trimmed) return { ok: true }
+
+  if (/^\{\{\d+\}\}/.test(trimmed) || /\{\{\d+\}\}$/.test(trimmed)) {
+    return { ok: false, code: 'BODY_VARIABLE_EDGE', message: BODY_VARIABLE_EDGE_MESSAGE }
+  }
+
+  const matches = [...trimmed.matchAll(/\{\{\d+\}\}/g)]
+  if (matches.length === 0) return { ok: true }
+
+  const first = matches[0]!
+  const last = matches[matches.length - 1]!
+  const before = trimmed.slice(0, first.index ?? 0)
+  const after = trimmed.slice((last.index ?? 0) + last[0].length)
+
+  if (!hasMeaningfulFixedText(before) || !hasMeaningfulFixedText(after)) {
+    return { ok: false, code: 'BODY_VARIABLE_EDGE', message: BODY_VARIABLE_EDGE_MESSAGE }
+  }
+
+  return { ok: true }
 }
 
 /**
@@ -83,10 +117,20 @@ export function validatePositionalBodyExamples(
   return { ok: true }
 }
 
+/** Create öncesi tam doğrulama (ardışık değişken + kenar sabit metin). */
+export function validateMetaCreateBody(
+  bodyText: string,
+  examples: string[]
+): PayloadValidationResult {
+  const edge = validateBodyVariableEdges(bodyText)
+  if (!edge.ok) return edge
+  return validatePositionalBodyExamples(bodyText, examples)
+}
+
 /** Meta create message_templates BODY component (+ nested body_text example). */
 export function buildMetaCreateBodyComponent(entry: TemplateLibraryEntry): Record<string, unknown> {
   const examples = entry.variables.map((v) => String(entry.exampleValues[v] ?? '').trim())
-  const validation = validatePositionalBodyExamples(entry.bodyMetaText, examples)
+  const validation = validateMetaCreateBody(entry.bodyMetaText, examples)
   if (!validation.ok) {
     throw new Error(`${validation.code}: ${validation.message}`)
   }
@@ -120,7 +164,7 @@ export function buildValidatedMetaCreateTemplatePayload(entry: TemplateLibraryEn
   | { ok: true; payload: Record<string, unknown> }
   | { ok: false; code: string; message: string } {
   const examples = entry.variables.map((v) => String(entry.exampleValues[v] ?? '').trim())
-  const validation = validatePositionalBodyExamples(entry.bodyMetaText, examples)
+  const validation = validateMetaCreateBody(entry.bodyMetaText, examples)
   if (!validation.ok) return validation
   try {
     return { ok: true, payload: buildMetaCreateTemplatePayload(entry) }
@@ -138,10 +182,15 @@ export function buildMetaCreateComponentsFromPositionalBody(opts: {
   bodyText: string
   examples: string[]
   footerText?: string | null
+  /** true: Meta gönderim kuralları (kenar sabit metin). Taslak snapshot için false. */
+  enforceVariableEdges?: boolean
 }):
   | { ok: true; components: Record<string, unknown>[] }
   | { ok: false; code: string; message: string } {
-  const validation = validatePositionalBodyExamples(opts.bodyText, opts.examples)
+  const validation =
+    opts.enforceVariableEdges === false
+      ? validatePositionalBodyExamples(opts.bodyText, opts.examples)
+      : validateMetaCreateBody(opts.bodyText, opts.examples)
   if (!validation.ok) return validation
 
   const body: Record<string, unknown> = {

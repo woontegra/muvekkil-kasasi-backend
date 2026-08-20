@@ -49,6 +49,8 @@ function main() {
   assert(comps[0]?.type === 'BODY', 'BODY component')
   assert(comps[0]?.text.includes('{{1}}'), 'positional 1')
   assert(comps[0]?.text.includes('{{6}}'), 'positional 6')
+  assert(comps[0]!.text.includes('tarafından gönderilmiştir'), 'closing fixed text')
+  assert(!/\{\{\d+\}\}$/.test(comps[0]!.text.trim()), 'does not end with var')
   assert(Array.isArray(comps[0]?.example.body_text?.[0]), 'nested body_text')
   assert(comps[0]!.example.body_text[0]!.length === entry.variables.length, 'example count')
 

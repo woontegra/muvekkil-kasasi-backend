@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   assert(comps[0]!.type === 'BODY', 'BODY type')
   assert(comps[0]!.text.includes('{{1}}'), 'pos 1')
   assert(comps[0]!.text.includes('{{5}}'), 'pos 5')
+  assert(comps[0]!.text.includes('tarafından gönderilmiştir'), 'fixed closing')
   assert(!comps[0]!.text.includes('muvekkil_adi'), 'no named placeholders')
   assert(!comps[0]!.example?.body_text_named_params, 'no named examples')
   const bodyText = comps[0]!.example!.body_text!
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
   // Single variable → [[value]]
   {
     const one = buildMetaCreateComponentsFromPositionalBody({
-      bodyText: 'Merhaba {{1}}',
+      bodyText: 'Merhaba {{1}} dostum.',
       examples: ['Ayşe']
     })
     assert(one.ok === true, 'one var ok')
@@ -71,7 +72,7 @@ async function main(): Promise<void> {
   // Multi variables preserve order in one inner array
   {
     const multi = buildMetaCreateComponentsFromPositionalBody({
-      bodyText: 'A {{1}} B {{2}} C {{3}}',
+      bodyText: 'A {{1}} B {{2}} C {{3}} tamam.',
       examples: ['1', '2', '3']
     })
     assert(multi.ok === true, 'multi ok')
@@ -101,7 +102,7 @@ async function main(): Promise<void> {
   // Empty footer omitted
   {
     const withEmpty = buildMetaCreateComponentsFromPositionalBody({
-      bodyText: 'Hi {{1}}',
+      bodyText: 'Hi {{1}} done.',
       examples: ['A'],
       footerText: '   '
     })
@@ -111,7 +112,7 @@ async function main(): Promise<void> {
       assert(!withEmpty.components.some((c) => c.type === 'FOOTER'), 'no FOOTER')
     }
     const withFooter = buildMetaCreateComponentsFromPositionalBody({
-      bodyText: 'Hi {{1}}',
+      bodyText: 'Hi {{1}} done.',
       examples: ['A'],
       footerText: 'Büro'
     })
