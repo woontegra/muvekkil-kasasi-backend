@@ -281,7 +281,12 @@ export async function verifyConnection(
 export async function syncTemplates(
   tenantId: string,
   deps?: { fetchImpl?: typeof fetch }
-): Promise<{ synced: number; templates: Array<Record<string, unknown>> }> {
+): Promise<{
+  synced: number
+  reconciledGhosts: number
+  paginationComplete: boolean
+  templates: Array<Record<string, unknown>>
+}> {
   const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
   if (!baglanti?.accessTokenEncrypted || !baglanti.wabaId) {
     throw new AppError(400, 'WhatsApp bağlantısı bulunamadı.', 'WHATSAPP_NOT_CONNECTED')
@@ -302,6 +307,10 @@ export async function syncTemplates(
   const now = new Date()
   let synced = 0
   const out: Array<Record<string, unknown>> = []
+  const remoteIds = new Set(
+    fetched.templates.map((t) => t.id).filter((id): id is string => Boolean(id && id.trim()))
+  )
+  const remoteNameLang = new Set(fetched.templates.map((t) => `${t.name}::${t.language}`))
 
   for (const t of fetched.templates) {
     const statusNormalized = normalizeMetaTemplateStatus(t.status)
@@ -372,7 +381,54 @@ export async function syncTemplates(
     })
   }
 
-  return { synced, templates: out }
+  let reconciledGhosts = 0
+  // Yalnızca tam ve başarılı pagination sonrası hayalet pending sıfırlanır.
+  if (fetched.paginationComplete) {
+    const pendingLocals = await prisma.whatsAppMetaSablon.findMany({
+      where: {
+        tenantId,
+        statusNormalized: { in: ['BEKLIYOR', 'GONDERILIYOR'] }
+      }
+    })
+
+    for (const row of pendingLocals) {
+      const foundById =
+        Boolean(row.metaTemplateId) && remoteIds.has(row.metaTemplateId as string)
+      const foundByName = remoteNameLang.has(`${row.metaName}::${row.language}`)
+      if (foundById || foundByName) continue
+
+      const isCustom = Boolean(parseCustomTemplateSnapshot(row.componentsSnapshot))
+      if (isCustom) {
+        await prisma.whatsAppMetaSablon.update({
+          where: { id: row.id },
+          data: {
+            statusNormalized: 'TASLAK',
+            metaTemplateId: null,
+            submittedAt: null,
+            approvedAt: null,
+            lastSyncedAt: now
+          }
+        })
+        reconciledGhosts += 1
+        continue
+      }
+
+      const isLibrary =
+        Boolean(row.libraryKey) || Boolean(getLibraryEntryByMetaName(row.metaName))
+      if (!isLibrary) continue
+
+      // Hazır şablon hayaleti → kaydı sil = “Henüz gönderilmedi”
+      await prisma.whatsAppMetaSablon.delete({ where: { id: row.id } })
+      reconciledGhosts += 1
+    }
+  }
+
+  return {
+    synced,
+    reconciledGhosts,
+    paginationComplete: fetched.paginationComplete,
+    templates: out
+  }
 }
 
 /**

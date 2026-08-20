@@ -217,35 +217,28 @@ export function normalizeMetaRejectionReason(raw: string | undefined | null): st
   return t.slice(0, 500)
 }
 
-export async function fetchWabaMessageTemplates(
-  wabaId: string,
-  accessToken: string,
-  fetchImpl?: typeof fetch
-): Promise<{ ok: boolean; templates: MetaTemplateRow[]; errorSummary: string | null }> {
-  const result = await graphFetch<{
-    data?: Array<{
-      id?: string
-      name?: string
-      language?: string
-      status?: string
-      category?: string
-      rejected_reason?: string
-    }>
-  }>(`${encodeURIComponent(wabaId)}/message_templates`, {
-    method: 'GET',
-    accessToken,
-    query: {
-      fields: 'id,name,language,status,category,rejected_reason',
-      limit: '100'
-    },
-    fetchImpl
-  })
+export type FetchWabaTemplatesResult = {
+  ok: boolean
+  templates: MetaTemplateRow[]
+  errorSummary: string | null
+  /** false ise hayalet pending reconciliation yapılmamalı. */
+  paginationComplete: boolean
+  pagesFetched: number
+}
 
-  if (!result.ok) {
-    return { ok: false, templates: [], errorSummary: result.errorSummary }
-  }
+const TEMPLATE_LIST_MAX_PAGES = 50
 
-  const templates: MetaTemplateRow[] = (result.data?.data ?? [])
+function mapTemplateRows(
+  rows: Array<{
+    id?: string
+    name?: string
+    language?: string
+    status?: string
+    category?: string
+    rejected_reason?: string
+  }>
+): MetaTemplateRow[] {
+  return rows
     .filter((t) => t.name && t.language)
     .map((t) => ({
       id: t.id?.trim() || null,
@@ -255,8 +248,94 @@ export async function fetchWabaMessageTemplates(
       category: t.category ?? null,
       rejectedReason: normalizeMetaRejectionReason(t.rejected_reason ?? null)
     }))
+}
 
-  return { ok: true, templates, errorSummary: null }
+/** Graph “already exists” — geniş code=100 kabul edilmez (yanlış hayalet BEKLIYOR üretir). */
+export function isMetaTemplateAlreadyExistsError(
+  errorSummary: string | null | undefined,
+  errorCode: number | null | undefined
+): boolean {
+  const summary = (errorSummary ?? '').toLowerCase()
+  if (
+    summary.includes('already exists') ||
+    summary.includes('duplicate') ||
+    summary.includes('name is already') ||
+    summary.includes('template name already')
+  ) {
+    return true
+  }
+  // Meta: message template name already in use
+  return errorCode === 2388044
+}
+
+export async function fetchWabaMessageTemplates(
+  wabaId: string,
+  accessToken: string,
+  fetchImpl?: typeof fetch
+): Promise<FetchWabaTemplatesResult> {
+  const templates: MetaTemplateRow[] = []
+  let after: string | undefined
+  let pagesFetched = 0
+
+  for (;;) {
+    pagesFetched += 1
+    const query: Record<string, string> = {
+      fields: 'id,name,language,status,category,rejected_reason',
+      limit: '100'
+    }
+    if (after) query.after = after
+
+    const result = await graphFetch<{
+      data?: Array<{
+        id?: string
+        name?: string
+        language?: string
+        status?: string
+        category?: string
+        rejected_reason?: string
+      }>
+      paging?: { cursors?: { after?: string }; next?: string }
+    }>(`${encodeURIComponent(wabaId)}/message_templates`, {
+      method: 'GET',
+      accessToken,
+      query,
+      fetchImpl
+    })
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        templates,
+        errorSummary: result.errorSummary,
+        paginationComplete: false,
+        pagesFetched
+      }
+    }
+
+    templates.push(...mapTemplateRows(result.data?.data ?? []))
+
+    const nextUrl = result.data?.paging?.next
+    const nextAfter = result.data?.paging?.cursors?.after
+    if (!nextUrl || !nextAfter) {
+      return {
+        ok: true,
+        templates,
+        errorSummary: null,
+        paginationComplete: true,
+        pagesFetched
+      }
+    }
+    if (pagesFetched >= TEMPLATE_LIST_MAX_PAGES) {
+      return {
+        ok: true,
+        templates,
+        errorSummary: null,
+        paginationComplete: false,
+        pagesFetched
+      }
+    }
+    after = nextAfter
+  }
 }
 
 /**
@@ -291,18 +370,15 @@ export async function createWabaMessageTemplate(opts: {
     }
   }
 
-  const summary = (result.errorSummary ?? '').toLowerCase()
-  const already =
-    summary.includes('already exists') ||
-    summary.includes('duplicate') ||
-    summary.includes('name is already') ||
-    result.errorCode === 2388044 ||
-    result.errorCode === 100
-
   return {
     ok: false,
     errorSummary: result.errorSummary,
     errorCode: result.errorCode,
-    alreadyExists: already
+    alreadyExists: isMetaTemplateAlreadyExistsError(result.errorSummary, result.errorCode)
   }
+}
+
+/** Create cevabında geçerli Meta template id zorunlu. */
+export function hasValidMetaTemplateId(id: string | null | undefined): boolean {
+  return typeof id === 'string' && id.trim().length > 0
 }

@@ -78,7 +78,7 @@ function main() {
   assert(normalizeMetaTemplateStatus('PAUSED') === 'DURAKLATILDI', 'paused')
   assert(normalizeMetaTemplateStatus('DISABLED') === 'DEVRE_DISI', 'disabled')
   assert(normalizeMetaRejectionReason('INVALID_FORMAT') === 'INVALID_FORMAT', 'reject reason')
-  assert(libraryStatusLabel(null).label === 'Henüz oluşturulmadı', 'not created')
+  assert(libraryStatusLabel(null).label === 'Henüz gönderilmedi', 'not created')
   assert(libraryStatusLabel('ONAYLANDI').label === 'Onaylandı', 'approved label')
   assert(libraryStatusLabel('REDDEDILDI').label === 'Reddedildi', 'rejected label')
 

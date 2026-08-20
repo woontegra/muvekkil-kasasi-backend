@@ -6,7 +6,7 @@ import { decryptSecret } from '../lib/secretCrypto.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { isWhatsAppBaglantiConnected } from './connection.public.js'
-import { createWabaMessageTemplate, fetchWabaMessageTemplates, normalizeMetaTemplateStatus } from './meta/embeddedSignup.js'
+import { createWabaMessageTemplate, fetchWabaMessageTemplates, hasValidMetaTemplateId, normalizeMetaTemplateStatus } from './meta/embeddedSignup.js'
 import { getLibraryEntry } from './templateLibrary.catalog.js'
 
 export type CustomTemplateUsageArea =
@@ -441,15 +441,27 @@ export async function submitCustomTemplateToMeta(
     throw new AppError(422, 'Aktif WhatsApp bağlantısı yok.', 'WHATSAPP_NOT_CONNECTED')
   }
   const token = decryptSecret(baglanti.accessTokenEncrypted)
+  const accountName =
+    baglanti.verifiedName?.trim() || baglanti.businessAccountName?.trim() || 'bağlı WhatsApp hesabı'
+  function createFailed(errorCode?: number | null): AppError {
+    const codePart = errorCode != null ? ` Meta kodu: ${errorCode}.` : ''
+    return new AppError(
+      502,
+      `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${accountName}.${codePart}`,
+      'META_TEMPLATE_CREATE_FAILED'
+    )
+  }
+
   const fetched = await fetchWabaMessageTemplates(baglanti.wabaId, token, deps?.fetchImpl)
   if (fetched.ok) {
     const remote = fetched.templates.find((t) => t.name === row.metaName && t.language === row.language)
-    if (remote) {
+    if (remote && hasValidMetaTemplateId(remote.id)) {
       throw new AppError(409, 'Bu isim ve dilde şablon WABA içinde zaten var.', 'DUPLICATE_TEMPLATE')
     }
   }
+  const rowId = row.id
   await prisma.whatsAppMetaSablon.update({
-    where: { id: row.id },
+    where: { id: rowId },
     data: { statusNormalized: 'GONDERILIYOR', lastSyncedAt: new Date() }
   })
 
@@ -466,25 +478,51 @@ export async function submitCustomTemplateToMeta(
     payload,
     fetchImpl: deps?.fetchImpl
   })
-  if (!created.ok && !created.alreadyExists) {
+
+  async function rollbackToDraft(): Promise<void> {
     await prisma.whatsAppMetaSablon.update({
-      where: { id: row.id },
+      where: { id: rowId },
       data: { statusNormalized: 'TASLAK', lastSyncedAt: new Date() }
     })
-    throw new AppError(502, 'Meta şablon oluşturulamadı.', 'META_TEMPLATE_CREATE_FAILED')
   }
 
-  const normalized = created.ok ? normalizeMetaTemplateStatus(created.status) : 'BEKLIYOR'
+  let metaTemplateId: string | null = null
+  let statusNormalized = 'BEKLIYOR'
+
+  if (created.ok) {
+    if (!hasValidMetaTemplateId(created.id)) {
+      await rollbackToDraft()
+      throw createFailed(null)
+    }
+    metaTemplateId = created.id!.trim()
+    statusNormalized = normalizeMetaTemplateStatus(created.status)
+  } else if (created.alreadyExists) {
+    const again = await fetchWabaMessageTemplates(baglanti.wabaId, token, deps?.fetchImpl)
+    const remote = again.ok
+      ? again.templates.find((t) => t.name === row.metaName && t.language === row.language)
+      : undefined
+    if (!remote || !hasValidMetaTemplateId(remote.id)) {
+      await rollbackToDraft()
+      throw createFailed(created.errorCode)
+    }
+    metaTemplateId = remote.id
+    statusNormalized = normalizeMetaTemplateStatus(remote.status)
+  } else {
+    await rollbackToDraft()
+    throw createFailed(created.errorCode)
+  }
+
   const now = new Date()
+  const persistedStatus = statusNormalized === 'ONAYLANDI' ? 'ONAYLANDI' : 'BEKLIYOR'
   const updated = await prisma.whatsAppMetaSablon.update({
-    where: { id: row.id },
+    where: { id: rowId },
     data: {
       baglantiId: baglanti.id,
       providerWabaId: baglanti.wabaId,
-      metaTemplateId: created.ok ? created.id : undefined,
-      statusNormalized: normalized === 'ONAYLANDI' ? 'ONAYLANDI' : 'BEKLIYOR',
+      metaTemplateId,
+      statusNormalized: persistedStatus,
       submittedAt: now,
-      approvedAt: normalized === 'ONAYLANDI' ? now : null,
+      approvedAt: persistedStatus === 'ONAYLANDI' ? now : null,
       rejectionReason: null,
       lastSyncedAt: now
     }
@@ -496,7 +534,11 @@ export async function submitCustomTemplateToMeta(
     action: 'WHATSAPP_CUSTOM_TEMPLATE_SUBMITTED',
     entityType: 'WhatsAppMetaSablon',
     entityId: updated.id,
-    newValue: { metaName: updated.metaName, statusNormalized: updated.statusNormalized },
+    newValue: {
+      metaName: updated.metaName,
+      statusNormalized: updated.statusNormalized,
+      metaTemplateId: updated.metaTemplateId
+    },
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })

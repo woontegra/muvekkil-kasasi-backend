@@ -13,8 +13,9 @@ import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import {
   createWabaMessageTemplate,
   fetchWabaMessageTemplates,
-  normalizeMetaRejectionReason,
-  normalizeMetaTemplateStatus
+  hasValidMetaTemplateId,
+  normalizeMetaTemplateStatus,
+  type MetaTemplateRow
 } from './meta/embeddedSignup.js'
 import {
   TEMPLATE_LIBRARY,
@@ -27,6 +28,53 @@ import {
   buildMetaCreateTemplatePayload,
   componentsSnapshotForEntry
 } from './templateLibrary.components.js'
+
+function accountDisplayName(baglanti: {
+  verifiedName: string | null
+  businessAccountName: string | null
+}): string {
+  return (
+    baglanti.verifiedName?.trim() ||
+    baglanti.businessAccountName?.trim() ||
+    'bağlı WhatsApp hesabı'
+  )
+}
+
+function metaTemplateCreateFailedError(
+  baglanti: { verifiedName: string | null; businessAccountName: string | null },
+  errorCode?: number | null
+): AppError {
+  const account = accountDisplayName(baglanti)
+  const codePart = errorCode != null ? ` Meta kodu: ${errorCode}.` : ''
+  return new AppError(
+    502,
+    `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${account}.${codePart}`,
+    'META_TEMPLATE_CREATE_FAILED'
+  )
+}
+
+function findRemoteTemplate(
+  templates: MetaTemplateRow[],
+  metaName: string,
+  language: string,
+  metaTemplateId?: string | null
+): MetaTemplateRow | undefined {
+  if (hasValidMetaTemplateId(metaTemplateId)) {
+    const byId = templates.find((t) => t.id === metaTemplateId)
+    if (byId) return byId
+  }
+  return templates.find((t) => t.name === metaName && t.language === language)
+}
+
+function isLibraryGhostPending(row: {
+  statusNormalized: string
+  metaTemplateId: string | null
+}): boolean {
+  return (
+    (row.statusNormalized === 'BEKLIYOR' || row.statusNormalized === 'GONDERILIYOR') &&
+    !hasValidMetaTemplateId(row.metaTemplateId)
+  )
+}
 
 function serializeMetaRow(row: {
   id: string
@@ -107,7 +155,11 @@ export async function listTemplateLibraryForTenant(tenantId: string): Promise<{
       statusLabel: ui.label,
       rejectionReason: row?.rejectionReason ?? null,
       local: row ? serializeMetaRow(row) : null,
-      canSubmitToMeta: connectionReady && (!row || row.statusNormalized === 'REDDEDILDI'),
+      canSubmitToMeta:
+        connectionReady &&
+        (!row ||
+          row.statusNormalized === 'REDDEDILDI' ||
+          isLibraryGhostPending(row)),
       canUseInAutomation: row?.statusNormalized === 'ONAYLANDI'
     }
   })
@@ -158,7 +210,13 @@ export async function submitLibraryTemplateToMeta(
       note: 'Bu şablon WABA’da zaten onaylı; yeniden oluşturulmadı.'
     }
   }
-  if (existing && existing.statusNormalized === 'BEKLIYOR') {
+  // Gerçek Meta id’si olan incelemede → yeniden create etme.
+  // metaTemplateId’siz hayalet BEKLIYOR → yeniden gönderime izin ver.
+  if (
+    existing &&
+    existing.statusNormalized === 'BEKLIYOR' &&
+    hasValidMetaTemplateId(existing.metaTemplateId)
+  ) {
     return {
       ok: true,
       alreadyExists: true,
@@ -174,13 +232,18 @@ export async function submitLibraryTemplateToMeta(
     throw new AppError(500, 'Token çözülemedi.', 'TOKEN_DECRYPT_FAILED')
   }
 
-  // Meta’da aynı isim var mı? Sync ile getir.
+  const previousStatus = existing?.statusNormalized ?? null
+
+  // Meta’da aynı isim var mı? Sync ile getir (pagination dahil).
   const fetched = await fetchWabaMessageTemplates(wabaId, token, deps?.fetchImpl)
   if (fetched.ok) {
-    const remote = fetched.templates.find(
-      (t) => t.name === entry.metaTemplateName && t.language === entry.language
+    const remote = findRemoteTemplate(
+      fetched.templates,
+      entry.metaTemplateName,
+      entry.language,
+      existing?.metaTemplateId
     )
-    if (remote) {
+    if (remote && hasValidMetaTemplateId(remote.id)) {
       const statusNormalized = normalizeMetaTemplateStatus(remote.status)
       const now = new Date()
       const row = await prisma.whatsAppMetaSablon.upsert({
@@ -231,6 +294,13 @@ export async function submitLibraryTemplateToMeta(
     }
   }
 
+  if (existing) {
+    await prisma.whatsAppMetaSablon.update({
+      where: { id: existing.id },
+      data: { statusNormalized: 'GONDERILIYOR', lastSyncedAt: new Date() }
+    })
+  }
+
   const payload = buildMetaCreateTemplatePayload(entry)
   const created = await createWabaMessageTemplate({
     wabaId,
@@ -239,28 +309,59 @@ export async function submitLibraryTemplateToMeta(
     fetchImpl: deps?.fetchImpl
   })
 
-  const now = new Date()
-  if (!created.ok && !created.alreadyExists) {
-    throw new AppError(502, 'Meta şablon oluşturma başarısız.', 'META_TEMPLATE_CREATE_FAILED')
-  }
-
-  let statusNormalized = 'BEKLIYOR'
-  let metaTemplateId: string | null = null
-  if (created.ok) {
-    statusNormalized = normalizeMetaTemplateStatus(created.status)
-    metaTemplateId = created.id
-  } else if (created.alreadyExists) {
-    // Race: yeniden fetch
-    const again = await fetchWabaMessageTemplates(wabaId, token, deps?.fetchImpl)
-    const remote = again.templates.find(
-      (t) => t.name === entry.metaTemplateName && t.language === entry.language
-    )
-    if (remote) {
-      statusNormalized = normalizeMetaTemplateStatus(remote.status)
-      metaTemplateId = remote.id
+  async function revertSubmitStatus(): Promise<void> {
+    if (!existing) return
+    if (
+      isLibraryGhostPending({
+        statusNormalized: previousStatus ?? 'BEKLIYOR',
+        metaTemplateId: existing.metaTemplateId
+      })
+    ) {
+      await prisma.whatsAppMetaSablon.delete({ where: { id: existing.id } }).catch(() => undefined)
+      return
     }
+    const revertTo = previousStatus === 'REDDEDILDI' ? 'REDDEDILDI' : previousStatus === 'GONDERILIYOR' ? 'REDDEDILDI' : previousStatus ?? 'REDDEDILDI'
+    await prisma.whatsAppMetaSablon.update({
+      where: { id: existing.id },
+      data: { statusNormalized: revertTo, lastSyncedAt: new Date() }
+    })
   }
 
+  let metaTemplateId: string | null = null
+  let statusNormalized = 'BEKLIYOR'
+  let alreadyExists = false
+
+  if (created.ok) {
+    if (!hasValidMetaTemplateId(created.id)) {
+      await revertSubmitStatus()
+      throw metaTemplateCreateFailedError(baglanti, null)
+    }
+    metaTemplateId = created.id!.trim()
+    statusNormalized = normalizeMetaTemplateStatus(created.status)
+  } else if (created.alreadyExists) {
+    const again = await fetchWabaMessageTemplates(wabaId, token, deps?.fetchImpl)
+    const remote = again.ok
+      ? findRemoteTemplate(again.templates, entry.metaTemplateName, entry.language)
+      : undefined
+    if (!remote || !hasValidMetaTemplateId(remote.id)) {
+      await revertSubmitStatus()
+      throw metaTemplateCreateFailedError(baglanti, created.errorCode)
+    }
+    metaTemplateId = remote.id
+    statusNormalized = normalizeMetaTemplateStatus(remote.status)
+    alreadyExists = true
+  } else {
+    await revertSubmitStatus()
+    throw metaTemplateCreateFailedError(baglanti, created.errorCode)
+  }
+
+  if (!hasValidMetaTemplateId(metaTemplateId)) {
+    await revertSubmitStatus()
+    throw metaTemplateCreateFailedError(baglanti, null)
+  }
+
+  const now = new Date()
+  const persistedStatus = statusNormalized === 'ONAYLANDI' ? 'ONAYLANDI' : 'BEKLIYOR'
   const row = await prisma.whatsAppMetaSablon.upsert({
     where: {
       tenantId_metaName_language: {
@@ -274,7 +375,7 @@ export async function submitLibraryTemplateToMeta(
       baglantiId: baglanti.id,
       metaName: entry.metaTemplateName,
       language: entry.language,
-      statusNormalized: statusNormalized === 'ONAYLANDI' ? 'ONAYLANDI' : 'BEKLIYOR',
+      statusNormalized: persistedStatus,
       category: entry.category,
       libraryKey: entry.libraryKey,
       providerWabaId: wabaId,
@@ -283,21 +384,21 @@ export async function submitLibraryTemplateToMeta(
       componentsSnapshot: componentsSnapshotForEntry(entry) as Prisma.InputJsonValue,
       parameterFormat: entry.parameterFormat,
       submittedAt: now,
-      approvedAt: statusNormalized === 'ONAYLANDI' ? now : null,
+      approvedAt: persistedStatus === 'ONAYLANDI' ? now : null,
       lastSyncedAt: now
     },
     update: {
       baglantiId: baglanti.id,
-      statusNormalized: statusNormalized === 'ONAYLANDI' ? 'ONAYLANDI' : 'BEKLIYOR',
+      statusNormalized: persistedStatus,
       category: entry.category,
       libraryKey: entry.libraryKey,
       providerWabaId: wabaId,
-      metaTemplateId: metaTemplateId ?? undefined,
+      metaTemplateId,
       rejectionReason: null,
       componentsSnapshot: componentsSnapshotForEntry(entry) as Prisma.InputJsonValue,
       parameterFormat: entry.parameterFormat,
       submittedAt: now,
-      approvedAt: statusNormalized === 'ONAYLANDI' ? now : undefined,
+      approvedAt: persistedStatus === 'ONAYLANDI' ? now : undefined,
       lastSyncedAt: now
     }
   })
@@ -313,7 +414,9 @@ export async function submitLibraryTemplateToMeta(
       libraryKey: entry.libraryKey,
       metaName: entry.metaTemplateName,
       statusNormalized: row.statusNormalized,
-      alreadyExists: created.alreadyExists || (!created.ok && created.alreadyExists)
+      metaTemplateId: row.metaTemplateId,
+      providerWabaIdMasked: wabaId.slice(-6),
+      alreadyExists
     },
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
@@ -321,7 +424,7 @@ export async function submitLibraryTemplateToMeta(
 
   return {
     ok: true,
-    alreadyExists: Boolean(created.alreadyExists || (!created.ok && created.alreadyExists)),
+    alreadyExists,
     template: serializeMetaRow(row)
   }
 }

@@ -195,7 +195,7 @@ export function libraryStatusLabel(statusNormalized: string | null | undefined):
   code: string
   label: string
 } {
-  if (!statusNormalized) return { code: 'NOT_CREATED', label: 'Henüz oluşturulmadı' }
+  if (!statusNormalized) return { code: 'NOT_CREATED', label: 'Henüz gönderilmedi' }
   const s = statusNormalized.toUpperCase()
   if (s === 'GONDERILIYOR' || s === 'SUBMITTING') {
     return { code: 'SUBMITTING', label: 'Meta’ya gönderiliyor' }
