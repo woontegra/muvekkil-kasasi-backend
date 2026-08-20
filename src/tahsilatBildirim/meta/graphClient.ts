@@ -1,11 +1,24 @@
 import { resolveWhatsAppGraphVersion } from '../../config/env.js'
 
+export type SafeMetaGraphError = {
+  httpStatus: number
+  code: number | null
+  type: string | null
+  error_subcode: number | null
+  error_user_title: string | null
+  error_user_msg: string | null
+  details: string | null
+  message: string | null
+  fbtrace_id: string | null
+}
+
 export type GraphRequestResult<T = unknown> = {
   ok: boolean
   httpStatus: number
   data: T | null
   errorSummary: string | null
   errorCode: number | null
+  errorDetails: SafeMetaGraphError | null
 }
 
 type MetaErrorBody = {
@@ -17,6 +30,10 @@ type MetaErrorBody = {
     error_user_title?: string
     error_user_msg?: string
     fbtrace_id?: string
+    error_data?: {
+      details?: string
+      [key: string]: unknown
+    }
   }
 }
 
@@ -28,25 +45,60 @@ export function graphBaseUrl(version?: string): string {
   return `https://graph.facebook.com/${version ?? graphVersion()}`
 }
 
+function clip(value: unknown, max: number): string | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  return s.slice(0, max)
+}
+
 /** Token / secret loglanmaz. */
 export function sanitizeGraphError(body: MetaErrorBody | null, httpStatus: number): {
   errorSummary: string
   errorCode: number | null
+  errorDetails: SafeMetaGraphError
 } {
   const err = body?.error
   const metaCode = typeof err?.code === 'number' ? err.code : null
+  const details = clip(err?.error_data?.details, 400)
+  const errorDetails: SafeMetaGraphError = {
+    httpStatus,
+    code: metaCode,
+    type: clip(err?.type, 80),
+    error_subcode: typeof err?.error_subcode === 'number' ? err.error_subcode : null,
+    error_user_title: clip(err?.error_user_title, 160),
+    error_user_msg: clip(err?.error_user_msg, 400),
+    details,
+    message: clip(err?.message, 400),
+    fbtrace_id: clip(err?.fbtrace_id, 64)
+  }
   return {
     errorCode: metaCode,
-    errorSummary: JSON.stringify({
-      httpStatus,
-      code: metaCode,
-      type: err?.type ?? null,
-      error_subcode: err?.error_subcode ?? null,
-      error_user_title: (err?.error_user_title ?? '').slice(0, 120) || null,
-      message: (err?.message ?? '').slice(0, 240) || null,
-      fbtrace_id: err?.fbtrace_id ?? null
-    })
+    errorDetails,
+    errorSummary: JSON.stringify(errorDetails)
   }
+}
+
+/** Kullanıcıya güvenli Meta create hata metni. */
+export function formatSafeMetaCreateErrorMessage(
+  details: SafeMetaGraphError | null | undefined,
+  accountName: string
+): string {
+  const account = accountName.trim() || 'bağlı WhatsApp hesabı'
+  if (!details) {
+    return `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${account}.`
+  }
+  const explanation =
+    details.error_user_msg || details.details || details.error_user_title || details.message
+  const codePart =
+    details.code != null
+      ? ` Meta kodu: ${details.code}${details.error_subcode != null ? `, alt kod: ${details.error_subcode}` : ''}.`
+      : ''
+  const supportPart = details.fbtrace_id ? ` Destek kodu: ${details.fbtrace_id}.` : ''
+  if (explanation) {
+    return `Şablon Meta hesabında oluşturulamadı: ${explanation}.${codePart}${supportPart} Hedef hesap: ${account}.`
+  }
+  return `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin.${codePart}${supportPart} Hedef hesap: ${account}.`
 }
 
 export type GraphFetchOptions = {
@@ -101,15 +153,24 @@ export async function graphFetch<T = unknown>(
     httpStatus = res.status
     rawText = await res.text()
   } catch (e) {
+    const errorDetails: SafeMetaGraphError = {
+      httpStatus: 0,
+      code: null,
+      type: null,
+      error_subcode: null,
+      error_user_title: null,
+      error_user_msg: null,
+      details: null,
+      message: e instanceof Error ? e.message.slice(0, 200) : 'network_error',
+      fbtrace_id: null
+    }
     return {
       ok: false,
       httpStatus: 0,
       data: null,
       errorCode: null,
-      errorSummary: JSON.stringify({
-        network: true,
-        message: e instanceof Error ? e.message.slice(0, 200) : 'network_error'
-      })
+      errorDetails,
+      errorSummary: JSON.stringify({ network: true, message: errorDetails.message })
     }
   }
 
@@ -117,11 +178,23 @@ export async function graphFetch<T = unknown>(
   try {
     parsed = rawText ? (JSON.parse(rawText) as T & MetaErrorBody) : ({} as T & MetaErrorBody)
   } catch {
+    const errorDetails: SafeMetaGraphError = {
+      httpStatus,
+      code: null,
+      type: null,
+      error_subcode: null,
+      error_user_title: null,
+      error_user_msg: null,
+      details: null,
+      message: 'parseError',
+      fbtrace_id: null
+    }
     return {
       ok: false,
       httpStatus,
       data: null,
       errorCode: null,
+      errorDetails,
       errorSummary: JSON.stringify({ httpStatus, parseError: true })
     }
   }
@@ -134,6 +207,7 @@ export async function graphFetch<T = unknown>(
       httpStatus,
       data: null,
       errorCode: sanitized.errorCode,
+      errorDetails: sanitized.errorDetails,
       errorSummary: sanitized.errorSummary
     }
   }
@@ -143,6 +217,7 @@ export async function graphFetch<T = unknown>(
     httpStatus,
     data: parsed as T,
     errorCode: null,
+    errorDetails: null,
     errorSummary: null
   }
 }

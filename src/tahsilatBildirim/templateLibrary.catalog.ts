@@ -41,7 +41,7 @@ export type TemplateLibraryEntry = {
   metaTemplateName: string
   /** Kullanıcıya gösterilen uygulama değişkenli metin. */
   bodyAppText: string
-  /** Meta BODY text — named {{param}} placeholders. */
+  /** Meta BODY text — positional {{1}}…{{n}} placeholders. */
   bodyMetaText: string
   /** Gönderim/create sırasında değişken sırası (deterministik). */
   variables: Array<keyof TemplateVars>
@@ -50,15 +50,14 @@ export type TemplateLibraryEntry = {
   suggestedKuralTuru: BildirimKuralTuru | null
   /** UI gruplama */
   templateGroup: TemplateLibraryGroup
-  parameterFormat: 'named'
+  parameterFormat: 'positional'
 }
 
 function metaBodyFromApp(appText: string, vars: Array<keyof TemplateVars>): string {
   let out = appText
-  for (const v of vars) {
-    const meta = APP_VAR_TO_META_PARAM[v]
-    out = out.split(`{${v}}`).join(`{{${meta}}}`)
-  }
+  vars.forEach((v, idx) => {
+    out = out.split(`{${v}}`).join(`{{${idx + 1}}}`)
+  })
   return out
 }
 
@@ -84,7 +83,7 @@ function entry(
   return {
     category: 'UTILITY',
     language: 'tr',
-    parameterFormat: 'named',
+    parameterFormat: 'positional',
     templateGroup: partial.templateGroup ?? 'TAHSILAT',
     bodyMetaText: metaBodyFromApp(partial.bodyAppText, partial.variables),
     exampleValues: Object.fromEntries(

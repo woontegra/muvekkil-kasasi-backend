@@ -1,5 +1,5 @@
 import { env, resolveWhatsAppAppId } from '../../config/env.js'
-import { graphFetch, graphVersion } from './graphClient.js'
+import { graphFetch, graphVersion, type SafeMetaGraphError } from './graphClient.js'
 
 export type EmbeddedSignupExchangeResult = {
   ok: boolean
@@ -348,7 +348,13 @@ export async function createWabaMessageTemplate(opts: {
   fetchImpl?: typeof fetch
 }): Promise<
   | { ok: true; id: string | null; status: string | null; alreadyExists: boolean }
-  | { ok: false; errorSummary: string | null; errorCode: number | null; alreadyExists: boolean }
+  | {
+      ok: false
+      errorSummary: string | null
+      errorCode: number | null
+      errorDetails: SafeMetaGraphError | null
+      alreadyExists: boolean
+    }
 > {
   const result = await graphFetch<{ id?: string; status?: string }>(
     `${encodeURIComponent(opts.wabaId)}/message_templates`,
@@ -374,6 +380,7 @@ export async function createWabaMessageTemplate(opts: {
     ok: false,
     errorSummary: result.errorSummary,
     errorCode: result.errorCode,
+    errorDetails: result.errorDetails,
     alreadyExists: isMetaTemplateAlreadyExistsError(result.errorSummary, result.errorCode)
   }
 }

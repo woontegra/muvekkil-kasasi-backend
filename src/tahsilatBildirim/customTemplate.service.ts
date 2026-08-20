@@ -7,7 +7,9 @@ import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import { createWabaMessageTemplate, fetchWabaMessageTemplates, hasValidMetaTemplateId, normalizeMetaTemplateStatus } from './meta/embeddedSignup.js'
+import { formatSafeMetaCreateErrorMessage } from './meta/graphClient.js'
 import { getLibraryEntry } from './templateLibrary.catalog.js'
+import { buildMetaCreateComponentsFromPositionalBody } from './templateLibrary.components.js'
 
 export type CustomTemplateUsageArea =
   | 'VADEDEN_ONCE'
@@ -118,8 +120,8 @@ function validateTemplateInput(input: CustomTemplateInput): {
     throw new AppError(422, 'Mesajdaki değişkenler ile değişken listesi uyuşmuyor.', 'VARIABLE_MISMATCH')
   }
   const byIndex = new Map(input.variables.map((v) => [v.index, v]))
-  const metaParamNames: string[] = []
-  let metaBodyText = body
+  const sortedVars = [...input.variables].sort((a, b) => a.index - b.index)
+  const examples = sortedVars.map((v) => v.exampleValue.trim())
   for (let i = 1; i <= uniqueSorted.length; i += 1) {
     const item = byIndex.get(i)
     if (!item) {
@@ -128,23 +130,17 @@ function validateTemplateInput(input: CustomTemplateInput): {
     if (!item.exampleValue?.trim()) {
       throw new AppError(422, `{{${i}}} için örnek değer zorunludur.`, 'VARIABLE_EXAMPLE_REQUIRED')
     }
-    const paramName = `p${i}`
-    metaParamNames.push(paramName)
-    metaBodyText = metaBodyText.split(`{{${i}}}`).join(`{{${paramName}}}`)
   }
 
-  const bodyComponent: Record<string, unknown> = {
-    type: 'BODY',
-    text: metaBodyText,
-    example: {
-      body_text_named_params: input.variables
-        .sort((a, b) => a.index - b.index)
-        .map((v, idx) => ({ param_name: `p${idx + 1}`, example: v.exampleValue.trim() }))
-    }
+  // Meta create: positional {{1}}…{{n}} + nested body_text; named pN dönüşümü yok.
+  const built = buildMetaCreateComponentsFromPositionalBody({
+    bodyText: body,
+    examples,
+    footerText: input.footerText
+  })
+  if (!built.ok) {
+    throw new AppError(422, built.message, built.code)
   }
-  const components: Record<string, unknown>[] = [bodyComponent]
-  const footer = input.footerText?.trim() ?? ''
-  if (footer) components.push({ type: 'FOOTER', text: footer.slice(0, 60) })
 
   return {
     sanitizedMetaName: metaName,
@@ -153,11 +149,11 @@ function validateTemplateInput(input: CustomTemplateInput): {
       displayName: input.displayName.trim(),
       usageArea: input.usageArea,
       bodyText: body,
-      footerText: footer || null,
-      variables: input.variables.sort((a, b) => a.index - b.index),
-      metaParamNames,
-      metaBodyText,
-      createComponents: components
+      footerText: (input.footerText?.trim() || null) as string | null,
+      variables: sortedVars,
+      metaParamNames: sortedVars.map((_, idx) => `p${idx + 1}`),
+      metaBodyText: body,
+      createComponents: built.components
     }
   }
 }
@@ -230,7 +226,7 @@ export async function createCustomTemplateDraft(
       statusNormalized: 'TASLAK',
       category: input.category,
       componentsSnapshot: validated.snapshot as Prisma.InputJsonValue,
-      parameterFormat: 'named',
+      parameterFormat: 'positional',
       lastSyncedAt: new Date()
     }
   })
@@ -443,11 +439,10 @@ export async function submitCustomTemplateToMeta(
   const token = decryptSecret(baglanti.accessTokenEncrypted)
   const accountName =
     baglanti.verifiedName?.trim() || baglanti.businessAccountName?.trim() || 'bağlı WhatsApp hesabı'
-  function createFailed(errorCode?: number | null): AppError {
-    const codePart = errorCode != null ? ` Meta kodu: ${errorCode}.` : ''
+  function createFailed(errorDetails?: import('./meta/graphClient.js').SafeMetaGraphError | null): AppError {
     return new AppError(
       502,
-      `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${accountName}.${codePart}`,
+      formatSafeMetaCreateErrorMessage(errorDetails, accountName),
       'META_TEMPLATE_CREATE_FAILED'
     )
   }
@@ -465,12 +460,24 @@ export async function submitCustomTemplateToMeta(
     data: { statusNormalized: 'GONDERILIYOR', lastSyncedAt: new Date() }
   })
 
-  const payload = {
+  const rebuilt = buildMetaCreateComponentsFromPositionalBody({
+    bodyText: snap.bodyText,
+    examples: [...snap.variables].sort((a, b) => a.index - b.index).map((v) => v.exampleValue.trim()),
+    footerText: snap.footerText
+  })
+  if (!rebuilt.ok) {
+    await prisma.whatsAppMetaSablon.update({
+      where: { id: rowId },
+      data: { statusNormalized: 'TASLAK', lastSyncedAt: new Date() }
+    })
+    throw new AppError(422, rebuilt.message, rebuilt.code)
+  }
+
+  const payload: Record<string, unknown> = {
     name: row.metaName,
     language: row.language,
     category: row.category ?? 'UTILITY',
-    parameter_format: row.parameterFormat ?? 'named',
-    components: snap.createComponents
+    components: rebuilt.components
   }
   const created = await createWabaMessageTemplate({
     wabaId: baglanti.wabaId,
@@ -492,7 +499,17 @@ export async function submitCustomTemplateToMeta(
   if (created.ok) {
     if (!hasValidMetaTemplateId(created.id)) {
       await rollbackToDraft()
-      throw createFailed(null)
+      throw createFailed({
+        httpStatus: 200,
+        code: null,
+        type: null,
+        error_subcode: null,
+        error_user_title: null,
+        error_user_msg: 'Meta geçerli bir şablon kimliği döndürmedi.',
+        details: null,
+        message: 'Missing template id in successful response',
+        fbtrace_id: null
+      })
     }
     metaTemplateId = created.id!.trim()
     statusNormalized = normalizeMetaTemplateStatus(created.status)
@@ -503,13 +520,13 @@ export async function submitCustomTemplateToMeta(
       : undefined
     if (!remote || !hasValidMetaTemplateId(remote.id)) {
       await rollbackToDraft()
-      throw createFailed(created.errorCode)
+      throw createFailed(created.errorDetails)
     }
     metaTemplateId = remote.id
     statusNormalized = normalizeMetaTemplateStatus(remote.status)
   } else {
     await rollbackToDraft()
-    throw createFailed(created.errorCode)
+    throw createFailed(created.errorDetails)
   }
 
   const now = new Date()

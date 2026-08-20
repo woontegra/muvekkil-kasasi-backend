@@ -25,9 +25,10 @@ import {
   type TemplateLibraryKey
 } from './templateLibrary.catalog.js'
 import {
-  buildMetaCreateTemplatePayload,
+  buildValidatedMetaCreateTemplatePayload,
   componentsSnapshotForEntry
 } from './templateLibrary.components.js'
+import { formatSafeMetaCreateErrorMessage, type SafeMetaGraphError } from './meta/graphClient.js'
 
 function accountDisplayName(baglanti: {
   verifiedName: string | null
@@ -42,13 +43,11 @@ function accountDisplayName(baglanti: {
 
 function metaTemplateCreateFailedError(
   baglanti: { verifiedName: string | null; businessAccountName: string | null },
-  errorCode?: number | null
+  errorDetails?: SafeMetaGraphError | null
 ): AppError {
-  const account = accountDisplayName(baglanti)
-  const codePart = errorCode != null ? ` Meta kodu: ${errorCode}.` : ''
   return new AppError(
     502,
-    `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${account}.${codePart}`,
+    formatSafeMetaCreateErrorMessage(errorDetails, accountDisplayName(baglanti)),
     'META_TEMPLATE_CREATE_FAILED'
   )
 }
@@ -294,6 +293,11 @@ export async function submitLibraryTemplateToMeta(
     }
   }
 
+  const validated = buildValidatedMetaCreateTemplatePayload(entry)
+  if (!validated.ok) {
+    throw new AppError(422, validated.message, validated.code)
+  }
+
   if (existing) {
     await prisma.whatsAppMetaSablon.update({
       where: { id: existing.id },
@@ -301,11 +305,10 @@ export async function submitLibraryTemplateToMeta(
     })
   }
 
-  const payload = buildMetaCreateTemplatePayload(entry)
   const created = await createWabaMessageTemplate({
     wabaId,
     accessToken: token,
-    payload,
+    payload: validated.payload,
     fetchImpl: deps?.fetchImpl
   })
 
@@ -334,7 +337,17 @@ export async function submitLibraryTemplateToMeta(
   if (created.ok) {
     if (!hasValidMetaTemplateId(created.id)) {
       await revertSubmitStatus()
-      throw metaTemplateCreateFailedError(baglanti, null)
+      throw metaTemplateCreateFailedError(baglanti, {
+        httpStatus: 200,
+        code: null,
+        type: null,
+        error_subcode: null,
+        error_user_title: null,
+        error_user_msg: 'Meta geçerli bir şablon kimliği döndürmedi.',
+        details: null,
+        message: 'Missing template id in successful response',
+        fbtrace_id: null
+      })
     }
     metaTemplateId = created.id!.trim()
     statusNormalized = normalizeMetaTemplateStatus(created.status)
@@ -345,14 +358,14 @@ export async function submitLibraryTemplateToMeta(
       : undefined
     if (!remote || !hasValidMetaTemplateId(remote.id)) {
       await revertSubmitStatus()
-      throw metaTemplateCreateFailedError(baglanti, created.errorCode)
+      throw metaTemplateCreateFailedError(baglanti, created.errorDetails)
     }
     metaTemplateId = remote.id
     statusNormalized = normalizeMetaTemplateStatus(remote.status)
     alreadyExists = true
   } else {
     await revertSubmitStatus()
-    throw metaTemplateCreateFailedError(baglanti, created.errorCode)
+    throw metaTemplateCreateFailedError(baglanti, created.errorDetails)
   }
 
   if (!hasValidMetaTemplateId(metaTemplateId)) {

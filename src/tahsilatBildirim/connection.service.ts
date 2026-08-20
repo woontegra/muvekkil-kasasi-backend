@@ -350,7 +350,7 @@ export async function syncTemplates(
         metaTemplateId: t.id,
         rejectionReason: t.rejectedReason,
         componentsSnapshot: snapshotForUpdate,
-        parameterFormat: isCustomTemplate ? 'named' : libraryHit?.parameterFormat ?? null,
+        parameterFormat: isCustomTemplate ? 'positional' : libraryHit?.parameterFormat ?? null,
         approvedAt: statusNormalized === 'ONAYLANDI' ? now : null,
         lastSyncedAt: now
       },

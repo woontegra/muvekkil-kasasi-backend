@@ -5,8 +5,7 @@ import {
   TEMPLATE_LIBRARY,
   getLibraryEntry,
   libraryStatusLabel,
-  suggestedLibraryKeyForKural,
-  APP_VAR_TO_META_PARAM
+  suggestedLibraryKeyForKural
 } from '../src/tahsilatBildirim/templateLibrary.catalog.js'
 import {
   buildMetaCreateTemplatePayload,
@@ -33,19 +32,25 @@ function main() {
     TEMPLATE_LIBRARY.every((e) => e.category === 'UTILITY' && e.language === 'tr'),
     'utility tr'
   )
+  assert(TEMPLATE_LIBRARY.every((e) => e.parameterFormat === 'positional'), 'positional catalog')
   assert(suggestedLibraryKeyForKural('VADEDEN_ONCE') === 'TAHSILAT_VADE_ONCESI', 'map once')
   assert(suggestedLibraryKeyForKural('VADE_GUNU') === 'TAHSILAT_VADE_GUNU', 'map gun')
   assert(suggestedLibraryKeyForKural('VADE_SONRASI') === 'TAHSILAT_GECIKMIS', 'map gecikmis')
 
   const entry = getLibraryEntry('TAHSILAT_GECIKMIS')!
   const createPayload = buildMetaCreateTemplatePayload(entry)
-  assert(createPayload.parameter_format === 'named', 'named format')
+  assert(!('parameter_format' in createPayload), 'omit parameter_format')
   assert(createPayload.name === 'mk_tahsilat_gecikmis_v1', 'meta name')
-  const comps = createPayload.components as Array<{ type: string; text: string; example: unknown }>
+  const comps = createPayload.components as Array<{
+    type: string
+    text: string
+    example: { body_text: string[][] }
+  }>
   assert(comps[0]?.type === 'BODY', 'BODY component')
-  assert(comps[0]?.text.includes('{{gecikme_gunu}}'), 'named placeholder in body')
-  assert(comps[0]?.text.includes('{{kalan_tutar}}'), 'kalan_tutar in body')
-  assert(comps[0]?.text.includes('{{vade_tarihi}}'), 'vade_tarihi in body')
+  assert(comps[0]?.text.includes('{{1}}'), 'positional 1')
+  assert(comps[0]?.text.includes('{{6}}'), 'positional 6')
+  assert(Array.isArray(comps[0]?.example.body_text?.[0]), 'nested body_text')
+  assert(comps[0]!.example.body_text[0]!.length === entry.variables.length, 'example count')
 
   const vars = {
     muvekkilAdi: 'Ayşe',
@@ -60,10 +65,10 @@ function main() {
   if (send.ok) {
     const params = send.components[0]!.parameters
     assert(params.length === entry.variables.length, 'param count')
-    assert(params[0]!.parameter_name === APP_VAR_TO_META_PARAM.muvekkilAdi, 'first param name')
-    assert(params.find((p) => p.parameter_name === 'kalan_tutar')?.text === '2500.00', 'kalan')
-    assert(params.find((p) => p.parameter_name === 'vade_tarihi')?.text === '01.01.2026', 'vade')
-    assert(params.find((p) => p.parameter_name === 'gecikme_gunu')?.text === '5', 'gecikme')
+    assert(!('parameter_name' in params[0]!), 'positional send')
+    assert(params[0]!.text === 'Ayşe', 'first text')
+    assert(params[3]!.text === '2500.00', 'kalan ordered')
+    assert(params[4]!.text === '5', 'gecikme ordered')
   }
 
   const missing = buildSendBodyComponentsForLibraryKey('TAHSILAT_GECIKMIS', {
@@ -86,7 +91,6 @@ function main() {
   assert(ATLAMA_TEMPLATE_GEREKLI.includes('TEMPLATE_GEREKLI'), 'template required')
   assert(ATLAMA_TEMPLATE_DEGISKEN_EKSIK === 'TEMPLATE_DEGISKEN_EKSIK', 'var missing code')
 
-  // Duplicate key / isolation invariants (pure)
   const names = new Set(TEMPLATE_LIBRARY.map((e) => e.metaTemplateName))
   assert(names.size === 7, 'unique meta names')
   const keys = new Set(TEMPLATE_LIBRARY.map((e) => e.libraryKey))
@@ -98,7 +102,7 @@ function main() {
       suite: 'whatsapp-template-library-quality',
       catalogSize: TEMPLATE_LIBRARY.length,
       notes: [
-        'named-components',
+        'positional-components',
         'variable-order',
         'no-cloud-text-fallback-codes',
         'status-normalize',

@@ -25,6 +25,7 @@
     "test:whatsapp-cloud": "tsx scripts/whatsapp-cloud-integration-quality.ts",
     "test:whatsapp-library": "tsx scripts/whatsapp-template-library-quality.ts",
     "test:whatsapp-submit-sync": "tsx scripts/whatsapp-template-submit-sync-quality.ts",
+    "test:whatsapp-payload": "tsx scripts/whatsapp-template-payload-quality.ts",
     "whatsapp:cloud-test": "tsx scripts/whatsapp-cloud-api-test.ts",
     "backfill:tenant-licenses": "tsx scripts/backfill-tenant-licenses.ts",
     "test:vekalet-kismi": "tsx scripts/test-vekalet-kismi-odeme.ts",
