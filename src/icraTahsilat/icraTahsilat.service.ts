@@ -554,7 +554,7 @@ export async function createIcraTahsilatAlacagi(
       tenantId,
       userId,
       actorRole,
-      body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId
+      body.tahsilatiYapanPersonelId
     )
 
     const created = await prisma.$transaction(async (tx) => {
@@ -623,7 +623,7 @@ export async function createIcraTahsilatAlacagi(
           tenantId,
           userId,
           actorRole,
-          body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId
+          body.tahsilatiYapanPersonelId
         )
       : null
 
@@ -837,7 +837,7 @@ export async function createIcraTaksitOdeme(
     tenantId,
     userId,
     actorRole,
-    body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId
+    body.tahsilatiYapanPersonelId
   )
 
   await prisma.$transaction(async (tx) => {

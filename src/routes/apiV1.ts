@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { authRouter } from '../auth/auth.routes.js'
+import { authMobileRouter } from '../auth/authMobile.routes.js'
 import { loadAuthContext } from '../middleware/loadAuthContext.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { tenantContext } from '../middleware/tenantContext.js'
@@ -37,6 +38,7 @@ apiV1Router.use('/integrations/woontegra-website', woontegraWebsiteProvisionRout
 apiV1Router.use('/integrations/whatsapp', whatsappWebhookRouter)
 apiV1Router.use(tenantContext)
 apiV1Router.use('/auth', authRouter)
+apiV1Router.use('/auth/mobile', authMobileRouter)
 apiV1Router.use('/muvekkiller', muvekkillerRouter)
 apiV1Router.use('/randevular', randevularRouter)
 apiV1Router.use('/dosyalar', dosyalarRouter)

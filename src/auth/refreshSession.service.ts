@@ -140,6 +140,10 @@ export async function rotateRefreshSession(
 export async function revokeCurrentRefreshFromCookie(req: Request): Promise<string | null> {
   const plain = req.cookies?.[TENANT_REFRESH_COOKIE]
   if (typeof plain !== 'string' || !plain) return null
+  return revokeRefreshSessionByPlainToken(plain)
+}
+
+export async function revokeRefreshSessionByPlainToken(plain: string): Promise<string | null> {
   const hash = hashOpaqueToken(plain)
   const row = await prisma.refreshSession.findFirst({
     where: { tokenHash: hash, revokedAt: null },

@@ -69,13 +69,8 @@ export const createIcraTahsilatBodySchema = z
           path: ['taksitSayisi']
         })
       }
-      if (!data.tahsilatiYapanPersonelId && !data.tahsilatiYapanUserId) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Peşin tahsilat için tahsilatı yapan personel zorunludur.',
-          path: ['tahsilatiYapanPersonelId']
-        })
-      }
+      // Tahsilatçı: açık PrimPersonel seçimi opsiyoneldir; yoksa authenticated actor kullanılır.
+      // tahsilatiYapanUserId personel FK değildir — resolve'a User.id basılmaz.
       return
     }
 
@@ -105,13 +100,7 @@ export const createIcraTahsilatBodySchema = z
       if (pesinat > data.toplamTutar) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Peşinat toplam tutarı aşamaz.', path: ['pesinatTutar'] })
       }
-      if (!data.tahsilatiYapanPersonelId && !data.tahsilatiYapanUserId) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Peşinat için tahsilatı yapan personel zorunludur.',
-          path: ['tahsilatiYapanPersonelId']
-        })
-      }
+      // Peşinat tahsilatçısı: açık PrimPersonel seçimi opsiyonel; yoksa authenticated actor.
     }
   })
 
