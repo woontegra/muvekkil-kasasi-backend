@@ -20,6 +20,7 @@ import {
   mapTaksitOtomatikBildirimAktif,
   setTaksitOtomatikBildirimAktif
 } from './taksitBildirimColumn.js'
+import { BILDIRIM_PENCERE_HATA, isGonderimSaatiSecilebilir } from './sendWindow.js'
 import { replanRandevuJobs } from '../randevu/randevuBildirim.planner.js'
 
 export const RANDEVU_OFFSET_PRESETS: Array<{ ruleKey: string; offsetDk: number; label: string }> = [
@@ -146,6 +147,9 @@ export async function setTaksitHatirlatmaPlan(input: {
       }
       if (k.kuralTuru !== BildirimKuralTuru.VADE_GUNU && k.aktifMi && k.gunOffset < 1) {
         throw new AppError(422, 'Gün offset en az 1 olmalıdır.', 'VALIDATION')
+      }
+      if (!isGonderimSaatiSecilebilir(k.gonderimSaatiDk)) {
+        throw new AppError(422, BILDIRIM_PENCERE_HATA, 'INVALID_SEND_TIME')
       }
     }
   }

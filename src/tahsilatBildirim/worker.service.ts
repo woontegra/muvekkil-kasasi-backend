@@ -58,6 +58,19 @@ export type ProcessDueJobsOptions = {
   workerId?: string
   simulateOnly?: boolean
   tenantId?: string
+  /**
+   * Yalnızca bu iş id’lerini işle (başka kuyruk satırına dokunma).
+   * Manuel kural testi için — normal cron worker bunu kullanmaz.
+   */
+  onlyJobIds?: string[]
+  /** 10:00–20:00 penceresini atla (yalnızca onlyJobIds ile). */
+  bypassSendWindow?: boolean
+  /** Müvekkil/dosya/taksit eligibility atla (yalnızca onlyJobIds ile). */
+  bypassEligibility?: boolean
+  /** Tenant otomasyonAktif / WHATSAPP_AUTOMATION_ENABLED atla (yalnızca onlyJobIds ile). */
+  bypassAutomationGates?: boolean
+  /** Alıcı telefonunu override et (yalnızca onlyJobIds.length === 1). */
+  overrideToE164?: string
 }
 
 export type ProcessDueJobsResult = {
@@ -131,6 +144,31 @@ async function claimDueJobs(opts: {
   })
 }
 
+async function claimSpecificJobs(opts: {
+  jobIds: string[]
+  workerId: string
+  tenantId?: string
+  now: Date
+}): Promise<string[]> {
+  const claimed: string[] = []
+  for (const id of opts.jobIds) {
+    const updated = await prisma.tahsilatBildirimIsi.updateMany({
+      where: {
+        id,
+        ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+        durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+      },
+      data: {
+        durum: BildirimIsDurumu.KUYRUKTA,
+        lockedAt: opts.now,
+        lockedBy: opts.workerId
+      }
+    })
+    if (updated.count > 0) claimed.push(id)
+  }
+  return claimed
+}
+
 export async function processDueJobs(
   options: ProcessDueJobsOptions = {}
 ): Promise<ProcessDueJobsResult> {
@@ -150,8 +188,17 @@ export async function processDueJobs(
     skippedSmsDeprecated: 0
   })
 
-  if (!env.WHATSAPP_AUTOMATION_ENABLED) {
+  if (!env.WHATSAPP_AUTOMATION_ENABLED && !options.bypassAutomationGates) {
     return emptyResult()
+  }
+
+  if (options.bypassSendWindow || options.bypassEligibility || options.bypassAutomationGates || options.overrideToE164) {
+    if (!options.onlyJobIds?.length) {
+      throw new Error('bypass/override flags require onlyJobIds')
+    }
+  }
+  if (options.overrideToE164 && options.onlyJobIds?.length !== 1) {
+    throw new Error('overrideToE164 requires exactly one onlyJobIds entry')
   }
 
   const limit = Math.max(1, Math.min(options.limit ?? 50, 200))
@@ -176,12 +223,20 @@ export async function processDueJobs(
     skippedSmsDeprecated: 0
   }
 
-  const ids = await claimDueJobs({
-    limit,
-    workerId,
-    tenantId: options.tenantId,
-    now
-  })
+  const ids =
+    options.onlyJobIds && options.onlyJobIds.length > 0
+      ? await claimSpecificJobs({
+          jobIds: options.onlyJobIds,
+          workerId,
+          tenantId: options.tenantId,
+          now
+        })
+      : await claimDueJobs({
+          limit,
+          workerId,
+          tenantId: options.tenantId,
+          now
+        })
 
   for (const id of ids) {
     result.processed += 1
@@ -230,7 +285,7 @@ export async function processDueJobs(
     const ayar = await prisma.tahsilatBildirimAyar.findUnique({
       where: { tenantId: job.tenantId }
     })
-    if (!ayar?.otomasyonAktif && !options.simulateOnly) {
+    if (!ayar?.otomasyonAktif && !options.simulateOnly && !options.bypassAutomationGates) {
       await prisma.tahsilatBildirimIsi.update({
         where: { id },
         data: {
@@ -245,7 +300,7 @@ export async function processDueJobs(
     const winStart = ayar?.izinliSaatBaslangic ?? 600
     const winEnd = ayar?.izinliSaatBitis ?? 1200
 
-    if (minutes < winStart || minutes >= winEnd) {
+    if (!options.bypassSendWindow && (minutes < winStart || minutes >= winEnd)) {
       result.deferredWindow += 1
       await prisma.tahsilatBildirimIsi.update({
         where: { id },
@@ -258,30 +313,32 @@ export async function processDueJobs(
       continue
     }
 
-    const taksitAktif = await getTaksitOtomatikBildirimAktif(job.taksitId)
-    const elig = evaluateAutoBildirimEligibility({
-      tenantOtomasyonAktif: true,
-      muvekkilIzni: job.muvekkil.otomatikBildirimIzni,
-      dosyaAktif: job.dosya.otomatikBildirimAktif,
-      taksitAktif
-    })
-    if (!elig.eligible) {
-      if (elig.blockingLevel === 'MUVEKKIL') result.atlananIzin += 1
-      else if (elig.blockingLevel === 'DOSYA') result.atlananDosya += 1
-      else if (elig.blockingLevel === 'TAKSIT') result.atlananTaksit += 1
-      await prisma.tahsilatBildirimIsi.update({
-        where: { id },
-        data: {
-          durum: BildirimIsDurumu.ATLANDI,
-          atlamaNedeni: elig.kullaniciMesaji,
-          lockedAt: null,
-          lockedBy: null
-        }
+    if (!options.bypassEligibility) {
+      const taksitAktif = await getTaksitOtomatikBildirimAktif(job.taksitId)
+      const elig = evaluateAutoBildirimEligibility({
+        tenantOtomasyonAktif: true,
+        muvekkilIzni: job.muvekkil.otomatikBildirimIzni,
+        dosyaAktif: job.dosya.otomatikBildirimAktif,
+        taksitAktif
       })
-      continue
+      if (!elig.eligible) {
+        if (elig.blockingLevel === 'MUVEKKIL') result.atlananIzin += 1
+        else if (elig.blockingLevel === 'DOSYA') result.atlananDosya += 1
+        else if (elig.blockingLevel === 'TAKSIT') result.atlananTaksit += 1
+        await prisma.tahsilatBildirimIsi.update({
+          where: { id },
+          data: {
+            durum: BildirimIsDurumu.ATLANDI,
+            atlamaNedeni: elig.kullaniciMesaji,
+            lockedAt: null,
+            lockedBy: null
+          }
+        })
+        continue
+      }
     }
 
-    const phoneE164 = resolvePhone(job.muvekkil)
+    const phoneE164 = options.overrideToE164?.trim() || resolvePhone(job.muvekkil)
     if (!phoneE164) {
       result.atlananTelefon += 1
       await prisma.tahsilatBildirimIsi.update({
@@ -531,7 +588,10 @@ export async function processDueJobs(
               provider: sendResult.provider,
               basariliMi: true,
               telefonMaskeli,
-              sablonOzeti: truncate(metaSablon.metaName, 200),
+              sablonOzeti: truncate(
+                job.manuelTetikleme ? `TEST:${metaSablon.metaName}` : metaSablon.metaName,
+                200
+              ),
               mesajOzeti: 'MASKED',
               sonucKodu: sendResult.code,
               sonucMesaji: sendResult.message
@@ -568,17 +628,21 @@ export async function processDueJobs(
             provider: sendResult.provider,
             basariliMi: false,
             telefonMaskeli,
-            sablonOzeti: truncate(metaSablon.metaName, 200),
-            mesajOzeti: 'MASKED',
+            sablonOzeti: truncate(
+              job.manuelTetikleme ? `TEST:${metaSablon.metaName}` : metaSablon.metaName,
+              200
+            ),
+            // Token/telefon yok; SafeMetaGraphError JSON (httpStatus, code, details, fbtrace_id…).
+            mesajOzeti: truncate(sendResult.metaErrorSummary || 'MASKED', 500),
             sonucKodu: sendResult.code || 'FAILED',
-            sonucMesaji: sendResult.message
+            sonucMesaji: truncate(sendResult.message, 500)
           }
         }),
         prisma.tahsilatBildirimIsi.update({
           where: { id },
           data: {
             durum: BildirimIsDurumu.BASARISIZ,
-            hataOzeti: sendResult.message,
+            hataOzeti: truncate(sendResult.message, 500),
             sonProviderHataKodu: sendResult.code || null,
             providerAdi: sendResult.provider,
             telefonMaskeli,

@@ -94,7 +94,8 @@ export async function serializeTaksitApiResponse(t: VekaletTaksiti): Promise<Rec
   const odemeler = await loadTaksitOdemeler(t.id)
   const { getTaksitOtomatikBildirimAktif } = await import('../tahsilatBildirim/taksitBildirimColumn.js')
   const { getTaksitHatirlatmaPlan } = await import('../tahsilatBildirim/bildirimPlan.service.js')
-  const otomatikBildirimAktif = await getTaksitOtomatikBildirimAktif(t.id)
+  // İkincil alanlar ana güncellemeyi 500 yapmamalı
+  const otomatikBildirimAktif = await getTaksitOtomatikBildirimAktif(t.id).catch(() => true)
   const plan = await getTaksitHatirlatmaPlan(t.tenantId, t.id).catch(() => null)
   const base = serializeVekaletTaksitiWithOzet({ ...t, otomatikBildirimAktif } as VekaletTaksiti & {
     otomatikBildirimAktif: boolean
@@ -778,6 +779,10 @@ export async function updateVekaletTaksiti(
     throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
   }
 
+  if (existing.odemeDurumu === 'IPTAL') {
+    throw new AppError(409, 'İptal edilmiş taksit düzenlenemez.', 'INVALID_STATE')
+  }
+
   const odemeler = await prisma.vekaletTaksitOdeme.findMany({ where: { taksitId: existing.id } })
   const odenen = sumOdemeTutar(odemeler)
 
@@ -786,81 +791,107 @@ export async function updateVekaletTaksiti(
       throw new AppError(400, 'Taksit tutarı ödenen tutardan küçük olamaz.', 'INVALID_AMOUNT')
     }
     if (existing.odemeDurumu === 'ODENDI' && Math.abs(Number(body.tutar) - Number(existing.tutar)) > 0.0001) {
-      throw new AppError(400, 'Tam ödenmiş taksitte tutar değiştirilemez.', 'INVALID_STATE')
+      throw new AppError(409, 'Tam ödenmiş taksitte tutar değiştirilemez.', 'INVALID_STATE')
     }
   }
 
   const meta = getRequestMeta(req)
   const nextOdeme = body.odemeDurumu ?? existing.odemeDurumu
   const wasPaid = existing.odemeDurumu === 'ODENDI'
+  const odemeDurumuChanging = body.odemeDurumu != null && body.odemeDurumu !== existing.odemeDurumu
 
   if (wasPaid && nextOdeme === 'ODENMEDI' && !isYonetici(role)) {
     throw new AppError(403, 'Ödenmiş taksidi geri almak için yetkiniz yok.', 'FORBIDDEN')
   }
 
-  let odemeTarihi = existing.odemeTarihi
-  let makbuzNo = existing.makbuzNo
-  let smmKesildiMi = existing.smmKesildiMi
-  let smmKesimTarihi = existing.smmKesimTarihi
-  let smmNo = existing.smmNo
-  let smmAciklama = existing.smmAciklama
-
-  if (existing.odemeDurumu !== 'ODENDI' && nextOdeme === 'ODENDI') {
-    odemeTarihi = body.odemeTarihi ?? new Date()
-    smmKesildiMi = false
-    smmKesimTarihi = null
-    smmNo = null
-    smmAciklama = null
+  const data: Prisma.VekaletTaksitiUncheckedUpdateInput = {
+    updatedById: userId
   }
 
-  if (wasPaid && nextOdeme === 'ODENMEDI') {
-    odemeTarihi = null
-    makbuzNo = null
-    smmKesildiMi = false
-    smmKesimTarihi = null
-    smmNo = null
-    smmAciklama = null
-  }
+  if (body.taksitNo != null) data.taksitNo = body.taksitNo
+  if (body.vadeTarihi != null) data.vadeTarihi = body.vadeTarihi
+  if (body.tutar != null) data.tutar = new PrismaNamespace.Decimal(body.tutar)
+  if (body.aciklama !== undefined) data.aciklama = body.aciklama?.trim() || null
 
-  if (body.odemeTarihi !== undefined) {
-    odemeTarihi = body.odemeTarihi
+  // Ödeme durumu / makbuz / SMM alanları yalnızca durum değişiminde veya açık odemeTarihi ile
+  if (odemeDurumuChanging || body.odemeTarihi !== undefined) {
+    let odemeTarihi = existing.odemeTarihi
+    let makbuzNo = existing.makbuzNo
+    let smmKesildiMi = existing.smmKesildiMi
+    let smmKesimTarihi = existing.smmKesimTarihi
+    let smmNo = existing.smmNo
+    let smmAciklama = existing.smmAciklama
+
+    if (existing.odemeDurumu !== 'ODENDI' && nextOdeme === 'ODENDI') {
+      odemeTarihi = body.odemeTarihi ?? new Date()
+      smmKesildiMi = false
+      smmKesimTarihi = null
+      smmNo = null
+      smmAciklama = null
+    }
+
+    if (wasPaid && nextOdeme === 'ODENMEDI') {
+      odemeTarihi = null
+      makbuzNo = null
+      smmKesildiMi = false
+      smmKesimTarihi = null
+      smmNo = null
+      smmAciklama = null
+    }
+
+    if (body.odemeTarihi !== undefined) {
+      odemeTarihi = body.odemeTarihi
+    }
+
+    data.odemeDurumu = nextOdeme
+    data.odemeTarihi = odemeTarihi
+    data.makbuzNo = makbuzNo
+    data.smmKesildiMi = smmKesildiMi
+    data.smmKesimTarihi = smmKesimTarihi
+    data.smmNo = smmNo
+    data.smmAciklama = smmAciklama
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    let mb = makbuzNo
-    if (nextOdeme === 'ODENDI' && !mb) {
-      mb = await nextMakbuzNo(tx, tenantId, odemeTarihi ?? new Date())
+    if (odemeDurumuChanging && nextOdeme === 'ODENDI' && !data.makbuzNo) {
+      const odemeTarihi =
+        data.odemeTarihi instanceof Date
+          ? data.odemeTarihi
+          : existing.odemeTarihi ?? new Date()
+      data.makbuzNo = await nextMakbuzNo(tx, tenantId, odemeTarihi)
     }
     return tx.vekaletTaksiti.update({
       where: { id: existing.id },
-      data: {
-        taksitNo: body.taksitNo ?? undefined,
-        vadeTarihi: body.vadeTarihi ?? undefined,
-        tutar: body.tutar != null ? new PrismaNamespace.Decimal(body.tutar) : undefined,
-        odemeDurumu: body.odemeDurumu ?? undefined,
-        odemeTarihi,
-        aciklama: body.aciklama !== undefined ? body.aciklama?.trim() || null : undefined,
-        makbuzNo: mb,
-        smmKesildiMi,
-        smmKesimTarihi,
-        smmNo,
-        smmAciklama,
-        updatedById: userId
-      }
+      data
     })
   })
 
-  await writeAuditLog({
-    tenantId,
-    userId,
-    action: 'VEKALET_TAKSIT_UPDATED',
-    entityType: 'VekaletTaksiti',
-    entityId: updated.id,
-    oldValue: serializeVekaletTaksiti(existing),
-    newValue: serializeVekaletTaksiti(updated),
-    ipAddress: meta.ipAddress,
-    userAgent: meta.userAgent
-  })
+  try {
+    await writeAuditLog({
+      tenantId,
+      userId,
+      action: 'VEKALET_TAKSIT_UPDATED',
+      entityType: 'VekaletTaksiti',
+      entityId: updated.id,
+      oldValue: serializeVekaletTaksiti(existing),
+      newValue: serializeVekaletTaksiti(updated),
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[updateVekaletTaksiti] audit log failed', err)
+  }
+
+  const vadeChanged =
+    body.vadeTarihi != null && existing.vadeTarihi.getTime() !== updated.vadeTarihi.getTime()
+  if (vadeChanged) {
+    const { onTaksitVadeChanged } = await import('../tahsilatBildirim/sync.service.js')
+    void onTaksitVadeChanged(tenantId, updated.id).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[updateVekaletTaksiti] vade replan failed', err)
+    })
+  }
 
   return await serializeTaksitApiResponse(updated)
 }

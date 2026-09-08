@@ -13,6 +13,12 @@ import { writeAuditLog } from '../audit/auditService.js'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
+import {
+  BILDIRIM_PENCERE_ARALIK_HATA,
+  BILDIRIM_PENCERE_HATA,
+  isGonderimSaatiSecilebilir,
+  isIzinliAralikGecerli
+} from './sendWindow.js'
 import { DEFAULT_TEMPLATES } from './templates.js'
 import { getPublicConnectionStatus } from './connection.public.js'
 
@@ -175,12 +181,13 @@ export async function updateSettings(
   await ensureTenantBildirimDefaults(tenantId)
   const existing = await prisma.tahsilatBildirimAyar.findUniqueOrThrow({ where: { tenantId } })
 
+  const nextBas = body.izinliSaatBaslangic ?? existing.izinliSaatBaslangic
+  const nextBit = body.izinliSaatBitis ?? existing.izinliSaatBitis
   if (
-    body.izinliSaatBaslangic != null &&
-    body.izinliSaatBitis != null &&
-    body.izinliSaatBaslangic >= body.izinliSaatBitis
+    (body.izinliSaatBaslangic !== undefined || body.izinliSaatBitis !== undefined) &&
+    !isIzinliAralikGecerli(nextBas, nextBit)
   ) {
-    throw new AppError(400, 'İzinli saat başlangıcı bitişten küçük olmalıdır.', 'INVALID_WINDOW')
+    throw new AppError(400, BILDIRIM_PENCERE_ARALIK_HATA, 'INVALID_WINDOW')
   }
 
   const data: Prisma.TahsilatBildirimAyarUpdateInput = {
@@ -239,6 +246,10 @@ export async function updateRule(
     if (existing.kuralTuru !== BildirimKuralTuru.VADE_GUNU && body.gunOffset < 1) {
       throw new AppError(400, 'Gün ofseti en az 1 olmalıdır.', 'INVALID_OFFSET')
     }
+  }
+
+  if (body.gonderimSaatiDk !== undefined && !isGonderimSaatiSecilebilir(body.gonderimSaatiDk)) {
+    throw new AppError(400, BILDIRIM_PENCERE_HATA, 'INVALID_SEND_TIME')
   }
 
   const updated = await prisma.tahsilatBildirimKurali.update({

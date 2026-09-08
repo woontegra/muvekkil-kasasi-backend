@@ -1,5 +1,10 @@
 import { env } from '../../config/env.js'
-import { graphFetch, graphVersion } from '../meta/graphClient.js'
+import {
+  formatSafeMetaSendErrorMessage,
+  graphFetch,
+  graphVersion,
+  type SafeMetaGraphError
+} from '../meta/graphClient.js'
 import { loadTenantCloudCredentials } from '../connection.service.js'
 
 /** Canlı varsayılan: MANUAL_WHATSAPP. Meta WhatsApp onayı sonrası WHATSAPP_CLOUD_API yeniden etkinleştirilecek. */
@@ -31,8 +36,10 @@ export type WhatsAppSendResult = {
   deepLinkUrl?: string | null
   httpStatus?: number | null
   metaErrorCode?: number | null
-  /** Secret içermeyen Meta hata özeti. */
+  /** Secret içermeyen Meta hata özeti (JSON). */
   metaErrorSummary?: string | null
+  /** Secret içermeyen yapılandırılmış Meta hata alanları. */
+  metaErrorDetails?: SafeMetaGraphError | null
   usedTemplate?: boolean
   templateName?: string | null
 }
@@ -143,11 +150,12 @@ export class WhatsAppCloudApiProvider implements WhatsAppProvider {
         ok: false,
         provider: 'WHATSAPP_CLOUD_API',
         code: result.errorCode != null ? `META_${result.errorCode}` : `HTTP_${result.httpStatus}`,
-        message: 'Meta WhatsApp API hatası.',
+        message: formatSafeMetaSendErrorMessage(result.errorDetails).slice(0, 500),
         providerMessageId: null,
         httpStatus: result.httpStatus || null,
         metaErrorCode: result.errorCode,
         metaErrorSummary: result.errorSummary,
+        metaErrorDetails: result.errorDetails,
         usedTemplate: useTemplate,
         templateName
       }

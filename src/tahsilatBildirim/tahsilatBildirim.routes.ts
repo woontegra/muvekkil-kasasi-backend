@@ -16,6 +16,14 @@ import {
 import { markBildirimJobSent, openBildirimJobWhatsApp, sendBildirimJobViaCloudApi } from './bildirimJobWhatsApp.service.js'
 import { simulateTodaysJobs } from './simulate.service.js'
 
+import {
+  BILDIRIM_GONDERIM_MAX_DK,
+  BILDIRIM_PENCERE_BASLANGIC_DK,
+  BILDIRIM_PENCERE_BITIS_DK,
+  BILDIRIM_PENCERE_HATA,
+  isGonderimSaatiSecilebilir
+} from './sendWindow.js'
+
 export const tahsilatBildirimRouter = Router()
 
 const YONETICI = [UserRole.BURO_SAHIBI, UserRole.AVUKAT_YONETICI] as const
@@ -30,14 +38,30 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
 const updateAyarSchema = z.object({
   otomasyonAktif: z.boolean().optional(),
   testModu: z.boolean().optional(),
-  izinliSaatBaslangic: z.number().int().min(0).max(1439).optional(),
-  izinliSaatBitis: z.number().int().min(0).max(1439).optional()
+  izinliSaatBaslangic: z
+    .number()
+    .int()
+    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+    .max(BILDIRIM_PENCERE_BITIS_DK)
+    .optional(),
+  izinliSaatBitis: z
+    .number()
+    .int()
+    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+    .max(BILDIRIM_PENCERE_BITIS_DK)
+    .optional()
 })
 
 const updateKuralSchema = z.object({
   aktifMi: z.boolean().optional(),
   gunOffset: z.number().int().min(0).max(365).optional(),
-  gonderimSaatiDk: z.number().int().min(0).max(1439).optional()
+  gonderimSaatiDk: z
+    .number()
+    .int()
+    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+    .max(BILDIRIM_GONDERIM_MAX_DK)
+    .refine(isGonderimSaatiSecilebilir, { message: BILDIRIM_PENCERE_HATA })
+    .optional()
 })
 
 const updateSablonSchema = z.object({
@@ -210,7 +234,17 @@ tahsilatBildirimRouter.post(
   requireRole(...YONETICI),
   asyncHandler(async (req, res) => {
     const result = await planJobsForTenant(req.auth!.tenantId)
-    res.json({ ok: true, result })
+    const reasonMessage =
+      result.reason === 'whatsapp_automation_disabled'
+        ? 'Platform WhatsApp otomasyonu kapalı. Sunucu yapılandırmasında açılması gerekir.'
+        : result.reason === 'otomasyon_kapali'
+          ? 'Büro otomasyonu kapalı. Ayarlardan otomatik hatırlatmaları açın.'
+          : undefined
+    res.json({
+      ok: true,
+      result,
+      ...(reasonMessage ? { message: reasonMessage } : {})
+    })
   })
 )
 
@@ -221,6 +255,61 @@ tahsilatBildirimRouter.get(
   asyncHandler(async (req, res) => {
     const durum = await getWhatsAppDurum(req.auth!.tenantId)
     res.json({ ok: true, ...durum })
+  })
+)
+
+const BURO_SAHIBI_ONLY = [UserRole.BURO_SAHIBI] as const
+
+tahsilatBildirimRouter.get(
+  '/test-aday-taksitler',
+  requireAuth,
+  requireRole(...BURO_SAHIBI_ONLY),
+  asyncHandler(async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined
+    const { listKuralTestAdayTaksitler } = await import('./kuralManualTest.service.js')
+    const data = await listKuralTestAdayTaksitler(req.auth!.tenantId, req.auth!.role, q)
+    res.json({ ok: true, ...data })
+  })
+)
+
+tahsilatBildirimRouter.get(
+  '/kurallar/:id/test-onizleme',
+  requireAuth,
+  requireRole(...BURO_SAHIBI_ONLY),
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const taksitId = z.string().uuid().parse(req.query.taksitId)
+    const { previewKuralTest } = await import('./kuralManualTest.service.js')
+    const data = await previewKuralTest(req.auth!.tenantId, req.auth!.role, id, taksitId)
+    res.json({ ok: true, ...data })
+  })
+)
+
+tahsilatBildirimRouter.post(
+  '/kurallar/:id/test-gonder',
+  requireAuth,
+  requireRole(...BURO_SAHIBI_ONLY),
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const body = z
+      .object({
+        taksitId: z.string().uuid(),
+        testTelefon: z.string().min(10).max(32),
+        confirm: z.literal(true)
+      })
+      .parse(req.body)
+    const { sendKuralTest } = await import('./kuralManualTest.service.js')
+    const result = await sendKuralTest({
+      tenantId: req.auth!.tenantId,
+      userId: req.auth!.sub,
+      role: req.auth!.role,
+      kuralId: id,
+      taksitId: body.taksitId,
+      testTelefon: body.testTelefon,
+      confirm: true,
+      req
+    })
+    res.json(result)
   })
 )
 

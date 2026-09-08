@@ -49,3 +49,24 @@ export async function onTaksitOdemeChanged(tenantId: string, taksitId: string): 
 
   await planJobsForTenant(tenantId)
 }
+
+/**
+ * Vade değişince bekleyen (gönderilmemiş) işleri iptal et; tenant için yeniden planla.
+ * Gönderilmiş kayıtlar dokunulmaz. Ana taksit update'ini bloklamamak için fire-and-forget.
+ */
+export async function onTaksitVadeChanged(tenantId: string, taksitId: string): Promise<void> {
+  await prisma.tahsilatBildirimIsi.updateMany({
+    where: {
+      tenantId,
+      taksitId,
+      durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+    },
+    data: {
+      durum: BildirimIsDurumu.IPTAL_EDILDI,
+      iptalNedeni: 'Vade tarihi güncellendi',
+      lockedAt: null,
+      lockedBy: null
+    }
+  })
+  await planJobsForTenant(tenantId)
+}

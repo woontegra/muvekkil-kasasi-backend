@@ -79,6 +79,27 @@ export function sanitizeGraphError(body: MetaErrorBody | null, httpStatus: numbe
   }
 }
 
+function formatSafeMetaCodeParts(details: SafeMetaGraphError): string {
+  const codePart =
+    details.code != null
+      ? ` Meta kodu: ${details.code}${details.error_subcode != null ? `, alt kod: ${details.error_subcode}` : ''}.`
+      : details.httpStatus
+        ? ` HTTP: ${details.httpStatus}.`
+        : ''
+  const supportPart = details.fbtrace_id ? ` Destek kodu: ${details.fbtrace_id}.` : ''
+  return `${codePart}${supportPart}`
+}
+
+function pickSafeMetaExplanation(details: SafeMetaGraphError): string | null {
+  return (
+    details.error_user_msg ||
+    details.details ||
+    details.error_user_title ||
+    details.message ||
+    null
+  )
+}
+
 /** Kullanıcıya güvenli Meta create hata metni. */
 export function formatSafeMetaCreateErrorMessage(
   details: SafeMetaGraphError | null | undefined,
@@ -88,17 +109,28 @@ export function formatSafeMetaCreateErrorMessage(
   if (!details) {
     return `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin. Hedef hesap: ${account}.`
   }
-  const explanation =
-    details.error_user_msg || details.details || details.error_user_title || details.message
-  const codePart =
-    details.code != null
-      ? ` Meta kodu: ${details.code}${details.error_subcode != null ? `, alt kod: ${details.error_subcode}` : ''}.`
-      : ''
-  const supportPart = details.fbtrace_id ? ` Destek kodu: ${details.fbtrace_id}.` : ''
+  const explanation = pickSafeMetaExplanation(details)
+  const suffix = formatSafeMetaCodeParts(details)
   if (explanation) {
-    return `Şablon Meta hesabında oluşturulamadı: ${explanation}.${codePart}${supportPart} Hedef hesap: ${account}.`
+    return `Şablon Meta hesabında oluşturulamadı: ${explanation}.${suffix} Hedef hesap: ${account}.`
   }
-  return `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin.${codePart}${supportPart} Hedef hesap: ${account}.`
+  return `Şablon Meta hesabında oluşturulamadı. Lütfen bağlantıyı kontrol edip tekrar deneyin.${suffix} Hedef hesap: ${account}.`
+}
+
+/** Kullanıcıya güvenli Meta gönderim (messages) hata metni — token/telefon yok. */
+export function formatSafeMetaSendErrorMessage(
+  details: SafeMetaGraphError | null | undefined
+): string {
+  if (!details) {
+    return 'Meta WhatsApp API hatası.'
+  }
+  const explanation = pickSafeMetaExplanation(details)
+  const typePart = details.type ? ` (${details.type})` : ''
+  const suffix = formatSafeMetaCodeParts(details)
+  if (explanation) {
+    return `Meta WhatsApp API hatası${typePart}: ${explanation}.${suffix}`.trim()
+  }
+  return `Meta WhatsApp API hatası${typePart}.${suffix}`.trim()
 }
 
 export type GraphFetchOptions = {

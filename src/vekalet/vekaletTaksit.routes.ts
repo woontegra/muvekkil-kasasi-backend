@@ -23,6 +23,12 @@ import {
   getTaksitBildirimAyar,
   setTaksitOtomatikBildirim
 } from '../tahsilatBildirim/bildirimAyar.service.js'
+import {
+  BILDIRIM_GONDERIM_MAX_DK,
+  BILDIRIM_PENCERE_BASLANGIC_DK,
+  BILDIRIM_PENCERE_HATA,
+  isGonderimSaatiSecilebilir
+} from '../tahsilatBildirim/sendWindow.js'
 
 export const vekaletTaksitleriRouter = Router()
 
@@ -111,7 +117,12 @@ const taksitHatirlatmaPlanBodySchema = z.object({
         kuralTuru: z.enum(['VADEDEN_ONCE', 'VADE_GUNU', 'VADE_SONRASI']),
         aktifMi: z.boolean(),
         gunOffset: z.number().int().min(0).max(365),
-        gonderimSaatiDk: z.number().int().min(0).max(1439),
+        gonderimSaatiDk: z
+          .number()
+          .int()
+          .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+          .max(BILDIRIM_GONDERIM_MAX_DK)
+          .refine(isGonderimSaatiSecilebilir, { message: BILDIRIM_PENCERE_HATA }),
         metaSablonId: z.string().uuid().nullable()
       })
     )

@@ -208,6 +208,18 @@ export function buildMetaCreateComponentsFromPositionalBody(opts: {
   return { ok: true, components }
 }
 
+/**
+ * Meta send BODY parametre kuralları: boş olamaz; baş/sonda boşluk yok;
+ * satır sonu/tab yok; 4’ten fazla ardışık boşluk yok.
+ */
+export function sanitizeMetaTemplateParamText(raw: string): string {
+  return String(raw)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/ {5,}/g, '    ')
+    .trim()
+    .slice(0, 1024)
+}
+
 export function buildSendBodyComponentsFromVars(
   entry: TemplateLibraryEntry,
   vars: TemplateVars
@@ -219,13 +231,18 @@ export function buildSendBodyComponentsFromVars(
 
   for (const v of entry.variables) {
     const raw = vars[v]
-    if (raw == null || String(raw).trim() === '') {
+    if (raw == null) {
+      missing.push(v)
+      continue
+    }
+    const text = sanitizeMetaTemplateParamText(String(raw))
+    if (!text) {
       missing.push(v)
       continue
     }
     parameters.push({
       type: 'text',
-      text: String(raw).slice(0, 1024)
+      text
     })
   }
 

@@ -14,6 +14,7 @@ import {
 } from '../src/tahsilatBildirim/meta/embeddedSignup.js'
 import {
   formatSafeMetaCreateErrorMessage,
+  formatSafeMetaSendErrorMessage,
   sanitizeGraphError
 } from '../src/tahsilatBildirim/meta/graphClient.js'
 
@@ -144,6 +145,11 @@ async function main(): Promise<void> {
     assert(msg.includes('alt kod: 33'), 'subcode in msg')
     assert(msg.includes('Destek kodu: AbCdEf'), 'fbtrace')
     assert(msg.includes('body_text') || msg.includes('components'), 'explanation')
+    const sendMsg = formatSafeMetaSendErrorMessage(sanitized.errorDetails)
+    assert(sendMsg.includes('Meta WhatsApp API hatası'), 'send prefix')
+    assert(sendMsg.includes('components') || sendMsg.includes('body_text'), 'send explanation')
+    assert(sendMsg.includes('Meta kodu: 100'), 'send code')
+    assert(!sendMsg.includes('Meta WhatsApp API hatası.'), 'not generic-only')
   }
 
   // Meta 2xx without id → invalid

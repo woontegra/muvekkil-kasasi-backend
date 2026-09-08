@@ -2,8 +2,45 @@ import { OdemeYontemi } from '@prisma/client'
 import { z } from 'zod'
 
 const tutarPositive = z.preprocess(
-  (v) => (typeof v === 'string' ? Number(v.replace(',', '.')) : v),
+  (v) => {
+    if (typeof v !== 'string') return v
+    // TR: "26.666,66" | "26666,66" | "26666.66"
+    const s = v.trim()
+    if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s) || (s.includes(',') && s.includes('.'))) {
+      return Number(s.replace(/\./g, '').replace(',', '.'))
+    }
+    if (s.includes(',')) return Number(s.replace(',', '.'))
+    return Number(s)
+  },
   z.number().finite().positive('Tutar pozitif olmalıdır.')
+)
+
+/**
+ * Takvim gününü UTC gece yarısına sabitle (TR gün kayması yok).
+ * Kabul: YYYY-MM-DD, DD.MM.YYYY, ISO (gün kısmı alınır).
+ */
+export function normalizeCalendarDateUtc(input: unknown): Date | unknown {
+  if (input == null || input === '') return input
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) return input
+    const y = input.getUTCFullYear()
+    const m = String(input.getUTCMonth() + 1).padStart(2, '0')
+    const d = String(input.getUTCDate()).padStart(2, '0')
+    return new Date(`${y}-${m}-${d}T00:00:00.000Z`)
+  }
+  if (typeof input === 'string') {
+    const s = input.trim()
+    const tr = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s)
+    if (tr) return new Date(`${tr[3]}-${tr[2]}-${tr[1]}T00:00:00.000Z`)
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(s)
+    if (ymd) return new Date(`${ymd[1]}-${ymd[2]}-${ymd[3]}T00:00:00.000Z`)
+  }
+  return input
+}
+
+const calendarDate = z.preprocess(
+  normalizeCalendarDateUtc,
+  z.date({ errorMap: () => ({ message: 'Geçersiz vade tarihi.' }) })
 )
 
 export const upsertVekaletUcretiBodySchema = z.object({
@@ -15,7 +52,7 @@ export type UpsertVekaletUcretiBody = z.infer<typeof upsertVekaletUcretiBodySche
 
 export const createVekaletTaksitiBodySchema = z.object({
   taksitNo: z.coerce.number().int().min(1, 'Taksit no en az 1 olmalıdır.'),
-  vadeTarihi: z.coerce.date(),
+  vadeTarihi: calendarDate,
   tutar: tutarPositive,
   aciklama: z.string().trim().max(4000).optional().nullable()
 })
@@ -24,10 +61,10 @@ export type CreateVekaletTaksitiBody = z.infer<typeof createVekaletTaksitiBodySc
 
 export const updateVekaletTaksitiBodySchema = z.object({
   taksitNo: z.coerce.number().int().min(1).optional(),
-  vadeTarihi: z.coerce.date().optional(),
+  vadeTarihi: calendarDate.optional(),
   tutar: tutarPositive.optional(),
   odemeDurumu: z.enum(['ODENMEDI', 'ODENDI']).optional(),
-  odemeTarihi: z.coerce.date().optional().nullable(),
+  odemeTarihi: z.union([calendarDate, z.null()]).optional(),
   aciklama: z.string().trim().max(4000).optional().nullable()
 })
 

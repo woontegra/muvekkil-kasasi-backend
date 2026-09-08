@@ -10,7 +10,8 @@ import {
 import {
   buildMetaCreateTemplatePayload,
   buildSendBodyComponentsFromVars,
-  buildSendBodyComponentsForLibraryKey
+  buildSendBodyComponentsForLibraryKey,
+  sanitizeMetaTemplateParamText
 } from '../src/tahsilatBildirim/templateLibrary.components.js'
 import {
   normalizeMetaTemplateStatus,
@@ -72,6 +73,17 @@ function main() {
     assert(params[3]!.text === '2500.00', 'kalan ordered')
     assert(params[4]!.text === '5', 'gecikme ordered')
   }
+
+  assert(sanitizeMetaTemplateParamText('  a\nb\t  c     d  ') === 'a b   c    d', 'sanitize param')
+  assert(sanitizeMetaTemplateParamText('   ') === '', 'sanitize empty')
+
+  const dirty = buildSendBodyComponentsFromVars(entry, {
+    ...vars,
+    muvekkilAdi: '  Ayşe\n ',
+    dosyaBilgisi: 'Dosya A'
+  })
+  assert(dirty.ok === true, 'dirty send ok')
+  if (dirty.ok) assert(dirty.components[0]!.parameters[0]!.text === 'Ayşe', 'trimmed no newline')
 
   const missing = buildSendBodyComponentsForLibraryKey('TAHSILAT_GECIKMIS', {
     muvekkilAdi: 'Ayşe'

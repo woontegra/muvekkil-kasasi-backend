@@ -5,6 +5,9 @@ import { AppError } from '../middleware/errorHandler.js'
 /**
  * `otomatik_bildirim_aktif` kolonu migration uygulanana kadar yok olabilir.
  * Uygulanmamış ortamda varsayılan: açık (true) — müvekkil izni yine kapalıdır.
+ *
+ * Not: `vekalet_taksiti.id` üretimde `text` (Prisma String); `::uuid` cast
+ * `text = uuid` hatası (42883) verir ve update sonrası response 500 olur.
  */
 let cachedHasColumn: boolean | null = null
 
@@ -31,7 +34,7 @@ export function resetTaksitBildirimColumnCache(): void {
 export async function getTaksitOtomatikBildirimAktif(taksitId: string): Promise<boolean> {
   if (!(await hasTaksitOtomatikBildirimColumn())) return true
   const rows = await prisma.$queryRaw<{ otomatik_bildirim_aktif: boolean }[]>`
-    SELECT otomatik_bildirim_aktif FROM vekalet_taksiti WHERE id = ${taksitId}::uuid LIMIT 1
+    SELECT otomatik_bildirim_aktif FROM vekalet_taksiti WHERE id = ${taksitId} LIMIT 1
   `
   return rows[0]?.otomatik_bildirim_aktif ?? true
 }
@@ -50,7 +53,7 @@ export async function setTaksitOtomatikBildirimAktif(
   await prisma.$executeRaw`
     UPDATE vekalet_taksiti
     SET otomatik_bildirim_aktif = ${aktif}
-    WHERE id = ${taksitId}::uuid
+    WHERE id = ${taksitId}
   `
 }
 
