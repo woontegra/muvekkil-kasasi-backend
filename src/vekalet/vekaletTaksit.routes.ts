@@ -25,7 +25,7 @@ import {
 } from '../tahsilatBildirim/bildirimAyar.service.js'
 import {
   BILDIRIM_GONDERIM_MAX_DK,
-  BILDIRIM_PENCERE_BASLANGIC_DK,
+  BILDIRIM_GONDERIM_MIN_DK,
   BILDIRIM_PENCERE_HATA,
   isGonderimSaatiSecilebilir
 } from '../tahsilatBildirim/sendWindow.js'
@@ -120,7 +120,7 @@ const taksitHatirlatmaPlanBodySchema = z.object({
         gonderimSaatiDk: z
           .number()
           .int()
-          .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+          .min(BILDIRIM_GONDERIM_MIN_DK)
           .max(BILDIRIM_GONDERIM_MAX_DK)
           .refine(isGonderimSaatiSecilebilir, { message: BILDIRIM_PENCERE_HATA }),
         metaSablonId: z.string().uuid().nullable()

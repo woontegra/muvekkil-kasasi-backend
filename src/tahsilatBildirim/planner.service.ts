@@ -227,6 +227,18 @@ async function createTaksitJobFromRule(input: {
     input.onCreated()
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      // Aynı idempotency: bekleyen işin saatini güncelle, ikinci mesaj oluşturma.
+      await prisma.tahsilatBildirimIsi.updateMany({
+        where: {
+          idempotencyKey: key,
+          durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+        },
+        data: {
+          planlananAt,
+          lockedAt: null,
+          lockedBy: null
+        }
+      })
       return
     }
     throw e

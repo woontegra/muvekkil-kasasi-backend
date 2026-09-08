@@ -8,9 +8,8 @@
  * Railway cron (önerilen): her 5 dakika
  * Start: npm run bildirim:automation
  *
- * 10:00–20:00 TR penceresi worker içinde korunur.
- * IdempotencyKey + job lock mevcut planner/worker yapısından gelir.
- * Lisans cron’una dokunmaz.
+ * 00:00–23:59 TR; tahsilat sabit kural saati, randevu gerçek zaman (+ isteğe bağlı sessiz saat).
+ * Manuel test her saatte çalışır. Lisans cron’una dokunmaz.
  */
 import 'dotenv/config'
 import { prisma } from '../src/lib/prisma.js'

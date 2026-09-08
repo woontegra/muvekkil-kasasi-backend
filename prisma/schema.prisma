@@ -1011,9 +1011,11 @@ model TahsilatBildirimAyar {
   otomasyonAktif        Boolean  @default(false) @map("otomasyon_aktif")
   /// Faz 1: gerçek gönderim yok; simülasyon. Meta onayı sonrası Faz 2'de kapatılabilir.
   testModu              Boolean  @default(true) @map("test_modu")
-  /// Europe/Istanbul saat diliminde izin verilen gönderim penceresi (dakika 0–1439).
-  izinliSaatBaslangic   Int      @default(600) @map("izinli_saat_baslangic")
+  /** Europe/Istanbul saat diliminde aktif (sessiz olmayan) aralık önerisi; zorunlu engel değil (dakika 0–1440). */
+  izinliSaatBaslangic   Int      @default(540) @map("izinli_saat_baslangic")
   izinliSaatBitis       Int      @default(1200) @map("izinli_saat_bitis")
+  /// Randevu hatırlatmalarında sessiz saatleri dikkate al (varsayılan kapalı).
+  sessizSaatleriDikkateAl Boolean @default(false) @map("sessiz_saatleri_dikkate_al")
   /// @deprecated SMS otomatik gönderim kapalı; kolon geçmiş uyumluluk için tutulur.
   otomatikSmsAktif      Boolean  @default(false) @map("otomatik_sms_aktif")
   /// @deprecated SMS bakiye eşiği kullanılmaz.
@@ -1032,8 +1034,8 @@ model TahsilatBildirimKurali {
   aktifMi         Boolean           @default(false) @map("aktif_mi")
   /// VADEDEN_ONCE / VADE_SONRASI için gün sayısı; VADE_GUNU için 0.
   gunOffset       Int               @map("gun_offset")
-  /// Gönderim saati (Europe/Istanbul), dakika cinsinden. Varsayılan 10:00 = 600.
-  gonderimSaatiDk Int               @default(600) @map("gonderim_saati_dk")
+  /// Gönderim saati (Europe/Istanbul), dakika cinsinden. Varsayılan 09:00 = 540.
+  gonderimSaatiDk Int               @default(540) @map("gonderim_saati_dk")
   kanal           BildirimKanali    @default(WHATSAPP)
   /// Onaylı Meta şablon seçimi (otomasyon).
   metaSablonId    String?           @map("meta_sablon_id")

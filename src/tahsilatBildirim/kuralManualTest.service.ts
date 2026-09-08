@@ -1,6 +1,7 @@
 /**
  * Büro sahibi onaylı tek-kural WhatsApp test gönderimi.
- * Normal otomasyon kuyruğunu / diğer tenantları işlemez; vade günü ve 10–20 penceresini yalnızca bu yolda baypas eder.
+ * Normal otomasyon kuyruğunu / diğer tenantları işlemez; vade günü şartını yalnızca bu yolda baypas eder.
+ * Sabit gönderim penceresi yoktur — manuel test her saatte çalışır.
  */
 import type { Request } from 'express'
 import {
@@ -235,7 +236,7 @@ export async function previewKuralTest(
     templateEksik:
       components && !components.ok ? components.missing : !meta ? ['metaSablon'] : !entry ? ['libraryKey'] : [],
     notlar: [
-      'Test, vade günü ve 10:00–20:00 penceresini bilinçli olarak geçer.',
+      'Test, vade günü şartını bilinçli olarak geçer; gönderim her saatte yapılabilir.',
       'Gerçek onaylı Meta şablonu ve worker gönderim yolu kullanılır.',
       'Mesaj, girdiğiniz test telefonuna gider; müvekkil telefonu kullanılmaz.'
     ]

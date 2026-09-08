@@ -2,7 +2,6 @@ import {
   BildirimKanali,
   BildirimKuralTuru,
   type Prisma,
-  type TahsilatBildirimAyar,
   type TahsilatBildirimKurali,
   type TahsilatBildirimSablonu,
   WhatsAppBaglantiDurumu
@@ -14,6 +13,8 @@ import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
+  BILDIRIM_ONERI_BASLANGIC_DK,
+  BILDIRIM_ONERI_BITIS_DK,
   BILDIRIM_PENCERE_ARALIK_HATA,
   BILDIRIM_PENCERE_HATA,
   isGonderimSaatiSecilebilir,
@@ -21,6 +22,12 @@ import {
 } from './sendWindow.js'
 import { DEFAULT_TEMPLATES } from './templates.js'
 import { getPublicConnectionStatus } from './connection.public.js'
+import { planRandevuJobsForTenant } from '../randevu/randevuBildirim.planner.js'
+import {
+  getSessizSaatleriDikkateAl,
+  hasSessizSaatleriDikkateAlColumn,
+  setSessizSaatleriDikkateAl
+} from './sessizSaatColumn.js'
 
 const DEFAULT_RULES: Array<{ kuralTuru: BildirimKuralTuru; gunOffset: number }> = [
   { kuralTuru: BildirimKuralTuru.VADEDEN_ONCE, gunOffset: 3 },
@@ -28,7 +35,33 @@ const DEFAULT_RULES: Array<{ kuralTuru: BildirimKuralTuru; gunOffset: number }> 
   { kuralTuru: BildirimKuralTuru.VADE_SONRASI, gunOffset: 3 }
 ]
 
-export function serializeAyar(a: TahsilatBildirimAyar): Record<string, unknown> {
+/** Prisma SELECT listesi — sessiz kolon yokken tam model okuması patlamasın. */
+const AYAR_SELECT_BASE = {
+  id: true,
+  tenantId: true,
+  otomasyonAktif: true,
+  testModu: true,
+  izinliSaatBaslangic: true,
+  izinliSaatBitis: true,
+  otomatikSmsAktif: true,
+  dusukSmsBakiyeEsigi: true,
+  createdAt: true,
+  updatedAt: true
+} as const
+
+type AyarRow = {
+  id: string
+  tenantId: string
+  otomasyonAktif: boolean
+  testModu: boolean
+  izinliSaatBaslangic: number
+  izinliSaatBitis: number
+  createdAt: Date
+  updatedAt: Date
+  sessizSaatleriDikkateAl?: boolean
+}
+
+export function serializeAyar(a: AyarRow): Record<string, unknown> {
   return {
     id: a.id,
     tenantId: a.tenantId,
@@ -36,6 +69,7 @@ export function serializeAyar(a: TahsilatBildirimAyar): Record<string, unknown> 
     testModu: a.testModu,
     izinliSaatBaslangic: a.izinliSaatBaslangic,
     izinliSaatBitis: a.izinliSaatBitis,
+    sessizSaatleriDikkateAl: Boolean(a.sessizSaatleriDikkateAl),
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString()
   }
@@ -73,21 +107,56 @@ export function serializeSablon(s: TahsilatBildirimSablonu): Record<string, unkn
 }
 
 export async function ensureTenantBildirimDefaults(tenantId: string): Promise<void> {
-  await prisma.tahsilatBildirimAyar.upsert({
-    where: { tenantId },
-    create: {
-      tenantId,
-      otomasyonAktif: false,
-      testModu: true,
-      izinliSaatBaslangic: 600,
-      izinliSaatBitis: 1200,
-      otomatikSmsAktif: false
-    },
-    update: {
-      // Yeni SMS üretimi kapalı tutulur.
-      otomatikSmsAktif: false
-    }
-  })
+  const hasSessizCol = await hasSessizSaatleriDikkateAlColumn()
+
+  if (hasSessizCol) {
+    await prisma.tahsilatBildirimAyar.upsert({
+      where: { tenantId },
+      create: {
+        tenantId,
+        otomasyonAktif: false,
+        testModu: true,
+        izinliSaatBaslangic: BILDIRIM_ONERI_BASLANGIC_DK,
+        izinliSaatBitis: BILDIRIM_ONERI_BITIS_DK,
+        sessizSaatleriDikkateAl: false,
+        otomatikSmsAktif: false
+      },
+      update: {
+        otomatikSmsAktif: false
+      }
+    })
+  } else {
+    // Migration uygulanmamış DB: Prisma upsert RETURNING yeni kolonu ister → P2022.
+    // Ham SQL ile eski kolon setiyle yaz.
+    await prisma.$executeRaw`
+      INSERT INTO tahsilat_bildirim_ayar (
+        id,
+        tenant_id,
+        otomasyon_aktif,
+        test_modu,
+        izinli_saat_baslangic,
+        izinli_saat_bitis,
+        otomatik_sms_aktif,
+        dusuk_sms_bakiye_esigi,
+        created_at,
+        updated_at
+      ) VALUES (
+        gen_random_uuid()::text,
+        ${tenantId},
+        false,
+        true,
+        ${BILDIRIM_ONERI_BASLANGIC_DK},
+        ${BILDIRIM_ONERI_BITIS_DK},
+        false,
+        100,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (tenant_id) DO UPDATE SET
+        otomatik_sms_aktif = false,
+        updated_at = NOW()
+    `
+  }
 
   for (const rule of DEFAULT_RULES) {
     await prisma.tahsilatBildirimKurali.upsert({
@@ -103,7 +172,7 @@ export async function ensureTenantBildirimDefaults(tenantId: string): Promise<vo
         kuralTuru: rule.kuralTuru,
         aktifMi: false,
         gunOffset: rule.gunOffset,
-        gonderimSaatiDk: 600,
+        gonderimSaatiDk: BILDIRIM_ONERI_BASLANGIC_DK,
         kanal: BildirimKanali.WHATSAPP
       },
       update: {}
@@ -127,6 +196,11 @@ export async function ensureTenantBildirimDefaults(tenantId: string): Promise<vo
     })
   }
 
+  await ensureWhatsAppBaglantiRow(tenantId)
+}
+
+/** Bağlantı durumu için — tahsilat ayar kolonlarına bağımlı değil. */
+export async function ensureWhatsAppBaglantiRow(tenantId: string): Promise<void> {
   await prisma.whatsAppBaglanti.upsert({
     where: { tenantId },
     create: {
@@ -135,6 +209,15 @@ export async function ensureTenantBildirimDefaults(tenantId: string): Promise<vo
     },
     update: {}
   })
+}
+
+async function loadAyarRow(tenantId: string): Promise<AyarRow> {
+  const ayar = await prisma.tahsilatBildirimAyar.findUniqueOrThrow({
+    where: { tenantId },
+    select: AYAR_SELECT_BASE
+  })
+  const sessizSaatleriDikkateAl = await getSessizSaatleriDikkateAl(tenantId)
+  return { ...ayar, sessizSaatleriDikkateAl }
 }
 
 export async function getSettings(tenantId: string): Promise<{
@@ -146,7 +229,7 @@ export async function getSettings(tenantId: string): Promise<{
   await ensureTenantBildirimDefaults(tenantId)
 
   const [ayar, kurallar, sablonlar] = await Promise.all([
-    prisma.tahsilatBildirimAyar.findUniqueOrThrow({ where: { tenantId } }),
+    loadAyarRow(tenantId),
     prisma.tahsilatBildirimKurali.findMany({
       where: { tenantId, kanal: BildirimKanali.WHATSAPP },
       orderBy: { kuralTuru: 'asc' }
@@ -170,6 +253,7 @@ export type UpdateSettingsBody = {
   testModu?: boolean
   izinliSaatBaslangic?: number
   izinliSaatBitis?: number
+  sessizSaatleriDikkateAl?: boolean
 }
 
 export async function updateSettings(
@@ -179,7 +263,7 @@ export async function updateSettings(
   req: Request
 ): Promise<Record<string, unknown>> {
   await ensureTenantBildirimDefaults(tenantId)
-  const existing = await prisma.tahsilatBildirimAyar.findUniqueOrThrow({ where: { tenantId } })
+  const existing = await loadAyarRow(tenantId)
 
   const nextBas = body.izinliSaatBaslangic ?? existing.izinliSaatBaslangic
   const nextBit = body.izinliSaatBitis ?? existing.izinliSaatBitis
@@ -190,6 +274,16 @@ export async function updateSettings(
     throw new AppError(400, BILDIRIM_PENCERE_ARALIK_HATA, 'INVALID_WINDOW')
   }
 
+  if (body.sessizSaatleriDikkateAl !== undefined) {
+    if (!(await hasSessizSaatleriDikkateAlColumn())) {
+      throw new AppError(
+        503,
+        'Sessiz saat ayarı için veritabanı güncellemesi gerekir. Migration henüz uygulanmadı.',
+        'MIGRATION_REQUIRED'
+      )
+    }
+  }
+
   const data: Prisma.TahsilatBildirimAyarUpdateInput = {
     otomatikSmsAktif: false
   }
@@ -198,10 +292,33 @@ export async function updateSettings(
   if (body.izinliSaatBaslangic !== undefined) data.izinliSaatBaslangic = body.izinliSaatBaslangic
   if (body.izinliSaatBitis !== undefined) data.izinliSaatBitis = body.izinliSaatBitis
 
-  const updated = await prisma.tahsilatBildirimAyar.update({
+  await prisma.tahsilatBildirimAyar.update({
     where: { tenantId },
-    data
+    data,
+    select: AYAR_SELECT_BASE
   })
+
+  if (body.sessizSaatleriDikkateAl !== undefined) {
+    try {
+      await setSessizSaatleriDikkateAl(tenantId, body.sessizSaatleriDikkateAl)
+    } catch {
+      throw new AppError(
+        503,
+        'Sessiz saat ayarı kaydedilemedi. Veritabanı güncellemesi gerekir.',
+        'MIGRATION_REQUIRED'
+      )
+    }
+  }
+
+  const updated = await loadAyarRow(tenantId)
+
+  const quietRelatedChanged =
+    body.sessizSaatleriDikkateAl !== undefined ||
+    body.izinliSaatBaslangic !== undefined ||
+    body.izinliSaatBitis !== undefined
+  if (quietRelatedChanged) {
+    await planRandevuJobsForTenant(tenantId)
+  }
 
   const meta = getRequestMeta(req)
   await writeAuditLog({
@@ -322,7 +439,7 @@ export async function updateTemplate(
 }
 
 export async function getWhatsAppDurum(tenantId: string): Promise<Record<string, unknown>> {
-  await ensureTenantBildirimDefaults(tenantId)
+  await ensureWhatsAppBaglantiRow(tenantId)
   const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
   if (!baglanti) {
     return {

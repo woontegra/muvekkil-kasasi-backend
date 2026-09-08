@@ -9,6 +9,12 @@ import { env } from '../config/env.js'
 import { prisma } from '../lib/prisma.js'
 import { evaluateAutoBildirimEligibility } from '../tahsilatBildirim/eligibility.service.js'
 import { isWhatsAppBaglantiConnected } from '../tahsilatBildirim/connection.public.js'
+import { adjustRandevuPlanForQuietHours } from '../tahsilatBildirim/quietHours.js'
+import {
+  BILDIRIM_ONERI_BASLANGIC_DK,
+  BILDIRIM_ONERI_BITIS_DK
+} from '../tahsilatBildirim/sendWindow.js'
+import { getSessizSaatleriDikkateAl } from '../tahsilatBildirim/sessizSaatColumn.js'
 import {
   ensureRandevuBildirimDefaults,
   loadEffectiveRandevuReminders
@@ -98,9 +104,24 @@ export async function planRandevuJobsForRandevu(
   const now = new Date()
   let created = 0
 
+  const tahsilatAyar = await prisma.tahsilatBildirimAyar.findUnique({
+    where: { tenantId },
+    select: {
+      izinliSaatBaslangic: true,
+      izinliSaatBitis: true
+    }
+  })
+  const sessizAktif = await getSessizSaatleriDikkateAl(tenantId)
+  const aktifBas = tahsilatAyar?.izinliSaatBaslangic ?? BILDIRIM_ONERI_BASLANGIC_DK
+  const aktifBit = tahsilatAyar?.izinliSaatBitis ?? BILDIRIM_ONERI_BITIS_DK
+
   for (const r of reminders) {
-    const planlananAt = new Date(randevu.baslangicAt.getTime() - r.offsetDk * 60_000)
-    if (planlananAt <= now) continue
+    const idealAt = new Date(randevu.baslangicAt.getTime() - r.offsetDk * 60_000)
+    const planlananAt = sessizAktif
+      ? adjustRandevuPlanForQuietHours(idealAt, randevu.baslangicAt, aktifBas, aktifBit)
+      : idealAt
+    if (!planlananAt || planlananAt <= now) continue
+    if (planlananAt >= randevu.baslangicAt) continue
 
     const key = idempotencyKey(
       tenantId,
@@ -129,7 +150,23 @@ export async function planRandevuJobsForRandevu(
       })
       created += 1
     } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') continue
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        // Aynı anahtar: yalnızca bekleyen işin saatini güncelle (çift mesaj yok).
+        const updated = await prisma.randevuBildirimIsi.updateMany({
+          where: {
+            idempotencyKey: key,
+            durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+          },
+          data: {
+            planlananAt,
+            lockedAt: null,
+            lockedBy: null,
+            metaSablonId: r.metaSablonId
+          }
+        })
+        if (updated.count > 0) created += 1
+        continue
+      }
       throw e
     }
   }

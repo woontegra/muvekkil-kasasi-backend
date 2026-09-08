@@ -25,7 +25,7 @@ import {
 } from './meta/embeddedSignup.js'
 import { applyWabaWebhookOverride } from './meta/wabaWebhookOverride.js'
 import { graphFetch } from './meta/graphClient.js'
-import { ensureTenantBildirimDefaults } from './settings.service.js'
+import { ensureTenantBildirimDefaults, ensureWhatsAppBaglantiRow } from './settings.service.js'
 import {
   getPublicConnectionStatus,
   isWhatsAppBaglantiConnected,
@@ -42,7 +42,14 @@ export {
 } from './connection.public.js'
 
 export async function getConnectionDurum(tenantId: string): Promise<Record<string, unknown>> {
-  await ensureTenantBildirimDefaults(tenantId)
+  // Bağlantı durumu tahsilat ayar kolonlarına bağımlı olmamalı.
+  await ensureWhatsAppBaglantiRow(tenantId)
+  try {
+    await ensureTenantBildirimDefaults(tenantId)
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[getConnectionDurum] ensureTenantBildirimDefaults failed (non-fatal)', e)
+  }
   const baglanti = await prisma.whatsAppBaglanti.findUnique({ where: { tenantId } })
   if (!baglanti) {
     return {

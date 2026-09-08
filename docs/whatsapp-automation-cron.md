@@ -27,10 +27,11 @@ Tenant WhatsApp bağlantı token’ları DB’de şifreli tutulur; cron’un web
 
 ## Davranış güvenceleri
 
-- **10:00–20:00 TR** gönderim penceresi worker kodunda korunur (`[600, 1200)`).
-- Kural saatleri UI/API’de **5 dk adım**, en geç **19:55** (cron adımıyla uyumlu).
-- Aynı işlerin tekrarı: mevcut `idempotencyKey` + job lock.
-- Eşzamanlı iki cron tick: lock ile aynı iş iki kez işlenmez.
+- Sabit 10:00–20:00 ürün engeli **yok**; tahsilat kuralları büronun seçtiği sabit saatte (00:00–23:55) planlanır/gönderilir.
+- Randevu hatırlatmaları: `randevu.baslangicAt − offsetDk` gerçek zamanında planlanır (ör. 08:30 − 60 dk = 07:30).
+- İsteğe bağlı **Sessiz saatleri dikkate al**: açıksa sessiz dilime denk randevu mesajı randevudan sonraya itilmez, önceki aktif saate alınır.
+- Önerilen aktif aralık (yeni tenant / UI): **09:00–20:00** (zorunlu değil).
+- Aynı işlerin tekrarı: mevcut `idempotencyKey` + job lock; plan güncellemede bekleyen iş saati güncellenir / iptal+yeniden plan.
 - Dry-run (yerel): `npm run bildirim:automation -- --dry-run` → salt okunur önizleme (DB yazmaz, Meta çağırmaz).
 
 ## Dry-run güvencesi

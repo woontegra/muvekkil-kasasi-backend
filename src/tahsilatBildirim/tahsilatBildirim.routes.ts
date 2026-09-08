@@ -18,8 +18,9 @@ import { simulateTodaysJobs } from './simulate.service.js'
 
 import {
   BILDIRIM_GONDERIM_MAX_DK,
-  BILDIRIM_PENCERE_BASLANGIC_DK,
-  BILDIRIM_PENCERE_BITIS_DK,
+  BILDIRIM_GONDERIM_MIN_DK,
+  BILDIRIM_GUN_BASLANGIC_DK,
+  BILDIRIM_GUN_BITIS_EXCLUSIVE_DK,
   BILDIRIM_PENCERE_HATA,
   isGonderimSaatiSecilebilir
 } from './sendWindow.js'
@@ -41,15 +42,16 @@ const updateAyarSchema = z.object({
   izinliSaatBaslangic: z
     .number()
     .int()
-    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
-    .max(BILDIRIM_PENCERE_BITIS_DK)
+    .min(BILDIRIM_GUN_BASLANGIC_DK)
+    .max(BILDIRIM_GUN_BITIS_EXCLUSIVE_DK - 1)
     .optional(),
   izinliSaatBitis: z
     .number()
     .int()
-    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
-    .max(BILDIRIM_PENCERE_BITIS_DK)
-    .optional()
+    .min(BILDIRIM_GUN_BASLANGIC_DK + 1)
+    .max(BILDIRIM_GUN_BITIS_EXCLUSIVE_DK)
+    .optional(),
+  sessizSaatleriDikkateAl: z.boolean().optional()
 })
 
 const updateKuralSchema = z.object({
@@ -58,7 +60,7 @@ const updateKuralSchema = z.object({
   gonderimSaatiDk: z
     .number()
     .int()
-    .min(BILDIRIM_PENCERE_BASLANGIC_DK)
+    .min(BILDIRIM_GONDERIM_MIN_DK)
     .max(BILDIRIM_GONDERIM_MAX_DK)
     .refine(isGonderimSaatiSecilebilir, { message: BILDIRIM_PENCERE_HATA })
     .optional()

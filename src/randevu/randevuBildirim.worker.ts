@@ -15,7 +15,6 @@ import { isWhatsAppBaglantiConnected } from '../tahsilatBildirim/connection.publ
 import { renderTemplate, type TemplateVars } from '../tahsilatBildirim/templates.js'
 import { getLibraryEntry, getLibraryEntryByMetaName } from '../tahsilatBildirim/templateLibrary.catalog.js'
 import { buildSendBodyComponentsFromVars } from '../tahsilatBildirim/templateLibrary.components.js'
-import { minutesNowTr } from '../tahsilatBildirim/time.js'
 import {
   ATLAMA_TEMPLATE_DEGISKEN_EKSIK,
   ATLAMA_TEMPLATE_GEREKLI,
@@ -134,7 +133,6 @@ export async function processDueRandevuJobs(
   const limit = Math.max(1, Math.min(options.limit ?? 50, 200))
   const workerId = options.workerId ?? `randevu-worker-${process.pid}`
   const now = new Date()
-  const minutes = minutesNowTr(now)
 
   const result = empty()
   const ids = await claimDueRandevuJobs({ limit, workerId, tenantId: options.tenantId, now })
@@ -167,17 +165,6 @@ export async function processDueRandevuJobs(
 
     const ayar = await prisma.randevuBildirimAyar.findUnique({ where: { tenantId: job.tenantId } })
     if (!ayar?.otomasyonAktif && !options.simulateOnly) {
-      await prisma.randevuBildirimIsi.update({
-        where: { id },
-        data: { durum: BildirimIsDurumu.PLANLANDI, lockedAt: null, lockedBy: null }
-      })
-      continue
-    }
-
-    const tahsilatAyar = await prisma.tahsilatBildirimAyar.findUnique({ where: { tenantId: job.tenantId } })
-    const winStart = tahsilatAyar?.izinliSaatBaslangic ?? 600
-    const winEnd = tahsilatAyar?.izinliSaatBitis ?? 1200
-    if (minutes < winStart || minutes >= winEnd) {
       await prisma.randevuBildirimIsi.update({
         where: { id },
         data: { durum: BildirimIsDurumu.PLANLANDI, lockedAt: null, lockedBy: null }

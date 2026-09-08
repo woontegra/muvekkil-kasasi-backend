@@ -21,7 +21,7 @@ import { isWhatsAppBaglantiConnected } from './connection.public.js'
 import { DEFAULT_TEMPLATES, renderTemplate, type TemplateVars } from './templates.js'
 import { getLibraryEntry, getLibraryEntryByMetaName } from './templateLibrary.catalog.js'
 import { buildSendBodyComponentsFromVars } from './templateLibrary.components.js'
-import { minutesNowTr, ymdTr } from './time.js'
+import { ymdTr } from './time.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
   return tutarlar.reduce((s, o) => s + Number(o.tutar), 0)
@@ -63,7 +63,9 @@ export type ProcessDueJobsOptions = {
    * Manuel kural testi için — normal cron worker bunu kullanmaz.
    */
   onlyJobIds?: string[]
-  /** 10:00–20:00 penceresini atla (yalnızca onlyJobIds ile). */
+  /**
+   * @deprecated Sabit gönderim penceresi kaldırıldı; bayrak yok sayılır (manuel test her saatte çalışır).
+   */
   bypassSendWindow?: boolean
   /** Müvekkil/dosya/taksit eligibility atla (yalnızca onlyJobIds ile). */
   bypassEligibility?: boolean
@@ -83,6 +85,7 @@ export type ProcessDueJobsResult = {
   atlananSablon: number
   basarisiz: number
   skippedAlreadyDone: number
+  /** @deprecated Sabit pencere yok; her zaman 0. */
   deferredWindow: number
   skippedManual: number
   /** Otomatik Cloud: onaylı Meta utility + components mapping yok → ATLANDI (text fallback yok). */
@@ -205,7 +208,6 @@ export async function processDueJobs(
   const workerId = options.workerId ?? `worker-${process.pid}`
   const now = new Date()
   const todayYmd = ymdTr(now)
-  const minutes = minutesNowTr(now)
 
   const result: ProcessDueJobsResult = {
     processed: 0,
@@ -286,22 +288,6 @@ export async function processDueJobs(
       where: { tenantId: job.tenantId }
     })
     if (!ayar?.otomasyonAktif && !options.simulateOnly && !options.bypassAutomationGates) {
-      await prisma.tahsilatBildirimIsi.update({
-        where: { id },
-        data: {
-          durum: BildirimIsDurumu.PLANLANDI,
-          lockedAt: null,
-          lockedBy: null
-        }
-      })
-      continue
-    }
-
-    const winStart = ayar?.izinliSaatBaslangic ?? 600
-    const winEnd = ayar?.izinliSaatBitis ?? 1200
-
-    if (!options.bypassSendWindow && (minutes < winStart || minutes >= winEnd)) {
-      result.deferredWindow += 1
       await prisma.tahsilatBildirimIsi.update({
         where: { id },
         data: {
