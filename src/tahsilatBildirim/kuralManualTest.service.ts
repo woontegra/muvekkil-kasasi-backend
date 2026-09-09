@@ -1,6 +1,8 @@
 /**
- * Büro sahibi onaylı tek-kural WhatsApp test gönderimi.
- * Normal otomasyon kuyruğunu / diğer tenantları işlemez; vade günü şartını yalnızca bu yolda baypas eder.
+ * Büro sahibi onaylı tek-kural WhatsApp test gönderimi
+ * (VADEDEN_ONCE | VADE_GUNU | VADE_SONRASI — kuralın kendi seçili Meta şablonu).
+ * Normal otomasyon kuyruğunu / diğer tenantları işlemez.
+ * Otomasyon zaman şartlarını (vade öncesi X gün / vade günü / gecikme) yalnızca bu yolda baypas eder.
  * Sabit gönderim penceresi yoktur — manuel test her saatte çalışır.
  */
 import type { Request } from 'express'
@@ -174,9 +176,6 @@ export async function previewKuralTest(
 ): Promise<Record<string, unknown>> {
   assertBuroSahibi(role)
   const kural = await loadKuralForTenant(tenantId, kuralId)
-  if (!kural.aktifMi) {
-    throw new AppError(409, 'Pasif kural için test gönderilemez. Önce kuralı aktif edin.', 'RULE_INACTIVE')
-  }
   const taksit = await loadTaksitForTenant(tenantId, taksitId)
   const kalan = Math.max(0, Number(taksit.tutar) - sumOdeme(taksit.odemeler))
   if (kalan <= 0.001) {
@@ -236,10 +235,22 @@ export async function previewKuralTest(
     templateEksik:
       components && !components.ok ? components.missing : !meta ? ['metaSablon'] : !entry ? ['libraryKey'] : [],
     notlar: [
-      'Test, vade günü şartını bilinçli olarak geçer; gönderim her saatte yapılabilir.',
-      'Gerçek onaylı Meta şablonu ve worker gönderim yolu kullanılır.',
+      timingBypassNote(kural.kuralTuru),
+      'Gerçek onaylı Meta şablonu (bu kurala atanmış) ve worker gönderim yolu kullanılır.',
       'Mesaj, girdiğiniz test telefonuna gider; müvekkil telefonu kullanılmaz.'
     ]
+  }
+}
+
+function timingBypassNote(kuralTuru: BildirimKuralTuru): string {
+  switch (kuralTuru) {
+    case BildirimKuralTuru.VADEDEN_ONCE:
+      return 'Manuel test: vade öncesi gün şartı uygulanmaz; gönderim her saatte yapılabilir.'
+    case BildirimKuralTuru.VADE_SONRASI:
+      return 'Manuel test: gecikme/vade sonrası gün şartı uygulanmaz; gönderim her saatte yapılabilir.'
+    case BildirimKuralTuru.VADE_GUNU:
+    default:
+      return 'Manuel test: vade günü şartı uygulanmaz; gönderim her saatte yapılabilir.'
   }
 }
 
@@ -273,9 +284,6 @@ export async function sendKuralTest(input: {
   }
 
   const kural = await loadKuralForTenant(input.tenantId, input.kuralId)
-  if (!kural.aktifMi) {
-    throw new AppError(409, 'Pasif kural için test gönderilemez.', 'RULE_INACTIVE')
-  }
   if (!kural.metaSablonId || !kural.metaSablon || kural.metaSablon.statusNormalized !== 'ONAYLANDI') {
     throw new AppError(
       409,

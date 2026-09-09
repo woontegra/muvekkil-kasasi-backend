@@ -45,11 +45,34 @@ export function mapMetaStatusToBildirim(statusRaw: string): BildirimIsDurumu | n
   }
 }
 
+/** failed status errors[0] → güvenli özet (token/telefon yok). */
+export function formatMetaStatusFailureSummary(
+  err?: {
+    code?: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  } | null
+): string {
+  if (!err) return 'Meta failed'
+  const parts = [err.title, err.message, err.error_data?.details]
+    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+    .filter(Boolean)
+  return (parts.join(' — ') || 'Meta failed').slice(0, 400)
+}
+
 type MetaStatus = {
   id?: string
   status?: string
   timestamp?: string
-  errors?: Array<{ code?: number; title?: string }>
+  recipient_id?: string
+  errors?: Array<{
+    code?: number
+    title?: string
+    message?: string
+    href?: string
+    error_data?: { details?: string }
+  }>
 }
 
 type MetaMessage = {
@@ -183,7 +206,7 @@ export async function processWhatsAppWebhookPayload(
                   durum: nextDurum,
                   ...(nextDurum === BildirimIsDurumu.BASARISIZ
                     ? {
-                        hataOzeti: (st.errors?.[0]?.title || 'Meta failed').slice(0, 400),
+                        hataOzeti: formatMetaStatusFailureSummary(st.errors?.[0]).slice(0, 400),
                         sonProviderHataKodu:
                           st.errors?.[0]?.code != null
                             ? `META_${st.errors[0].code}`

@@ -6,7 +6,9 @@ export class AppError extends Error {
   constructor(
     public statusCode: number,
     message: string,
-    public code?: string
+    public code?: string,
+    /** Güvenli teşhis / doğrulama detayı — secret içermemeli. */
+    public details?: unknown
   ) {
     super(message)
     this.name = 'AppError'
@@ -35,12 +37,22 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
   if (err instanceof AppError) {
     const code = err.code ?? 'APP_ERROR'
-    res.status(err.statusCode).json({
+    const body: {
+      ok: false
+      error: string
+      code: string
+      message: string
+      details?: unknown
+    } = {
       ok: false,
       error: code,
       code,
       message: err.message
-    })
+    }
+    if (err.details !== undefined) {
+      body.details = err.details
+    }
+    res.status(err.statusCode).json(body)
     return
   }
   // eslint-disable-next-line no-console
