@@ -266,6 +266,30 @@ export function buildPasswordResetUrl(plainToken: string): string {
   return `${base}/reset-password?token=${encodeURIComponent(plainToken)}`
 }
 
+/**
+ * Platform Admin bildirim alıcısı.
+ * Öncelik: ADMIN_NOTIFICATION_EMAIL → GMAIL_USER → MAIL_USER → SMTP_USER → DEFAULT_MAIL_USER
+ */
+export function getAdminNotificationEmail(): string | null {
+  const candidates = [
+    optionalTrim(env.ADMIN_NOTIFICATION_EMAIL),
+    optionalTrim(env.GMAIL_USER),
+    optionalTrim(env.MAIL_USER),
+    optionalTrim(env.SMTP_USER),
+    optionalTrim(env.DEFAULT_MAIL_USER)
+  ]
+  for (const c of candidates) {
+    if (c && c.includes('@')) return c
+  }
+  return null
+}
+
+/** Platform Admin → WhatsApp Mesaj Paket Talepleri ekranı. */
+export function getAdminWhatsAppPaketTalepleriUrl(): string {
+  const base = getFrontendBaseUrl().replace(/\/$/, '')
+  return `${base}/admin/whatsapp-paket-talepleri`
+}
+
 export function getMailFromAddress(): string | undefined {
   const cfg = getResolvedMailTransport()
   if (cfg.from) return cfg.from

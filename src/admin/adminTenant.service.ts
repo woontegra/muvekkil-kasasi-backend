@@ -21,6 +21,7 @@ import {
   provisionTenantWithOwner
 } from '../tenant/provisionTenantWithOwner.js'
 import { extendTenantLicense } from '../tenant/extendTenantLicense.js'
+import { tryGrantAnnualIncludedCreditsAfterLicensePeriod } from '../tahsilatBildirim/whatsappMesajKredi.service.js'
 import { effectiveLicenseEnd } from '../tenant/tenantLicense.js'
 import { issueActivationToken } from '../auth/passwordReset.service.js'
 import { issueOwnerTemporaryPassword } from '../auth/ownerTemporaryPassword.js'
@@ -872,6 +873,29 @@ export async function adminCreateTenantWithOwner(
       userAgent: meta.userAgent
     }
   )
+
+  const renewalDays = Math.max(
+    1,
+    Math.ceil((dayStart(license.bitis).getTime() - dayStart(license.baslangic).getTime()) / 86_400_000)
+  )
+  const bitisGun = dayStart(license.bitis).toISOString().slice(0, 10)
+  const periodKey = `admin-provision:${result.tenant.id}:${body.lisansPaketi ?? 'CUSTOM'}:${bitisGun}`
+  try {
+    await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+      tenantId: result.tenant.id,
+      licensePeriodId: periodKey,
+      demoMu: license.demoMu,
+      lisansDurumu: license.lisansDurumu,
+      renewalDays,
+      lisansPaketi: body.lisansPaketi ?? null
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[whatsapp-credit] annual grant after admin create failed', {
+      tenantId: result.tenant.id,
+      err: err instanceof Error ? err.message : String(err)
+    })
+  }
 
   let mailSent = false
   let mailError: string | undefined

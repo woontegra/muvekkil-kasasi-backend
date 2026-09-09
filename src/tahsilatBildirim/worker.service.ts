@@ -22,6 +22,11 @@ import { DEFAULT_TEMPLATES, renderTemplate, type TemplateVars } from './template
 import { getLibraryEntry, getLibraryEntryByMetaName } from './templateLibrary.catalog.js'
 import { buildSendBodyComponentsFromVars } from './templateLibrary.components.js'
 import { ymdTr } from './time.js'
+import {
+  consumeForJob,
+  refundForJob,
+  WHATSAPP_KREDI_YETERSIZ
+} from './whatsappMesajKredi.service.js'
 
 function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
   return tutarlar.reduce((s, o) => s + Number(o.tutar), 0)
@@ -91,6 +96,8 @@ export type ProcessDueJobsResult = {
   /** Otomatik Cloud: onaylı Meta utility + components mapping yok → ATLANDI (text fallback yok). */
   skippedTemplateRequired: number
   skippedSmsDeprecated: number
+  /** Otomatik Cloud: bakiye yok → Meta çağrılmaz, iş PLANLANDI bırakılır. */
+  skippedKrediYetersiz: number
 }
 
 /** Kullanıcıya gösterilen atlama kodu — teknik BASARISIZ değil. */
@@ -188,7 +195,8 @@ export async function processDueJobs(
     deferredWindow: 0,
     skippedManual: 0,
     skippedTemplateRequired: 0,
-    skippedSmsDeprecated: 0
+    skippedSmsDeprecated: 0,
+    skippedKrediYetersiz: 0
   })
 
   if (!env.WHATSAPP_AUTOMATION_ENABLED && !options.bypassAutomationGates) {
@@ -222,7 +230,8 @@ export async function processDueJobs(
     deferredWindow: 0,
     skippedManual: 0,
     skippedTemplateRequired: 0,
-    skippedSmsDeprecated: 0
+    skippedSmsDeprecated: 0,
+    skippedKrediYetersiz: 0
   }
 
   const ids =
@@ -551,6 +560,27 @@ export async function processDueJobs(
       }
 
       const provider = resolveWhatsAppProvider('WHATSAPP_CLOUD_API')
+      const chargeCredit =
+        !options.simulateOnly && !options.bypassAutomationGates && !job.manuelTetikleme
+
+      if (chargeCredit) {
+        const credit = await consumeForJob(job.tenantId, job.id)
+        if (!credit.ok) {
+          result.skippedKrediYetersiz += 1
+          await prisma.tahsilatBildirimIsi.update({
+            where: { id },
+            data: {
+              durum: BildirimIsDurumu.PLANLANDI,
+              sonProviderHataKodu: WHATSAPP_KREDI_YETERSIZ,
+              hataOzeti: 'WhatsApp mesaj kredisi yetersiz',
+              lockedAt: null,
+              lockedBy: null
+            }
+          })
+          continue
+        }
+      }
+
       const sendResult = await provider.send({
         tenantId: job.tenantId,
         toE164: phoneE164,
@@ -603,6 +633,10 @@ export async function processDueJobs(
           })
         ])
         continue
+      }
+
+      if (chargeCredit) {
+        await refundForJob(job.tenantId, job.id, 'Meta senkron gönderim hatası — kredi iadesi')
       }
 
       result.basarisiz += 1

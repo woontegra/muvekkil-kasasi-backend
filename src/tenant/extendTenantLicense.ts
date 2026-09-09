@@ -2,6 +2,7 @@ import { Prisma, type Tenant, type TenantLicenseRenewal } from '@prisma/client'
 import type { LicenseRenewalSource } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { tryGrantAnnualIncludedCreditsAfterLicensePeriod } from '../tahsilatBildirim/whatsappMesajKredi.service.js'
 
 export function dayStart(d: Date): Date {
   const x = new Date(d)
@@ -140,6 +141,25 @@ export async function extendTenantLicense(input: ExtendTenantLicenseInput): Prom
 
     return { tenant, renewal }
   })
+
+  // Yıllık lisans dönemi → dahil WhatsApp mesaj kredisi (demo/aylık hariç; idempotent).
+  try {
+    await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+      tenantId: updated.tenant.id,
+      licensePeriodId: updated.renewal.id,
+      demoMu: isDemo || updated.tenant.demoMu,
+      lisansDurumu: updated.tenant.lisansDurumu,
+      renewalDays
+    })
+  } catch (err) {
+    // Lisans uzatma başarılı; kredi hatası lisans sonucunu bozmaz — sonraki idempotent çağrı iyileştirir.
+    // eslint-disable-next-line no-console
+    console.error('[whatsapp-credit] annual grant after extend failed', {
+      tenantId: updated.tenant.id,
+      renewalId: updated.renewal.id,
+      err: err instanceof Error ? err.message : String(err)
+    })
+  }
 
   return {
     tenant: updated.tenant,

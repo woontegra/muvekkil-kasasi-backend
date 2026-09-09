@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
 import { Router } from 'express'
+import { WhatsAppMesajPaketTalepDurum } from '@prisma/client'
 import { z } from 'zod'
 import { serializeTenant } from '../auth/auth.service.js'
 import { requireAdminAuth } from '../middleware/requireAdminAuth.js'
@@ -8,6 +9,11 @@ import { adminWhatsAppOutboundTestRateLimit } from '../middleware/rateLimits.js'
 import { importExistingMetaConnection } from '../tahsilatBildirim/connection.importExisting.js'
 import { sendAdminOutboundCloudTest } from '../tahsilatBildirim/connection.outboundTest.js'
 import { sendControlledSessionCloudTextTest } from '../tahsilatBildirim/connection.controlledSessionTest.js'
+import {
+  disableAdminWhatsAppWebhookOverride,
+  enableAdminWhatsAppWebhookOverride,
+  getAdminWhatsAppWebhookOverrideStatus
+} from './adminWhatsAppWebhookOverride.service.js'
 import { adminAuthRouter } from './adminAuth.routes.js'
 import { getAdminMe } from './adminAuth.service.js'
 import { getAdminDashboardStats } from './adminDashboard.service.js'
@@ -21,8 +27,20 @@ import {
   adminSuperAdminResetPasswordBodySchema,
   adminSuperAdminUpdateSchema,
   adminTenantUpdateBodySchema,
-  adminUserUpdateBodySchema
+  adminUserUpdateBodySchema,
+  adminWhatsAppKrediAdjustSchema,
+  adminWhatsAppPaketTalepResolveSchema
 } from './admin.schemas.js'
+import {
+  adminAdjustTenantWhatsAppKredi,
+  adminGetTenantWhatsAppKredi,
+  adminListTenantWhatsAppKrediHareketler
+} from './adminWhatsAppKredi.service.js'
+import {
+  adminListPaketTalepleri,
+  adminOnaylaPaketTalebi,
+  adminReddetPaketTalebi
+} from './adminWhatsAppPaketTalep.service.js'
 import {
   adminChangeOwnPassword,
   adminGetSettingsProfile,
@@ -324,6 +342,107 @@ adminRouter.get(
   })
 )
 
+adminRouter.get(
+  '/tenants/:id/whatsapp-kredi',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const out = await adminGetTenantWhatsAppKredi(id)
+    res.json(out)
+  })
+)
+
+adminRouter.get(
+  '/tenants/:id/whatsapp-kredi/hareketler',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25))
+    const offset = Math.max(0, Number(req.query.offset) || 0)
+    const out = await adminListTenantWhatsAppKrediHareketler(id, { limit, offset })
+    res.json(out)
+  })
+)
+
+adminRouter.post(
+  '/tenants/:id/whatsapp-kredi/adjust',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const body = adminWhatsAppKrediAdjustSchema.parse(req.body ?? {})
+    const out = await adminAdjustTenantWhatsAppKredi({
+      tenantId: id,
+      adminId: req.adminAuth!.sub,
+      req,
+      yon: body.yon,
+      miktar: body.miktar,
+      aciklama: body.aciklama
+    })
+    res.json(out)
+  })
+)
+
+adminRouter.get(
+  '/whatsapp-mesaj-paket-talepleri',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const durumRaw = typeof req.query.durum === 'string' ? req.query.durum : undefined
+    const durum =
+      durumRaw &&
+      Object.values(WhatsAppMesajPaketTalepDurum).includes(
+        durumRaw as WhatsAppMesajPaketTalepDurum
+      )
+        ? (durumRaw as WhatsAppMesajPaketTalepDurum)
+        : undefined
+    const tenantId =
+      typeof req.query.tenantId === 'string' && req.query.tenantId.trim()
+        ? z.string().uuid().parse(req.query.tenantId)
+        : undefined
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
+    const offset = Math.max(0, Number(req.query.offset) || 0)
+    const out = await adminListPaketTalepleri({ durum, tenantId, limit, offset })
+    res.json(out)
+  })
+)
+
+adminRouter.post(
+  '/whatsapp-mesaj-paket-talepleri/:id/onayla',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const body = adminWhatsAppPaketTalepResolveSchema.parse(req.body ?? {})
+    const out = await adminOnaylaPaketTalebi({
+      talepId: id,
+      adminId: req.adminAuth!.sub,
+      req,
+      adminNotu: body.adminNotu
+    })
+    res.json(out)
+  })
+)
+
+adminRouter.post(
+  '/whatsapp-mesaj-paket-talepleri/:id/reddet',
+  requireAdminAuth,
+  platformStaff,
+  asyncHandler(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const body = adminWhatsAppPaketTalepResolveSchema.parse(req.body ?? {})
+    const out = await adminReddetPaketTalebi({
+      talepId: id,
+      adminId: req.adminAuth!.sub,
+      req,
+      adminNotu: body.adminNotu
+    })
+    res.json(out)
+  })
+)
+
 adminRouter.put(
   '/users/:userId',
   requireAdminAuth,
@@ -458,6 +577,84 @@ adminRouter.post(
       { tenantId: body.tenantId, to: body.to, confirm: true },
       req
     )
+    res.json(out)
+  })
+)
+
+/**
+ * WABA-level webhook override durumu (SUPER_ADMIN).
+ * WABA ID / callback body’den alınmaz — tenant bağlantısı + env.
+ */
+adminRouter.get(
+  '/whatsapp/webhook-override',
+  requireAdminAuth,
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const tenantId = z.string().uuid().parse(req.query.tenantId)
+    const out = await getAdminWhatsAppWebhookOverrideStatus(tenantId)
+    res.json(out)
+  })
+)
+
+/**
+ * Bu tenant WABA’sını MK webhook URL’sine yönlendir (SUPER_ADMIN).
+ * Meta App global callback değiştirilmez. confirm=true zorunlu.
+ */
+adminRouter.post(
+  '/whatsapp/webhook-override/enable',
+  requireAdminAuth,
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        tenantId: z.string().uuid(),
+        confirm: z.literal(true),
+        wabaId: z.unknown().optional(),
+        callbackUrl: z.unknown().optional(),
+        override_callback_uri: z.unknown().optional()
+      })
+      .strict()
+      .parse(req.body ?? {})
+    if (body.wabaId != null || body.callbackUrl != null || body.override_callback_uri != null) {
+      res.status(400).json({
+        ok: false,
+        code: 'OVERRIDE_PARAMS_NOT_ALLOWED',
+        message: 'WABA ID ve callback URL istemciden kabul edilmez; sunucu kayıtları kullanılır.'
+      })
+      return
+    }
+    const out = await enableAdminWhatsAppWebhookOverride(req.adminAuth!.sub, body.tenantId, req)
+    res.json(out)
+  })
+)
+
+/**
+ * WABA alternate callback kaldır (Meta: boş POST subscribed_apps).
+ * App global callback’e dokunulmaz. confirm=true zorunlu.
+ */
+adminRouter.post(
+  '/whatsapp/webhook-override/disable',
+  requireAdminAuth,
+  superOnly,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        tenantId: z.string().uuid(),
+        confirm: z.literal(true),
+        wabaId: z.unknown().optional(),
+        callbackUrl: z.unknown().optional()
+      })
+      .strict()
+      .parse(req.body ?? {})
+    if (body.wabaId != null || body.callbackUrl != null) {
+      res.status(400).json({
+        ok: false,
+        code: 'OVERRIDE_PARAMS_NOT_ALLOWED',
+        message: 'WABA ID ve callback URL istemciden kabul edilmez; sunucu kayıtları kullanılır.'
+      })
+      return
+    }
+    const out = await disableAdminWhatsAppWebhookOverride(req.adminAuth!.sub, body.tenantId, req)
     res.json(out)
   })
 )

@@ -79,7 +79,11 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     res.status(500).json({
       ok: false,
       error: 'INTERNAL_ERROR',
-      message: 'Bildirim ayarları şu an yüklenemedi. Lütfen daha sonra tekrar deneyin.'
+      // Eski sabit “Bildirim ayarları...” metni yanlış ekranlarda yanıltıyordu.
+      message:
+        env.NODE_ENV === 'production'
+          ? 'İşlem şu an tamamlanamadı. Lütfen daha sonra tekrar deneyin.'
+          : `Veritabanı işlemi başarısız oldu: ${errMessage.slice(0, 240)}`
     })
     return
   }

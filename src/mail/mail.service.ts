@@ -5,6 +5,8 @@ import { AppError } from '../middleware/errorHandler.js'
 import {
   allowMailDevConsoleFallback,
   buildPasswordResetUrl,
+  getAdminNotificationEmail,
+  getAdminWhatsAppPaketTalepleriUrl,
   getMkLoginUrl,
   getMailFromAddress,
   getResolvedMailTransport
@@ -708,5 +710,215 @@ export async function sendLicenseExpiryReminderEmail(
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[mail] License expiry reminder FAILED —', msg)
     return { sent: false, error: msg }
+  }
+}
+
+// ——— Platform Admin: WhatsApp mesaj paketi satın alma talebi ———
+
+export type AdminWhatsAppPaketTalepMailParams = {
+  buroAdi: string
+  tenantId: string
+  packageId: string
+  paketLabel: string
+  mesajAdedi: number
+  fiyatTL: number
+  /** Havale/EFT açıklaması — Meta WA template’e eklenmez. */
+  paymentReference: string
+  talepCreatedAt: string
+  reviewUrl: string
+  /** Test / override; yoksa getAdminNotificationEmail() */
+  to?: string
+}
+
+export type AdminWhatsAppPaketTalepMailResult = {
+  sent: boolean
+  skipped?: boolean
+  error?: string
+  toMasked?: string
+  subject?: string
+}
+
+export function buildAdminWhatsAppPaketTalepSubject(params: {
+  buroAdi: string
+  mesajAdedi: number
+}): string {
+  return `Yeni WhatsApp Mesaj Paketi Talebi – ${params.buroAdi} – ${params.mesajAdedi.toLocaleString('tr-TR')} Mesaj`
+}
+
+function formatDateTimeTr(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('tr-TR', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return iso
+  }
+}
+
+export function buildAdminWhatsAppPaketTalepEmailHtml(
+  params: AdminWhatsAppPaketTalepMailParams
+): string {
+  const subject = buildAdminWhatsAppPaketTalepSubject(params)
+  const tarih = formatDateTimeTr(params.talepCreatedAt)
+  const fiyat = `${params.fiyatTL.toLocaleString('tr-TR')} TL`
+  const year = new Date().getFullYear()
+
+  return `<!DOCTYPE html>
+<html lang="tr" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;width:100% !important;background-color:#f3f6fb;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f3f6fb;margin:0;padding:0;width:100%;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;background-color:#ffffff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 4px 24px rgba(15,23,42,0.08);overflow:hidden;">
+          <tr>
+            <td style="padding:32px 40px 24px 40px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+              <p style="margin:0 0 4px;font-size:11px;font-weight:700;letter-spacing:0.14em;color:#64748b;text-transform:uppercase;">WOONTEGRA</p>
+              <p style="margin:0;font-size:18px;font-weight:700;color:#0f172a;line-height:1.3;">Müvekkil Kasa Defteri</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 40px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr><td style="border-top:1px solid #e2e8f0;font-size:0;line-height:0;">&nbsp;</td></tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 40px 8px 40px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+              <h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#0f172a;line-height:1.35;">Yeni WhatsApp Mesaj Paketi Talebi</h1>
+              <p style="margin:0;font-size:15px;line-height:1.65;color:#334155;">Bir büro ek mesaj paketi satın alma talebi oluşturdu. Ödeme doğrulandıktan sonra Platform Admin panelinden onaylayabilirsiniz.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 40px 8px 40px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+              ${welcomeInfoBox('Talep özeti', [
+                { label: 'Büro adı', value: escapeHtml(params.buroAdi) },
+                { label: 'Tenant / Büro ID', value: escapeHtml(params.tenantId), mono: true },
+                { label: 'Paket', value: escapeHtml(params.paketLabel) },
+                { label: 'Mesaj adedi', value: escapeHtml(params.mesajAdedi.toLocaleString('tr-TR')) },
+                { label: 'Fiyat', value: escapeHtml(fiyat) },
+                {
+                  label: 'Ödeme referansı',
+                  value: escapeHtml(params.paymentReference),
+                  mono: true
+                },
+                { label: 'Talep tarihi', value: escapeHtml(tarih) },
+                { label: 'Durum', value: 'Bekliyor' }
+              ])}
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:12px 40px 28px 40px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+              ${welcomeActionButton(params.reviewUrl, 'Talebi İncele', '#2563eb')}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 40px 28px 40px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+              <p style="margin:0;font-size:12px;line-height:1.55;color:#94a3b8;">Bu e-posta Platform Admin bildirimi olarak gönderilmiştir. Bağlantı yalnızca admin oturumu ile açılır.</p>
+              <p style="margin:12px 0 0;font-size:12px;color:#94a3b8;">© ${year} Woontegra</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+}
+
+export function buildAdminWhatsAppPaketTalepEmailText(
+  params: AdminWhatsAppPaketTalepMailParams
+): string {
+  const subject = buildAdminWhatsAppPaketTalepSubject(params)
+  const tarih = formatDateTimeTr(params.talepCreatedAt)
+  return [
+    'WOONTEGRA — Müvekkil Kasa Defteri',
+    '',
+    subject,
+    '',
+    `Büro adı: ${params.buroAdi}`,
+    `Tenant / Büro ID: ${params.tenantId}`,
+    `Paket: ${params.paketLabel}`,
+    `Mesaj adedi: ${params.mesajAdedi.toLocaleString('tr-TR')}`,
+    `Fiyat: ${params.fiyatTL.toLocaleString('tr-TR')} TL`,
+    `Ödeme referansı: ${params.paymentReference}`,
+    `Talep tarihi: ${tarih}`,
+    'Durum: Bekliyor',
+    '',
+    'Talebi İncele:',
+    params.reviewUrl,
+    '',
+    '—',
+    `© ${new Date().getFullYear()} Woontegra`
+  ].join('\n')
+}
+
+/**
+ * Platform Admin’e yeni WhatsApp paket talebi bildirimi.
+ * Alıcı yoksa / SMTP yoksa sent:false döner; throw etmez.
+ */
+export async function sendAdminWhatsAppPaketTalepEmail(
+  params: Omit<AdminWhatsAppPaketTalepMailParams, 'reviewUrl' | 'to'> & {
+    reviewUrl?: string
+    to?: string
+  }
+): Promise<AdminWhatsAppPaketTalepMailResult> {
+  const to = (params.to?.trim() || getAdminNotificationEmail() || '').trim()
+  const reviewUrl = params.reviewUrl?.trim() || getAdminWhatsAppPaketTalepleriUrl()
+  const full: AdminWhatsAppPaketTalepMailParams = { ...params, to, reviewUrl }
+  const subject = buildAdminWhatsAppPaketTalepSubject(full)
+  const toMasked = to ? maskEmail(to) : undefined
+
+  if (!to) {
+    console.warn('[mail] Admin WhatsApp paket talep bildirimi atlandı — alıcı yok (ADMIN_NOTIFICATION_EMAIL)')
+    return { sent: false, skipped: true, error: 'admin_notification_email_missing', subject }
+  }
+
+  console.info('[mail] Admin WhatsApp paket talep bildirimi attempt — recipient:', toMasked)
+
+  const cfg = getResolvedMailTransport()
+  const tx = getTransporter()
+  const from = cfg.from ?? getMailFromAddress()
+
+  if (!tx || !from) {
+    const reason = describeWelcomeMailConfigError(cfg)
+    if (allowMailDevConsoleFallback()) {
+      console.info('[DEV ONLY] Admin WhatsApp paket talep mail (SMTP yok):', {
+        to: toMasked,
+        subject,
+        reviewUrl,
+        buroAdi: full.buroAdi,
+        mesajAdedi: full.mesajAdedi,
+        fiyatTL: full.fiyatTL
+      })
+      return { sent: false, skipped: true, error: 'smtp_not_configured_dev', toMasked, subject }
+    }
+    console.error('[mail] Admin WhatsApp paket talep bildirimi FAILED —', reason)
+    return { sent: false, error: reason, toMasked, subject }
+  }
+
+  try {
+    await tx.sendMail({
+      from,
+      to,
+      subject,
+      text: buildAdminWhatsAppPaketTalepEmailText(full),
+      html: buildAdminWhatsAppPaketTalepEmailHtml(full)
+    })
+    console.info('[mail] Admin WhatsApp paket talep bildirimi sent — recipient:', toMasked)
+    return { sent: true, toMasked, subject }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[mail] Admin WhatsApp paket talep bildirimi FAILED —', msg)
+    return { sent: false, error: msg, toMasked, subject }
   }
 }

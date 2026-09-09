@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import { AppError } from '../../middleware/errorHandler.js'
-import { LICENSE_PURCHASE_PRODUCT_CODE } from './licensePurchase.service.js'
+import { LICENSE_PURCHASE_PRODUCT_CODE } from './licensePurchase.constants.js'
 
 const jsonNullToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess((v: unknown) => (v === null ? undefined : v), schema)
+
+const ALLOWED_PRODUCT_CODES = [LICENSE_PURCHASE_PRODUCT_CODE] as const
 
 export const licensePurchaseResolveBodySchema = z
   .object({
@@ -50,18 +52,24 @@ export const licensePurchaseFulfillBodySchema = z
   .strict()
   .superRefine((b, ctx) => {
     const raw = (b.productCode ?? '').trim()
-    if (raw && raw !== LICENSE_PURCHASE_PRODUCT_CODE) {
+    if (raw && !(ALLOWED_PRODUCT_CODES as readonly string[]).includes(raw)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `Yalnızca ${LICENSE_PURCHASE_PRODUCT_CODE} ürün kodu desteklenir.`,
+        message: `Desteklenen ürün kodları: ${ALLOWED_PRODUCT_CODES.join(', ')}`,
         path: ['productCode']
       })
     }
   })
-  .transform((b) => ({
-    ...b,
-    productCode: LICENSE_PURCHASE_PRODUCT_CODE as typeof LICENSE_PURCHASE_PRODUCT_CODE
-  }))
+  .transform((b) => {
+    const raw = (b.productCode ?? '').trim()
+    const productCode = raw
+      ? (raw as (typeof ALLOWED_PRODUCT_CODES)[number])
+      : LICENSE_PURCHASE_PRODUCT_CODE
+    return {
+      ...b,
+      productCode
+    }
+  })
 
 export type LicensePurchaseFulfillBody = z.infer<typeof licensePurchaseFulfillBodySchema>
 

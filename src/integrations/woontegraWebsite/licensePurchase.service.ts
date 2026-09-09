@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import type { LicensePurchaseSessionStatus, Tenant, User } from '@prisma/client'
 import { prisma } from '../../lib/prisma.js'
 import { writeAuditLog } from '../../audit/auditService.js'
@@ -8,25 +8,57 @@ import { extendTenantLicense, computeExtensionBaseDate, addDaysFromBase } from '
 import { buildTenantLicenseCurrent } from '../../license/license.service.js'
 import { generateUniqueMusteriNo } from '../../lib/musteriNo.js'
 import { effectiveLicenseEnd } from '../../tenant/tenantLicense.js'
+import { tryGrantAnnualIncludedCreditsAfterLicensePeriod } from '../../tahsilatBildirim/whatsappMesajKredi.service.js'
+import {
+  ABANDONED_WHATSAPP_MESAJ_PAKETI_PRODUCT_CODE,
+  ABANDONED_WHATSAPP_MESAJ_PAKETI_PURPOSE,
+  DEMO_CONVERSION_PURPOSE,
+  LICENSE_PURCHASE_PRODUCT_CODE,
+  LICENSE_PURCHASE_PURPOSE,
+  LICENSE_RENEWAL_PURPOSE
+} from './licensePurchase.constants.js'
+import { hashLicensePurchaseToken, woontegraWebsiteCheckoutBase } from './licensePurchase.shared.js'
 import type {
   LicensePurchaseBindBody,
   LicensePurchaseFulfillBody
 } from './licensePurchase.schemas.js'
 
-export const LICENSE_PURCHASE_PRODUCT_CODE = 'MUVEKKIL_KASA_SAAS' as const
-/** @deprecated Yeni oturumlarda DEMO_CONVERSION kullanılır. */
-export const LICENSE_PURCHASE_PURPOSE = 'LICENSE_PURCHASE' as const
-export const DEMO_CONVERSION_PURPOSE = 'DEMO_CONVERSION' as const
-export const LICENSE_RENEWAL_PURPOSE = 'LICENSE_RENEWAL' as const
+export {
+  LICENSE_PURCHASE_PRODUCT_CODE,
+  LICENSE_PURCHASE_PURPOSE,
+  DEMO_CONVERSION_PURPOSE,
+  LICENSE_RENEWAL_PURPOSE
+} from './licensePurchase.constants.js'
+export { hashLicensePurchaseToken } from './licensePurchase.shared.js'
 
 export type LicenseSessionPurpose =
   | typeof DEMO_CONVERSION_PURPOSE
   | typeof LICENSE_RENEWAL_PURPOSE
   | typeof LICENSE_PURCHASE_PURPOSE
 
-export type LicensePurchaseContext = 'DEMO_CONVERSION' | 'LICENSE_RENEWAL' | 'EXISTING_ACCOUNT_LICENSE'
+export type LicensePurchaseContext =
+  | 'DEMO_CONVERSION'
+  | 'LICENSE_RENEWAL'
+  | 'EXISTING_ACCOUNT_LICENSE'
 
 const TOKEN_TTL_MS = 20 * 60 * 1000
+
+/** Terk edilmiş WhatsApp mesaj paketi Website checkout oturumlarını reddeder. */
+function assertNotAbandonedWhatsAppPaketCheckout(session: {
+  productCode: string
+  purpose: string
+}): void {
+  if (
+    session.productCode === ABANDONED_WHATSAPP_MESAJ_PAKETI_PRODUCT_CODE ||
+    session.purpose === ABANDONED_WHATSAPP_MESAJ_PAKETI_PURPOSE
+  ) {
+    throw new AppError(
+      410,
+      'WhatsApp mesaj paketi Website checkout artık desteklenmiyor. Uygulama içinden paket talebi oluşturun.',
+      'WHATSAPP_PACKAGE_CHECKOUT_RETIRED'
+    )
+  }
+}
 
 export function purposeToPurchaseContext(purpose: string): LicensePurchaseContext {
   if (purpose === LICENSE_RENEWAL_PURPOSE) return 'LICENSE_RENEWAL'
@@ -39,22 +71,8 @@ export function isExistingAccountMkSaasPurchaseContext(ctx: string | null | unde
   return ctx === 'EXISTING_ACCOUNT_LICENSE' || ctx === 'DEMO_CONVERSION' || ctx === 'LICENSE_RENEWAL'
 }
 
-export function hashLicensePurchaseToken(plainToken: string): string {
-  return createHash('sha256').update(plainToken.trim(), 'utf8').digest('hex')
-}
-
 function generatePlainLicensePurchaseToken(): string {
   return randomBytes(32).toString('base64url')
-}
-
-function woontegraWebsiteBaseUrl(): string {
-  const fromEnv = process.env.WOONTEGRA_WEBSITE_URL?.trim()
-  if (fromEnv) return fromEnv.replace(/\/$/, '')
-  return 'https://www.woontegra.com'
-}
-
-function mkSaasProductPath(): string {
-  return '/yazilimlar/muvekkil-kasa-defteri-web-tabanli'
 }
 
 function assertEligibleTenantForDemoConversion(tenant: Tenant): void {
@@ -112,8 +130,8 @@ function kalanGunForTenant(tenant: Tenant): number | null {
 export type LicensePurchasePublicView = {
   purchaseContext: LicensePurchaseContext
   sessionId: string
-  productCode: typeof LICENSE_PURCHASE_PRODUCT_CODE
-  purpose: LicenseSessionPurpose
+  productCode: string
+  purpose: string
   musteriNo: string
   buroAdi: string
   demoMu: boolean
@@ -131,6 +149,10 @@ export type LicensePurchasePublicView = {
   expiresAt: string
   status: LicensePurchaseSessionStatus
   boundExternalOrderId: string | null
+  packageId: string | null
+  mesajAdedi: number | null
+  fiyatTL: number | null
+  packageLabel: string | null
 }
 
 function toPublicView(
@@ -145,15 +167,11 @@ function toPublicView(
   tenant: Tenant,
   owner: Pick<User, 'eposta' | 'adSoyad' | 'telefon'> | null
 ): LicensePurchasePublicView {
-  const purpose = (session.purpose === LICENSE_RENEWAL_PURPOSE
-    ? LICENSE_RENEWAL_PURPOSE
-    : session.purpose === DEMO_CONVERSION_PURPOSE || session.purpose === LICENSE_PURCHASE_PURPOSE
-      ? DEMO_CONVERSION_PURPOSE
-      : DEMO_CONVERSION_PURPOSE) as LicenseSessionPurpose
+  const purpose = session.purpose
   return {
     purchaseContext: purposeToPurchaseContext(session.purpose),
     sessionId: session.id,
-    productCode: LICENSE_PURCHASE_PRODUCT_CODE,
+    productCode: session.productCode,
     purpose,
     musteriNo: tenant.musteriNo?.trim() || '—',
     buroAdi: tenant.buroAdi,
@@ -172,7 +190,12 @@ function toPublicView(
     tenantVergiDairesi: tenant.vergiDairesi?.trim() || null,
     expiresAt: session.expiresAt.toISOString(),
     status: session.status,
-    boundExternalOrderId: session.boundExternalOrderId
+    boundExternalOrderId: session.boundExternalOrderId,
+    // Eski API şekli; WhatsApp paket Website checkout terk edildi — her zaman null.
+    packageId: null,
+    mesajAdedi: null,
+    fiyatTL: null,
+    packageLabel: null
   }
 }
 
@@ -241,7 +264,7 @@ async function issueLicenseSessionLink(input: {
     userAgent: input.userAgent ?? null
   })
 
-  const purchaseUrl = `${woontegraWebsiteBaseUrl()}${mkSaasProductPath()}?renewalToken=${encodeURIComponent(plainToken)}`
+  const purchaseUrl = `${woontegraWebsiteCheckoutBase()}?renewalToken=${encodeURIComponent(plainToken)}`
   return { purchaseUrl, expiresAt: expiresAt.toISOString() }
 }
 
@@ -322,6 +345,7 @@ export async function resolveLicensePurchaseToken(token: string): Promise<Licens
     throw new AppError(409, 'Satın alma bağlantısı kullanılamıyor.', 'SESSION_UNAVAILABLE')
   }
 
+  assertNotAbandonedWhatsAppPaketCheckout(session)
   assertEligibleForSessionPurpose(session.tenant, session.purpose as LicenseSessionPurpose)
   if (session.productCode !== LICENSE_PURCHASE_PRODUCT_CODE) {
     throw new AppError(409, 'Ürün eşleşmesi geçersiz.', 'PRODUCT_MISMATCH')
@@ -350,6 +374,7 @@ export async function bindLicensePurchaseToken(body: LicensePurchaseBindBody): P
   if (await expireSessionIfNeeded(session)) {
     throw new AppError(410, 'Satın alma bağlantısı geçersiz veya süresi dolmuş.', 'TOKEN_EXPIRED')
   }
+  assertNotAbandonedWhatsAppPaketCheckout(session)
   if (!['CREATED', 'BOUND'].includes(session.status)) {
     throw new AppError(409, 'Satın alma bağlantısı kullanılamıyor.', 'SESSION_UNAVAILABLE')
   }
@@ -400,9 +425,22 @@ export type LicensePurchaseFulfillResponse = {
   demoMu: boolean
 }
 
-export async function fulfillLicensePurchase(body: LicensePurchaseFulfillBody): Promise<LicensePurchaseFulfillResponse> {
+export async function fulfillLicensePurchase(
+  body: LicensePurchaseFulfillBody
+): Promise<LicensePurchaseFulfillResponse> {
   const externalOrderId = body.externalOrderId.trim()
-  if (body.productCode !== LICENSE_PURCHASE_PRODUCT_CODE) {
+  const productCode = (body.productCode ?? '').trim() || LICENSE_PURCHASE_PRODUCT_CODE
+
+  const session = await prisma.licensePurchaseSession.findUnique({
+    where: { boundExternalOrderId: externalOrderId },
+    include: { tenant: true }
+  })
+
+  if (session) {
+    assertNotAbandonedWhatsAppPaketCheckout(session)
+  }
+
+  if (productCode !== LICENSE_PURCHASE_PRODUCT_CODE) {
     throw new AppError(409, 'Ürün eşleşmesi geçersiz.', 'PRODUCT_MISMATCH')
   }
 
@@ -412,6 +450,17 @@ export async function fulfillLicensePurchase(body: LicensePurchaseFulfillBody): 
   if (existingRenewal) {
     const tenant = await prisma.tenant.findUnique({ where: { id: existingRenewal.tenantId } })
     if (!tenant) throw new AppError(500, 'Lisans kaydı var ancak büro bulunamadı.', 'NOT_FOUND')
+    try {
+      await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+        tenantId: tenant.id,
+        licensePeriodId: existingRenewal.id,
+        demoMu: tenant.demoMu,
+        lisansDurumu: tenant.lisansDurumu,
+        renewalDays: existingRenewal.renewalDays
+      })
+    } catch {
+      /* heal best-effort */
+    }
     return {
       ok: true,
       status: 'already_licensed',
@@ -425,10 +474,6 @@ export async function fulfillLicensePurchase(body: LicensePurchaseFulfillBody): 
     }
   }
 
-  const session = await prisma.licensePurchaseSession.findUnique({
-    where: { boundExternalOrderId: externalOrderId },
-    include: { tenant: true }
-  })
   if (!session) {
     throw new AppError(404, 'Mevcut hesap lisans oturumu bulunamadı.', 'SESSION_NOT_FOUND')
   }
@@ -526,3 +571,4 @@ export async function fulfillLicensePurchase(body: LicensePurchaseFulfillBody): 
 export function buildLicensePurchaseSummaryForTenant(tenant: Tenant) {
   return buildTenantLicenseCurrent(tenant, 'BURO_SAHIBI')
 }
+

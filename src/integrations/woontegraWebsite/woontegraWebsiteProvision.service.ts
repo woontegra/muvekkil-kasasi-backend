@@ -13,6 +13,7 @@ import {
   findTenantOwner,
   provisionTenantWithOwner
 } from '../../tenant/provisionTenantWithOwner.js'
+import { tryGrantAnnualIncludedCreditsAfterLicensePeriod } from '../../tahsilatBildirim/whatsappMesajKredi.service.js'
 import { resolveOwnerEmailConflict } from './woontegraWebsiteOwnerEmailGuard.js'
 import {
   buildOwnerUsernameCandidates
@@ -115,6 +116,19 @@ async function returnIdempotentProvision(
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })
+
+  const { isDemo } = resolveLicenseWindow(body)
+  try {
+    await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+      tenantId: existing.id,
+      licensePeriodId: body.externalOrderId,
+      demoMu: isDemo,
+      lisansDurumu: isDemo ? 'DEMO' : 'AKTIF',
+      renewalDays: body.licenseDays
+    })
+  } catch {
+    /* heal best-effort */
+  }
 
   // Idempotent çağrıda şifre yenilenmez; maildeki geçici şifre ile DB hash uyumunu korur.
   return toExistsResponse(existing, ownerEmail, {
@@ -414,6 +428,22 @@ export async function provisionTenantFromWoontegraWebsite(
 
   const mail = await sendOwnerActivationEmail(created.tenant, created.ownerUser, mailFallback, meta, geciciSifre)
   const ownerEmail = created.ownerUser.eposta?.trim().toLowerCase() || mailFallback.ownerEmail
+
+  try {
+    await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+      tenantId: created.tenant.id,
+      licensePeriodId: body.externalOrderId,
+      demoMu: isDemo || created.tenant.demoMu,
+      lisansDurumu: created.tenant.lisansDurumu,
+      renewalDays: body.licenseDays
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[whatsapp-credit] annual grant after website provision failed', {
+      tenantId: created.tenant.id,
+      err: err instanceof Error ? err.message : String(err)
+    })
+  }
 
   return {
     ok: true,

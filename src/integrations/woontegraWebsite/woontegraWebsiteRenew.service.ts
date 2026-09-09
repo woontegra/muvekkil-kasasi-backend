@@ -7,6 +7,7 @@ import { sendLicenseRenewalEmail } from '../../mail/mail.service.js'
 import { extendTenantLicense } from '../../tenant/extendTenantLicense.js'
 import { findTenantOwner } from '../../tenant/provisionTenantWithOwner.js'
 import { resolveTenantForRenewal } from '../../tenant/resolveTenantForRenewal.js'
+import { tryGrantAnnualIncludedCreditsAfterLicensePeriod } from '../../tahsilatBildirim/whatsappMesajKredi.service.js'
 import type { WoontegraWebsiteRenewBody } from './woontegraWebsiteRenew.schemas.js'
 
 export type WoontegraWebsiteRenewRenewedResponse = {
@@ -93,6 +94,18 @@ export async function renewTenantFromWoontegraWebsite(
   if (existingRenewal) {
     const tenant = await prisma.tenant.findUnique({ where: { id: existingRenewal.tenantId } })
     if (!tenant) throw new AppError(500, 'Yenileme kaydı var ancak büro bulunamadı.', 'NOT_FOUND')
+
+    try {
+      await tryGrantAnnualIncludedCreditsAfterLicensePeriod({
+        tenantId: tenant.id,
+        licensePeriodId: existingRenewal.id,
+        demoMu: tenant.demoMu,
+        lisansDurumu: tenant.lisansDurumu,
+        renewalDays: existingRenewal.renewalDays
+      })
+    } catch {
+      /* heal best-effort */
+    }
 
     await writeAuditLog({
       tenantId: tenant.id,

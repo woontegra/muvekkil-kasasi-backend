@@ -85,6 +85,9 @@ model Tenant {
   whatsAppMetaSablonlar  WhatsAppMetaSablon[]
   smsBakiye              SmsTenantBakiye?
   smsKrediHareketleri    SmsKrediHareketi[]
+  whatsAppMesajKredisi   WhatsAppMesajKredisi?
+  whatsAppMesajKrediHareketleri WhatsAppMesajKrediHareketi[]
+  whatsAppMesajPaketTalepleri WhatsAppMesajPaketTalebi[]
   refreshSessions            RefreshSession[]
   randevular                 Randevu[]
   bildirimPlanEntities       BildirimPlanEntity[]
@@ -140,6 +143,8 @@ model LicensePurchaseSession {
   user                 User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
   purpose              String                       @default("LICENSE_PURCHASE")
   productCode          String                       @default("MUVEKKIL_KASA_SAAS") @map("product_code")
+  /// WhatsApp mesaj paketi satın alma oturumu için katalog id (örn. wa_msg_1000).
+  packageId            String?                      @map("package_id")
   status               LicensePurchaseSessionStatus @default(CREATED)
   boundExternalOrderId String?                      @unique @map("bound_external_order_id")
   boundAt              DateTime?                    @map("bound_at")
@@ -1290,6 +1295,88 @@ model SmsKrediHareketi {
   @@index([tenantId, createdAt])
   @@index([bildirimIsiId])
   @@map("sms_kredi_hareketi")
+}
+
+/// Tenant WhatsApp Cloud API mesaj kredi cüzdanı (otomatik gönderimler).
+model WhatsAppMesajKredisi {
+  id        String   @id @default(uuid())
+  tenantId  String   @unique @map("tenant_id")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bakiye    Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_mesaj_kredisi")
+}
+
+enum WhatsAppMesajKrediHareketTipi {
+  YILLIK_DAHIL
+  PAKET_SATIN_ALMA
+  MESAJ_GONDERIM
+  IADE
+  MANUEL_DUZELTME
+}
+
+/// Immutable WhatsApp mesaj kredi hareket defteri.
+model WhatsAppMesajKrediHareketi {
+  id              String                       @id @default(uuid())
+  tenantId        String                       @map("tenant_id")
+  tenant          Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tip             WhatsAppMesajKrediHareketTipi
+  /// + ekleme, − kullanım.
+  miktar          Int
+  oncekiBakiye    Int                          @map("onceki_bakiye")
+  sonrakiBakiye   Int                          @map("sonraki_bakiye")
+  /// Bildirim işi id (tahsilat veya randevu). MESAJ_GONDERIM / IADE için zorunlu.
+  jobId           String?                      @map("job_id")
+  paymentId       String?                      @map("payment_id")
+  /// Lisans dönemi kimliği — YILLIK_DAHIL idempotency.
+  licensePeriodId String?                      @map("license_period_id")
+  aciklama        String?
+  createdAt       DateTime                     @default(now()) @map("created_at")
+
+  /// Aynı job için tip başına tek hareket (gönderim / iade).
+  @@unique([jobId, tip])
+  /// Aynı lisans dönemi için tek yıllık dahil kredi.
+  @@unique([tenantId, tip, licensePeriodId])
+  /// Aynı ödeme için tek paket yükleme.
+  @@unique([tenantId, tip, paymentId])
+  @@index([tenantId, createdAt])
+  @@index([jobId])
+  @@map("whatsapp_mesaj_kredi_hareketi")
+}
+
+enum WhatsAppMesajPaketTalepDurum {
+  BEKLIYOR
+  ONAYLANDI
+  REDDEDILDI
+  IPTAL
+}
+
+/// Tenant ek WhatsApp mesaj paketi satın alma talebi (manuel admin onayı).
+model WhatsAppMesajPaketTalebi {
+  id                String                       @id @default(uuid())
+  tenantId          String                       @map("tenant_id")
+  tenant            Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  packageId         String                       @map("package_id")
+  mesajAdedi        Int                          @map("mesaj_adedi")
+  fiyatTL           Int                          @map("fiyat_tl")
+  /// Kullanıcı dostu Havale/EFT açıklama referansı (ör. WA-20260909-1234). UUID değil.
+  paymentReference  String                       @unique @map("payment_reference")
+  durum             WhatsAppMesajPaketTalepDurum @default(BEKLIYOR)
+  adminNotu         String?                      @map("admin_notu")
+  createdByUserId   String?                      @map("created_by_user_id")
+  /// Onayı/reddi yapan platform admin.
+  approvedByAdminId String?                      @map("resolved_by_admin_id")
+  /// Onay veya red zamanı.
+  approvedAt        DateTime?                    @map("resolved_at")
+  createdAt         DateTime                     @default(now()) @map("created_at")
+  updatedAt         DateTime                     @updatedAt @map("updated_at")
+
+  @@index([tenantId, durum, createdAt])
+  @@index([durum, createdAt])
+  @@index([tenantId, packageId, durum])
+  @@map("whatsapp_mesaj_paket_talebi")
 }
 
 /// Tenant WhatsApp bağlantı durumu. Cloud API token’ları yalnızca şifreli saklanır; frontend’e gitmez.

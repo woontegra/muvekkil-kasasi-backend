@@ -214,6 +214,20 @@ export const adminSmsBalanceAdjustSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(128)
 })
 
+export const adminWhatsAppKrediAdjustSchema = z
+  .object({
+    yon: z.enum(['EKLE', 'DUS']),
+    miktar: z.coerce.number().int().min(1).max(1_000_000),
+    aciklama: z.string().trim().max(1000).optional().nullable()
+  })
+  .strict()
+
+export const adminWhatsAppPaketTalepResolveSchema = z
+  .object({
+    adminNotu: z.string().trim().max(1000).optional().nullable()
+  })
+  .strict()
+
 export const adminSelfChangePasswordSchema = z
   .object({
     mevcutSifre: z.string().min(1, 'Mevcut şifre gerekli.'),

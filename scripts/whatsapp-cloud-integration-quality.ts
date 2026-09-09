@@ -142,6 +142,111 @@ async function main(): Promise<void> {
     fetchImpl: overrideFetch
   })
   assert(override.subscribed && override.overrideApplied && override.overrideVerified, 'override 2-step+verify')
+  assert(override.failedStep == null, 'override success no failedStep')
+
+  // Failure step classification (mocked; no live Meta)
+  const { buildWebhookOverrideFailureDetails } = await import(
+    '../src/tahsilatBildirim/meta/wabaWebhookOverride.js'
+  )
+  const step2Fail = await applyWabaWebhookOverride({
+    wabaId: 'waba1',
+    accessToken: 'tok',
+    callbackUri: callback,
+    verifyToken: 'vt',
+    fetchImpl: mockFetchSequence([
+      { status: 200, body: { success: true } },
+      {
+        status: 400,
+        body: {
+          error: {
+            message: '(#100) Before override the current callback uri',
+            type: 'OAuthException',
+            code: 100,
+            error_subcode: 33,
+            error_user_title: 'Override blocked',
+            error_user_msg: 'Subscribe first'
+          }
+        }
+      }
+    ])
+  })
+  assert(step2Fail.failedStep === 'STEP_2_OVERRIDE', 'step2 failedStep')
+  assert(step2Fail.errorDetails?.code === 100, 'step2 meta code')
+  const diag = buildWebhookOverrideFailureDetails(step2Fail)
+  assert(diag.failedStep === 'STEP_2_OVERRIDE', 'diag step')
+  assert(diag.code === 100 && diag.error_subcode === 33, 'diag codes')
+  assert(diag.type === 'OAuthException', 'diag type')
+  assert(String(diag.message || '').includes('Before override'), 'diag message')
+  assert(!JSON.stringify(diag).includes('tok'), 'diag no token')
+
+  const step1Fail = await applyWabaWebhookOverride({
+    wabaId: 'waba1',
+    accessToken: 'tok',
+    callbackUri: callback,
+    verifyToken: 'vt',
+    fetchImpl: mockFetchSequence([
+      {
+        status: 403,
+        body: { error: { message: 'Permission denied', type: 'OAuthException', code: 200 } }
+      }
+    ])
+  })
+  assert(step1Fail.failedStep === 'STEP_1_SUBSCRIBE', 'step1 failedStep')
+
+  const step3Fail = await applyWabaWebhookOverride({
+    wabaId: 'waba1',
+    accessToken: 'tok',
+    callbackUri: callback,
+    verifyToken: 'vt',
+    fetchImpl: mockFetchSequence([
+      { status: 200, body: { success: true } },
+      { status: 200, body: { success: true } },
+      { status: 200, body: { data: [{ id: 'app1' }] } }
+    ])
+  })
+  assert(step3Fail.failedStep === 'STEP_3_VERIFY', 'step3 failedStep')
+
+  // --- Clear WABA alternate callback (empty POST subscribe — Meta docs) ---
+  const { clearWabaWebhookOverride, extractOverrideCallbackUri } = await import(
+    '../src/tahsilatBildirim/meta/wabaWebhookOverride.js'
+  )
+  assert(extractOverrideCallbackUri({ data: [{ override_callback_uri: callback }] }) === callback, 'extract uri')
+  assert(extractOverrideCallbackUri({ data: [{ whatsapp_business_api_data: { id: '1' } }] }) == null, 'extract null')
+  const clearFetch = mockFetchSequence([
+    { status: 200, body: { success: true } },
+    {
+      status: 200,
+      body: {
+        data: [{ whatsapp_business_api_data: { id: 'app1', name: 'App' } }]
+      }
+    }
+  ])
+  const cleared = await clearWabaWebhookOverride({
+    wabaId: 'waba1',
+    accessToken: 'tok',
+    fetchImpl: clearFetch
+  })
+  assert(cleared.ok && cleared.overrideVerified && cleared.callbackUri == null, 'clear override empty POST')
+
+  const clearStillThere = await clearWabaWebhookOverride({
+    wabaId: 'waba1',
+    accessToken: 'tok',
+    fetchImpl: mockFetchSequence([
+      { status: 200, body: { success: true } },
+      { status: 200, body: { data: [{ override_callback_uri: callback }] } }
+    ])
+  })
+  assert(!clearStillThere.ok, 'clear fails if override remains')
+
+  const { formatMetaStatusFailureSummary } = await import('../src/tahsilatBildirim/webhook.processor.js')
+  const failSum = formatMetaStatusFailureSummary({
+    title: 'Message Undeliverable',
+    message: 'Message failed',
+    error_data: { details: 'Number not on WhatsApp' }
+  })
+  assert(failSum.includes('Message Undeliverable'), 'failed summary title')
+  assert(failSum.includes('Message failed'), 'failed summary message')
+  assert(failSum.includes('Number not on WhatsApp'), 'failed summary details')
 
   // --- Code exchange mock ---
   process.env.WHATSAPP_APP_ID = process.env.WHATSAPP_APP_ID || 'app123'

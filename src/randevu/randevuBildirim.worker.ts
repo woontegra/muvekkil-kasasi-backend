@@ -20,6 +20,11 @@ import {
   ATLAMA_TEMPLATE_GEREKLI,
   ATLAMA_UYGUN_TEMPLATE_YOK
 } from '../tahsilatBildirim/worker.service.js'
+import {
+  consumeForJob,
+  refundForJob,
+  WHATSAPP_KREDI_YETERSIZ
+} from '../tahsilatBildirim/whatsappMesajKredi.service.js'
 
 function resolvePhone(muvekkil: {
   telefon: string | null
@@ -63,6 +68,7 @@ export type ProcessDueRandevuJobsResult = {
   skippedAlreadyDone: number
   skippedManual: number
   skippedTemplateRequired: number
+  skippedKrediYetersiz: number
 }
 
 type LockedRow = { id: string }
@@ -125,7 +131,8 @@ export async function processDueRandevuJobs(
     atlananSablon: 0,
     skippedAlreadyDone: 0,
     skippedManual: 0,
-    skippedTemplateRequired: 0
+    skippedTemplateRequired: 0,
+    skippedKrediYetersiz: 0
   })
 
   if (!env.WHATSAPP_AUTOMATION_ENABLED) return empty()
@@ -306,6 +313,23 @@ export async function processDueRandevuJobs(
       }
 
       const provider = resolveWhatsAppProvider('WHATSAPP_CLOUD_API')
+      if (!options.simulateOnly) {
+        const credit = await consumeForJob(job.tenantId, job.id)
+        if (!credit.ok) {
+          result.skippedKrediYetersiz += 1
+          await prisma.randevuBildirimIsi.update({
+            where: { id },
+            data: {
+              durum: BildirimIsDurumu.PLANLANDI,
+              hataOzeti: `${WHATSAPP_KREDI_YETERSIZ}: WhatsApp mesaj kredisi yetersiz`,
+              lockedAt: null,
+              lockedBy: null
+            }
+          })
+          continue
+        }
+      }
+
       const sendResult = await provider.send({
         tenantId: job.tenantId,
         toE164: phoneE164,
@@ -327,11 +351,15 @@ export async function processDueRandevuJobs(
             telefonMaskeli,
             provider: BildirimProvider.WHATSAPP_CLOUD_API,
             providerMessageId: sendResult.providerMessageId ?? null,
+            hataOzeti: null,
             lockedAt: null,
             lockedBy: null
           }
         })
       } else {
+        if (!options.simulateOnly) {
+          await refundForJob(job.tenantId, job.id, 'Meta senkron gönderim hatası — kredi iadesi')
+        }
         result.basarisiz += 1
         await prisma.randevuBildirimIsi.update({
           where: { id },

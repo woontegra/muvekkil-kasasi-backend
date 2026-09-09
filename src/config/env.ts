@@ -44,6 +44,25 @@ const envSchema = z.object({
   GMAIL_USER: optionalNonEmpty,
   GMAIL_APP_PASSWORD: optionalNonEmpty,
   /**
+   * Platform Admin operasyon bildirimleri (ör. WhatsApp paket talebi).
+   * Yoksa GMAIL_USER / MAIL_USER / SMTP_USER fallback.
+   */
+  ADMIN_NOTIFICATION_EMAIL: optionalNonEmpty,
+  /**
+   * Platform Admin WhatsApp operasyon bildirimi alıcısı (E.164, örn. +905xxxxxxxxx).
+   * Tenant müşteri kredisine dokunmaz.
+   */
+  ADMIN_NOTIFICATION_WHATSAPP: optionalNonEmpty,
+  /**
+   * Admin WhatsApp bildirimini hangi tenant’ın Cloud API bağlantısından göndereceği
+   * (ör. Woontegra platform tenant UUID). Credential hard-code edilmez.
+   */
+  ADMIN_NOTIFICATION_WHATSAPP_TENANT_ID: optionalNonEmpty,
+  /** Meta’da onaylı UTILITY template adı (varsayılan mk_admin_paket_talebi_v1). */
+  ADMIN_NOTIFICATION_WHATSAPP_TEMPLATE_NAME: optionalNonEmpty,
+  /** Template dili (varsayılan tr). */
+  ADMIN_NOTIFICATION_WHATSAPP_TEMPLATE_LANG: optionalNonEmpty,
+  /**
    * Yalnızca yerel geliştirmede SMTP yokken reset/aktivasyon linkini konsola yaz.
    * Railway / production’da asla açmayın — mail gitmeden 200 dönmesine yol açar.
    */
