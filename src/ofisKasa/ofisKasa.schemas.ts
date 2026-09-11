@@ -63,9 +63,18 @@ export const createOfisKasaHareketiBodySchema = z
     odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
     /** Yalnızca GELIR — prim hesabı için tahsilatı yapan personel. */
     tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
-    tahsilatiYapanUserId: z.string().uuid().optional().nullable()
+    tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
+    /** Yalnızca GELIR — isteğe bağlı müvekkil bağlantısı (dosya dışı ofis geliri). */
+    muvekkilId: z.string().uuid().optional().nullable()
   })
   .superRefine((data, ctx) => {
+    if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.muvekkilId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Gider işlemine müvekkil bağlanamaz.',
+        path: ['muvekkilId']
+      })
+    }
     if (data.islemTipi === OfisKasaIslemTipi.GELIR) {
       if (!OFIS_KASA_GELIR_KATEGORILERI.includes(data.kategori as OfisKasaGelirKategori)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçersiz gelir kategorisi.', path: ['kategori'] })
@@ -141,6 +150,10 @@ export const listOfisKasaHareketleriQuerySchema = z.object({
   kategori: z.preprocess(
     (v) => (v === '' || v === undefined || v === null ? undefined : v),
     z.string().trim().min(1).max(120).optional()
+  ),
+  muvekkilId: z.preprocess(
+    (v) => (v === '' || v === undefined || v === null ? undefined : v),
+    z.string().uuid().optional()
   ),
   startDate: z.preprocess((v) => (v === '' || v === undefined || v === null ? undefined : v), z.coerce.date().optional()),
   endDate: z.preprocess((v) => (v === '' || v === undefined || v === null ? undefined : v), z.coerce.date().optional()),

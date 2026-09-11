@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto'
 import {
   KasaHareketTipi,
   KasaOnayDurumu,
+  OfisKasaIslemTipi,
+  OfisKasaOnayDurumu,
   VekaletTaksitOdemeDurumu,
   type Prisma
 } from '@prisma/client'
@@ -123,6 +125,20 @@ export type MuvekkilEkstrePayload = {
     cikis: string
     bakiyeSonrasi: string
   }>
+  /** Dosya dışı ofis kasası gelirleri — vekalet/icra borç-tahsilat toplamlarına dahil edilmez. */
+  dosyaDisiOfisGelirleri: {
+    toplam: string
+    hareketler: Array<{
+      id: string
+      tarih: string
+      belgeNo: string
+      kategori: string
+      aciklama: string | null
+      odemeYontemi: string
+      personelAd: string | null
+      tutar: string
+    }>
+  }
   dipnot: string
 }
 
@@ -148,7 +164,7 @@ export async function buildMuvekkilEkstreForDosya(
   })
   if (!dosya) return null
 
-  const [vekalet, kasaRows] = await Promise.all([
+  const [vekalet, kasaRows, ofisGelirRows] = await Promise.all([
     prisma.vekaletUcreti.findUnique({
       where: { dosyaId },
       include: {
@@ -173,6 +189,20 @@ export async function buildMuvekkilEkstreForDosya(
         tarih: { lte: cutoff }
       },
       orderBy: [{ tarih: 'asc' }, { createdAt: 'asc' }]
+    }),
+    prisma.ofisKasaHareketi.findMany({
+      where: {
+        tenantId,
+        muvekkilId: dosya.muvekkilId,
+        islemTipi: OfisKasaIslemTipi.GELIR,
+        onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+        tarih: { lte: cutoff }
+      },
+      orderBy: [{ tarih: 'asc' }, { createdAt: 'asc' }],
+      include: {
+        tahsilatiYapanPersonel: { select: { adSoyad: true } },
+        createdBy: { select: { adSoyad: true, kullaniciAdi: true } }
+      }
     })
   ])
 
@@ -295,6 +325,25 @@ export async function buildMuvekkilEkstreForDosya(
   const duzeltmeNet = pozitifDuzeltme - negatifDuzeltme
   const bakiye = avans - masraf + duzeltmeNet
 
+  const ofisGelirHareketleri = ofisGelirRows.map((h) => {
+    const personelAd =
+      h.tahsilatiYapanPersonel?.adSoyad?.trim() ||
+      h.createdBy.adSoyad?.trim() ||
+      h.createdBy.kullaniciAdi?.trim() ||
+      null
+    return {
+      id: h.id,
+      tarih: h.tarih.toISOString(),
+      belgeNo: h.belgeNo,
+      kategori: h.ozelKategoriAdi?.trim() || h.kategori,
+      aciklama: h.aciklama,
+      odemeYontemi: h.odemeYontemi,
+      personelAd,
+      tutar: fmt(Number(h.tutar))
+    }
+  })
+  const ofisGelirToplam = ofisGelirRows.reduce((s, h) => s + Number(h.tutar), 0)
+
   const tenantSer = serializeTenant(dosya.tenant) as Record<string, unknown>
   const dosyaSer = serializeDosya(dosya) as Record<string, unknown>
   const muvekkilSer = serializeMuvekkil(dosya.muvekkil) as Record<string, unknown>
@@ -344,8 +393,12 @@ export async function buildMuvekkilEkstreForDosya(
       guncelBakiye: fmt(bakiye)
     },
     masrafHareketleri: hareketler,
+    dosyaDisiOfisGelirleri: {
+      toplam: fmt(ofisGelirToplam),
+      hareketler: ofisGelirHareketleri
+    },
     dipnot:
-      'Bu ekstre bilgilendirme amaçlıdır; serbest meslek makbuzu veya tahsilat makbuzu yerine geçmez.'
+      'Bu ekstre bilgilendirme amaçlıdır; serbest meslek makbuzu veya tahsilat makbuzu yerine geçmez. Dosya dışı ofis gelirleri vekalet ve icra borç/tahsilat toplamlarına dahil edilmez.'
   }
 }
 

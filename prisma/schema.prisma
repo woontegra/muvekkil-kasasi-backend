@@ -319,6 +319,7 @@ model Muvekkil {
   tahsilatBildirimIsleri TahsilatBildirimIsi[]
   randevuBildirimIsleri  RandevuBildirimIsi[]
   randevular             Randevu[]
+  ofisKasaHareketleri    OfisKasaHareketi[]
 
   @@index([tenantId, aktifMi])
   @@index([tenantId, gorunenAd])
@@ -475,6 +476,10 @@ model OfisKasaHareketi {
   updatedAt           DateTime             @updatedAt @map("updated_at")
   kaynakTipi          String?              @map("kaynak_tipi")
   kaynakId            String?              @map("kaynak_id")
+  /// İsteğe bağlı: yalnızca GELIR. Müvekkil silinince SetNull; ad snapshot’ta kalır.
+  muvekkilId          String?              @map("muvekkil_id")
+  muvekkil            Muvekkil?            @relation(fields: [muvekkilId], references: [id], onDelete: SetNull)
+  muvekkilAdiSnapshot String?              @map("muvekkil_adi_snapshot")
   icraTahsilatOdeme   IcraTahsilatOdeme?
   vekaletTaksitOdeme  VekaletTaksitOdeme?
 
@@ -485,6 +490,7 @@ model OfisKasaHareketi {
   @@index([tenantId, islemTipi])
   @@index([tenantId, tahsilatiYapanUserId, tarih])
   @@index([tenantId, tahsilatiYapanPersonelId, tarih])
+  @@index([tenantId, muvekkilId])
   @@map("ofis_kasa_hareketi")
 }
 

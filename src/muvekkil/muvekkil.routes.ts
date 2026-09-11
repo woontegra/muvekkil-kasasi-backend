@@ -20,6 +20,10 @@ import {
 import { createDosyaBodySchema, listDosyaForMuvekkilQuerySchema } from '../dosya/dosya.schemas.js'
 import { createDosya, listDosyalarForMuvekkil, serializeDosya } from '../dosya/dosya.service.js'
 import { getMuvekkilKarlilik } from '../dosya/dosyaMaliOzet.service.js'
+import {
+  listDosyaDisiOfisGelirleriForMuvekkil,
+  serializeOfisKasaHareketi
+} from '../ofisKasa/ofisKasa.service.js'
 
 export const muvekkillerRouter = Router()
 
@@ -189,6 +193,31 @@ muvekkillerRouter.get(
       return
     }
     res.json({ ok: true, ...data })
+  })
+)
+
+muvekkillerRouter.get(
+  '/:id/ofis-gelirleri',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const page = Number(req.query.page ?? 1) || 1
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50) || 50))
+    const result = await listDosyaDisiOfisGelirleriForMuvekkil(req.auth!.tenantId, id, {
+      page,
+      limit
+    })
+    if (!result) {
+      res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Müvekkil bulunamadı.' })
+      return
+    }
+    res.json({
+      ok: true,
+      items: result.items.map((h) => serializeOfisKasaHareketi(h)),
+      total: result.total,
+      page,
+      limit
+    })
   })
 )
 

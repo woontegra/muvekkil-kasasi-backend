@@ -107,7 +107,12 @@ ofisKasasiRouter.post(
     const created = await createOfisKasaHareketi(tenantId, userId, req.auth!.role, body, req)
     const row = await prisma.ofisKasaHareketi.findFirst({
       where: { id: created.id, tenantId },
-      include: { orijinalHareket: { select: { id: true, belgeNo: true } } }
+      include: {
+        orijinalHareket: { select: { id: true, belgeNo: true } },
+        muvekkil: { select: { id: true, gorunenAd: true, aktifMi: true } },
+        tahsilatiYapanPersonel: { select: { id: true, adSoyad: true } },
+        createdBy: { select: { id: true, adSoyad: true, kullaniciAdi: true } }
+      }
     })
     if (!row) {
       res.status(500).json({ ok: false, error: 'INTERNAL', message: 'Kayıt okunamadı.' })

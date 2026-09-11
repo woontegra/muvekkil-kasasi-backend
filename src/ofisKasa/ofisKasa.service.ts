@@ -32,13 +32,35 @@ export const OFIS_KASA_KATEGORI_VEKALET_TAHSILATI = 'Vekalet Ücreti Tahsilatı'
 
 export type OfisKasaHareketiWithOrijinal = OfisKasaHareketi & {
   orijinalHareket?: { id: string; belgeNo: string } | null
+  muvekkil?: { id: string; gorunenAd: string; aktifMi: boolean } | null
+  tahsilatiYapanPersonel?: { id: string; adSoyad: string } | null
+  createdBy?: { id: string; adSoyad: string; kullaniciAdi: string } | null
 }
 
 function decimalToString(d: Prisma.Decimal): string {
   return d.toFixed(2)
 }
 
+function resolveMuvekkilAd(
+  h: OfisKasaHareketiWithOrijinal
+): string | null {
+  const live = h.muvekkil?.gorunenAd?.trim()
+  if (live) return live
+  const snap = h.muvekkilAdiSnapshot?.trim()
+  return snap || null
+}
+
+function resolvePersonelAd(h: OfisKasaHareketiWithOrijinal): string | null {
+  const p = h.tahsilatiYapanPersonel?.adSoyad?.trim()
+  if (p) return p
+  const u = h.createdBy
+  if (!u) return null
+  const name = u.adSoyad?.trim() || u.kullaniciAdi?.trim()
+  return name || null
+}
+
 export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Record<string, unknown> {
+  const muvekkilAd = resolveMuvekkilAd(h)
   return {
     id: h.id,
     tenantId: h.tenantId,
@@ -59,13 +81,49 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
     otomatikOnayMi: h.otomatikOnayMi,
     tahsilatiYapanUserId: h.tahsilatiYapanUserId,
     tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
+    tahsilatiYapanPersonelAd: resolvePersonelAd(h),
     kaynakTipi: h.kaynakTipi,
     kaynakId: h.kaynakId,
+    muvekkilId: h.muvekkilId,
+    muvekkilAdiSnapshot: h.muvekkilAdiSnapshot,
+    muvekkil: h.muvekkilId
+      ? {
+          id: h.muvekkilId,
+          gorunenAd: muvekkilAd,
+          aktifMi: h.muvekkil?.aktifMi ?? null
+        }
+      : null,
     createdById: h.createdById,
     updatedById: h.updatedById,
     createdAt: h.createdAt.toISOString(),
     updatedAt: h.updatedAt.toISOString()
   }
+}
+
+const ofisKasaListInclude = {
+  orijinalHareket: { select: { id: true, belgeNo: true } },
+  muvekkil: { select: { id: true, gorunenAd: true, aktifMi: true } },
+  tahsilatiYapanPersonel: { select: { id: true, adSoyad: true } },
+  createdBy: { select: { id: true, adSoyad: true, kullaniciAdi: true } }
+} as const
+
+/** Aynı tenant’taki aktif müvekkili doğrular; GIDER’de çağrılmaz. */
+export async function resolveAktifMuvekkilForOfisGelir(
+  tenantId: string,
+  muvekkilId: string | null | undefined
+): Promise<{ id: string; gorunenAd: string } | null> {
+  if (!muvekkilId) return null
+  const row = await prisma.muvekkil.findFirst({
+    where: { id: muvekkilId, tenantId },
+    select: { id: true, gorunenAd: true, aktifMi: true }
+  })
+  if (!row) {
+    throw new AppError(404, 'Müvekkil bulunamadı.', 'MUVEKKIL_NOT_FOUND')
+  }
+  if (!row.aktifMi) {
+    throw new AppError(400, 'Pasif müvekkile ofis geliri bağlanamaz.', 'MUVEKKIL_INACTIVE')
+  }
+  return { id: row.id, gorunenAd: row.gorunenAd }
 }
 
 async function nextBelgeNo(
@@ -105,7 +163,7 @@ export async function listOfisKasaHareketleri(
   tenantId: string,
   query: ListOfisKasaHareketleriQuery
 ): Promise<{ items: OfisKasaHareketiWithOrijinal[]; total: number }> {
-  const { q, islemTipi, onayDurumu, kategori, startDate, endDate, page, limit } = query
+  const { q, islemTipi, onayDurumu, kategori, muvekkilId, startDate, endDate, page, limit } = query
   const skip = (page - 1) * limit
 
   const tarihFilter: Prisma.DateTimeFilter | undefined =
@@ -121,6 +179,7 @@ export async function listOfisKasaHareketleri(
     ...(islemTipi ? { islemTipi } : {}),
     ...(onayDurumu ? { onayDurumu } : {}),
     ...(kategori ? { kategori } : {}),
+    ...(muvekkilId ? { muvekkilId } : {}),
     ...(tarihFilter ? { tarih: tarihFilter } : {}),
     ...(q.length > 0
       ? {
@@ -128,7 +187,9 @@ export async function listOfisKasaHareketleri(
             { belgeNo: { contains: q, mode: 'insensitive' } },
             { aciklama: { contains: q, mode: 'insensitive' } },
             { kategori: { contains: q, mode: 'insensitive' } },
-            { ozelKategoriAdi: { contains: q, mode: 'insensitive' } }
+            { ozelKategoriAdi: { contains: q, mode: 'insensitive' } },
+            { muvekkilAdiSnapshot: { contains: q, mode: 'insensitive' } },
+            { muvekkil: { is: { gorunenAd: { contains: q, mode: 'insensitive' } } } }
           ]
         }
       : {})
@@ -141,9 +202,42 @@ export async function listOfisKasaHareketleri(
       orderBy: [{ tarih: 'desc' }, { createdAt: 'desc' }],
       skip,
       take: limit,
-      include: {
-        orijinalHareket: { select: { id: true, belgeNo: true } }
-      }
+      include: ofisKasaListInclude
+    })
+  ])
+
+  return { items: items as OfisKasaHareketiWithOrijinal[], total }
+}
+
+/** Müvekkil detayı: dosya dışı ofis gelirleri (GELIR + bağlı müvekkil). */
+export async function listDosyaDisiOfisGelirleriForMuvekkil(
+  tenantId: string,
+  muvekkilId: string,
+  opts?: { page?: number; limit?: number }
+): Promise<{ items: OfisKasaHareketiWithOrijinal[]; total: number } | null> {
+  const muvekkil = await prisma.muvekkil.findFirst({
+    where: { id: muvekkilId, tenantId },
+    select: { id: true }
+  })
+  if (!muvekkil) return null
+
+  const page = opts?.page ?? 1
+  const limit = opts?.limit ?? 50
+  const skip = (page - 1) * limit
+  const where: Prisma.OfisKasaHareketiWhereInput = {
+    tenantId,
+    muvekkilId,
+    islemTipi: OfisKasaIslemTipi.GELIR
+  }
+
+  const [total, items] = await prisma.$transaction([
+    prisma.ofisKasaHareketi.count({ where }),
+    prisma.ofisKasaHareketi.findMany({
+      where,
+      orderBy: [{ tarih: 'desc' }, { createdAt: 'desc' }],
+      skip,
+      take: limit,
+      include: ofisKasaListInclude
     })
   ])
 
@@ -334,6 +428,12 @@ export async function createOfisKasaHareketi(
       ? await resolveTahsilatiYapanPersonel(tenantId, userId, actorRole, body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId)
       : null
 
+  // GIDER’de müvekkil asla yazılmaz (tip sonradan gider olsaydı da temizlenirdi).
+  const linkedMuvekkil =
+    body.islemTipi === OfisKasaIslemTipi.GELIR
+      ? await resolveAktifMuvekkilForOfisGelir(tenantId, body.muvekkilId)
+      : null
+
   let attempts = 0
   while (attempts < 5) {
     attempts += 1
@@ -354,6 +454,8 @@ export async function createOfisKasaHareketi(
             onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
             tahsilatiYapanPersonelId: tahsilati?.personelId ?? null,
             tahsilatiYapanUserId: tahsilati?.bagliUserId ?? null,
+            muvekkilId: linkedMuvekkil?.id ?? null,
+            muvekkilAdiSnapshot: linkedMuvekkil?.gorunenAd ?? null,
             createdById: userId
           }
         })
