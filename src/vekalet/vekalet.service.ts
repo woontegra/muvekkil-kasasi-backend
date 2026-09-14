@@ -814,17 +814,43 @@ export async function deleteVekaletTaksiti(
 ): Promise<{ ok: true }> {
   const existing = await prisma.vekaletTaksiti.findFirst({
     where: { id: taksitId, tenantId },
-    include: { odemeler: { select: { id: true } } }
+    include: {
+      odemeler: {
+        include: { ofisKasaHareket: { select: { id: true, deletedAt: true } } }
+      }
+    }
   })
   if (!existing) {
     throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
   }
-  if (existing.odemeler.length > 0) {
-    throw new AppError(400, 'Ödeme kaydı olan taksit silinemez.', 'HAS_PAYMENTS')
+
+  // UI odenenToplam yalnızca aktif tahsilatı sayar; soft-delete ofis geliri
+  // bakiyeden düşer ama satır kalır. Silme engeli aynı kurala hizalanmalı.
+  const aktifOdemeler = filterAktifTahsilatOdemeleri(existing.odemeler)
+  if (aktifOdemeler.length > 0) {
+    throw new AppError(
+      400,
+      'Ödeme kaydı olan taksit silinemez. Önce tahsilatları silin veya ofis kasasında geri alın.',
+      'HAS_PAYMENTS'
+    )
   }
 
   const meta = getRequestMeta(req)
-  await prisma.vekaletTaksiti.delete({ where: { id: existing.id } })
+  const inactiveOdemeIds = existing.odemeler.map((o) => o.id)
+
+  await prisma.$transaction(async (tx) => {
+    if (inactiveOdemeIds.length > 0) {
+      // İnaktif (ofis soft-delete) ödemeler: FK kopar, satırı temizle; soft-deleted ofis kaydı audit için kalır.
+      await tx.vekaletTaksitOdeme.updateMany({
+        where: { id: { in: inactiveOdemeIds }, tenantId },
+        data: { ofisKasaHareketId: null }
+      })
+      await tx.vekaletTaksitOdeme.deleteMany({
+        where: { id: { in: inactiveOdemeIds }, tenantId }
+      })
+    }
+    await tx.vekaletTaksiti.delete({ where: { id: existing.id } })
+  })
 
   await writeAuditLog({
     tenantId,
@@ -833,6 +859,7 @@ export async function deleteVekaletTaksiti(
     entityType: 'VekaletTaksiti',
     entityId: existing.id,
     oldValue: serializeVekaletTaksiti(existing),
+    meta: { cleanedInactiveOdemeCount: inactiveOdemeIds.length },
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })
