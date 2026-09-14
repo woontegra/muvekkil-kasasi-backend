@@ -1,11 +1,12 @@
-import type { ParaBirimi, Prisma, UserRole, VekaletTaksitOdemeDurumu, VekaletTaksiti } from '@prisma/client'
-import { Prisma as PrismaNamespace } from '@prisma/client'
+import type { ParaBirimi, Prisma, User, UserRole, VekaletTaksitOdemeDurumu, VekaletTaksiti } from '@prisma/client'
+import { BildirimIsDurumu, Prisma as PrismaNamespace } from '@prisma/client'
 import { resolveParaBirimi } from '../lib/paraBirimi.js'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
+import { verifyBuroSahibiPassword } from '../ofisKasa/ofisGuvenliSilCore.js'
 import type {
   CreateVekaletTaksitiBody,
   CreateVekaletTaksitPlaniBody,
@@ -341,7 +342,7 @@ function computeOzet(
   }
 }
 
-async function assertDosyaForVekalet(
+export async function assertDosyaForVekalet(
   tenantId: string,
   dosyaId: string
 ): Promise<{ id: string; muvekkilId: string } | null> {
@@ -379,7 +380,8 @@ export async function listSmmBekleyenForDosya(
     where: {
       tenantId,
       dosyaId,
-      smmKesildiMi: false
+      smmKesildiMi: false,
+      iptalAt: null
     },
     orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }]
   })
@@ -411,8 +413,8 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
   const smmBekleyenRows = await listSmmBekleyenForDosya(tenantId, dosyaId)
   if (smmBekleyenRows === null) return null
 
-  const vekalet = await prisma.vekaletUcreti.findUnique({
-    where: { dosyaId },
+  const vekalet = await prisma.vekaletUcreti.findFirst({
+    where: { dosyaId, tenantId, durum: 'AKTIF' },
     include: {
       taksitler: {
         orderBy: [{ taksitNo: 'asc' }, { vadeTarihi: 'asc' }],
@@ -445,9 +447,9 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
   )
   return {
     vekaletUcreti: serializeVekaletUcreti(vekalet),
-    taksitler: vekalet.taksitler.map((t) =>
-      serializeVekaletTaksitiWithOzet(t, filterAktifTahsilatOdemeleri(t.odemeler))
-    ),
+    taksitler: vekalet.taksitler
+      .filter((t) => t.odemeDurumu !== 'IPTAL')
+      .map((t) => serializeVekaletTaksitiWithOzet(t, filterAktifTahsilatOdemeleri(t.odemeler))),
     ozet,
     smmBekleyen: smmBekleyenRows
   }
@@ -470,7 +472,7 @@ export async function upsertVekaletUcreti(
   const paraBirimi = resolveParaBirimi(body.paraBirimi)
 
   const existing = await prisma.vekaletUcreti.findFirst({
-    where: { dosyaId, tenantId },
+    where: { dosyaId, tenantId, durum: 'AKTIF' },
     include: {
       taksitler: { select: { tutar: true, odemeDurumu: true } }
     }
@@ -479,7 +481,7 @@ export async function upsertVekaletUcreti(
   if (isPersistedVekaletUcreti(existing)) {
     const current = existing
     const odemeCount = await prisma.vekaletTaksitOdeme.count({
-      where: { tenantId, dosyaId }
+      where: { tenantId, dosyaId, iptalAt: null }
     })
     const mode = classifyVekaletUpsertMode({
       existing: current,
@@ -572,7 +574,9 @@ export async function createVekaletTaksiti(
   if (!dosya) {
     throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
   }
-  const vekalet = await prisma.vekaletUcreti.findUnique({ where: { dosyaId } })
+  const vekalet = await prisma.vekaletUcreti.findFirst({
+    where: { dosyaId, tenantId, durum: 'AKTIF' }
+  })
   if (!vekalet) {
     throw new AppError(400, 'Önce vekalet ücreti tanımlanmalıdır.', 'VEKALET_REQUIRED')
   }
@@ -626,8 +630,8 @@ export async function createTekVekaletTaksiti(
   if (!dosya) {
     throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
   }
-  const vekalet = await prisma.vekaletUcreti.findUnique({
-    where: { dosyaId },
+  const vekalet = await prisma.vekaletUcreti.findFirst({
+    where: { dosyaId, tenantId, durum: 'AKTIF' },
     include: {
       taksitler: {
         where: { odemeDurumu: { not: 'IPTAL' } },
@@ -699,8 +703,8 @@ export async function createVekaletTaksitPlani(
   if (!dosya) {
     throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
   }
-  const vekalet = await prisma.vekaletUcreti.findUnique({
-    where: { dosyaId },
+  const vekalet = await prisma.vekaletUcreti.findFirst({
+    where: { dosyaId, tenantId, durum: 'AKTIF' },
     include: { taksitler: { where: { odemeDurumu: { not: 'IPTAL' } } } }
   })
   if (!vekalet) {
@@ -812,6 +816,24 @@ export async function deleteVekaletTaksiti(
   taksitId: string,
   req: Request
 ): Promise<{ ok: true }> {
+  throw new AppError(
+    403,
+    'Taksit silme yalnızca büro sahibi güvenli silme ile yapılabilir.',
+    'FORBIDDEN'
+  )
+}
+
+/**
+ * Ödemesiz taksit soft-iptal (odemeDurumu=IPTAL). Anlaşılan vekalet tutarı değişmez.
+ * Yalnız BURO_SAHIBI + şifre.
+ */
+export async function guvenliSilVekaletTaksiti(
+  tenantId: string,
+  actor: Pick<User, 'id' | 'role' | 'adSoyad' | 'sifreHash'>,
+  taksitId: string,
+  body: { sifre: string; deleteReason: string },
+  req: Request
+): Promise<{ ok: true; alreadyDone: boolean; taksitId: string }> {
   const existing = await prisma.vekaletTaksiti.findFirst({
     where: { id: taksitId, tenantId },
     include: {
@@ -824,46 +846,70 @@ export async function deleteVekaletTaksiti(
     throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
   }
 
-  // UI odenenToplam yalnızca aktif tahsilatı sayar; soft-delete ofis geliri
-  // bakiyeden düşer ama satır kalır. Silme engeli aynı kurala hizalanmalı.
+  const { reason, meta } = await verifyBuroSahibiPassword(
+    tenantId,
+    actor,
+    taksitId,
+    body,
+    req,
+    'VEKALET_TAKSIT_GUVENLI_SIL'
+  )
+
+  if (existing.odemeDurumu === 'IPTAL') {
+    return { ok: true, alreadyDone: true, taksitId: existing.id }
+  }
+
   const aktifOdemeler = filterAktifTahsilatOdemeleri(existing.odemeler)
   if (aktifOdemeler.length > 0) {
     throw new AppError(
       400,
-      'Ödeme kaydı olan taksit silinemez. Önce tahsilatları silin veya ofis kasasında geri alın.',
+      'Ödeme kaydı olan taksit silinemez. Önce ilgili tahsilatı güvenli silin.',
       'HAS_PAYMENTS'
     )
   }
 
-  const meta = getRequestMeta(req)
-  const inactiveOdemeIds = existing.odemeler.map((o) => o.id)
-
+  const now = new Date()
   await prisma.$transaction(async (tx) => {
-    if (inactiveOdemeIds.length > 0) {
-      // İnaktif (ofis soft-delete) ödemeler: FK kopar, satırı temizle; soft-deleted ofis kaydı audit için kalır.
-      await tx.vekaletTaksitOdeme.updateMany({
-        where: { id: { in: inactiveOdemeIds }, tenantId },
-        data: { ofisKasaHareketId: null }
-      })
-      await tx.vekaletTaksitOdeme.deleteMany({
-        where: { id: { in: inactiveOdemeIds }, tenantId }
-      })
-    }
-    await tx.vekaletTaksiti.delete({ where: { id: existing.id } })
+    await tx.vekaletTaksiti.update({
+      where: { id: existing.id },
+      data: {
+        odemeDurumu: 'IPTAL',
+        updatedById: actor.id
+      }
+    })
+    await tx.tahsilatBildirimIsi.updateMany({
+      where: {
+        tenantId,
+        taksitId: existing.id,
+        durum: { in: [BildirimIsDurumu.PLANLANDI, BildirimIsDurumu.KUYRUKTA] }
+      },
+      data: {
+        durum: BildirimIsDurumu.IPTAL_EDILDI,
+        iptalNedeni: 'Taksit güvenli silindi',
+        lockedAt: null,
+        lockedBy: null
+      }
+    })
   })
 
   await writeAuditLog({
     tenantId,
-    userId,
-    action: 'VEKALET_TAKSIT_DELETED',
+    userId: actor.id,
+    action: 'VEKALET_TAKSIT_GUVENLI_IPTAL',
     entityType: 'VekaletTaksiti',
     entityId: existing.id,
     oldValue: serializeVekaletTaksiti(existing),
-    meta: { cleanedInactiveOdemeCount: inactiveOdemeIds.length },
+    newValue: {
+      odemeDurumu: 'IPTAL',
+      deleteReason: reason,
+      at: now.toISOString()
+    },
+    meta: { deleteReason: reason },
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })
-  return { ok: true }
+
+  return { ok: true, alreadyDone: false, taksitId: existing.id }
 }
 
 async function getTaksitForTenant(tenantId: string, taksitId: string) {

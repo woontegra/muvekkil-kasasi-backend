@@ -1,18 +1,24 @@
 import type { Prisma } from '@prisma/client'
 import { OFIS_KASA_KAYNAK_ICRA_TAHSILAT, OFIS_KASA_KAYNAK_VEKALET_TAHSILATI } from '../ofisKasa/ofisKasa.service.js'
 
+/** Ofis kasasında vekalet/icra tahsilatından otomatik oluşan gelir kaynakları (çift sayım engeli). */
+export const OFIS_KASA_BAGLI_GELIR_KAYNAK_TIPLERI = [
+  OFIS_KASA_KAYNAK_VEKALET_TAHSILATI,
+  'VEKALET_TAKSIT_ODEME',
+  OFIS_KASA_KAYNAK_ICRA_TAHSILAT,
+  'ICRA_TAHSILAT_ODEME'
+] as const
+
+/** Doğrudan (manuel) ofis geliri — kaynakTipi boş; bağlı tahsilat satırları hariç. */
+export function isManuelOfisGelirKaynak(kaynakTipi: string | null | undefined): boolean {
+  const t = (kaynakTipi ?? '').trim()
+  return t.length === 0
+}
+
 /** Ofis kasasındaki yalnızca manuel gelirler — vekalet/icra kaynaklı otomatik hareketler hariç. */
 export function manuelOfisGelirKaynakWhere(): Prisma.OfisKasaHareketiWhereInput {
   return {
-    OR: [
-      { kaynakTipi: null },
-      { kaynakTipi: '' },
-      {
-        kaynakTipi: {
-          notIn: [OFIS_KASA_KAYNAK_ICRA_TAHSILAT, OFIS_KASA_KAYNAK_VEKALET_TAHSILATI]
-        }
-      }
-    ]
+    OR: [{ kaynakTipi: null }, { kaynakTipi: '' }]
   }
 }
 

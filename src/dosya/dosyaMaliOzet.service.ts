@@ -1,10 +1,26 @@
-import { KasaHareketTipi, KasaOnayDurumu } from '@prisma/client'
+import { KasaHareketTipi, KasaOnayDurumu, OfisKasaIslemTipi, OfisKasaOnayDurumu, Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import {
   type AccountingPeriodMode,
   getAccountingPeriod,
   toLocalYmd
 } from '../lib/accountingPeriod.js'
+import { moneyToApiString } from '../lib/paraBirimi.js'
+import { manuelOfisGelirKaynakWhere } from '../lib/primTahsilatFilter.js'
+import {
+  type DecimalByCurrency,
+  type KarlilikCurrency,
+  type MoneyByCurrency,
+  KARLILIK_CURRENCIES,
+  addToDecimalByCurrency,
+  emptyDecimalByCurrency,
+  isNonZeroDecimal,
+  netByCurrency,
+  resolveKarlilikCurrency,
+  sumKarlilikOfisGelirBuckets,
+  toMoneyByCurrency,
+  zeroDecimal
+} from './karlilikOfisGelir.js'
 
 export type DosyaMaliOzetPayload = {
   kararlastirilanVekalet: string
@@ -38,12 +54,12 @@ async function computeForDosya(
   const [vekaletUcreti, odemelerAgg, avansAgg, masrafAgg, duzeltmeRows] = await Promise.all([
     dateFilter
       ? null
-      : prisma.vekaletUcreti.findUnique({
-          where: { dosyaId },
+      : prisma.vekaletUcreti.findFirst({
+          where: { tenantId, dosyaId, durum: 'AKTIF' },
           select: { toplamTutar: true }
         }),
     prisma.vekaletTaksitOdeme.aggregate({
-      where: { tenantId, dosyaId, ...odemeDateWhere },
+      where: { tenantId, dosyaId, iptalAt: null, ...odemeDateWhere },
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.aggregate({
@@ -138,28 +154,94 @@ export type MuvekkilKarlilikDosya = {
   konuBasligi: string
   dosyaNo: string | null
   durum: string
-  tahsilEdilenVekalet: number
-  buroKarsiladigiGider: number
-  netKazanc: number
+  paraBirimi: KarlilikCurrency
+  tahsilEdilenVekalet: string
+  buroKarsiladigiGider: string
+  netKazanc: string
+}
+
+export type MuvekkilKarlilikDagilim = {
+  enYuksekKazanc: MuvekkilKarlilikDosya | null
+  enDusukKazanc: MuvekkilKarlilikDosya | null
 }
 
 export type MuvekkilKarlilikPayload = {
   toplamDosya: number
-  kararlastirilanVekalet: string
-  tahsilEdilenVekalet: string
-  kalanAlacak: string
+  kararlastirilanVekalet: MoneyByCurrency
+  tahsilEdilenVekalet: MoneyByCurrency
+  kalanAlacak: MoneyByCurrency
+  /** Dosya kasası avans bakiyesi — yalnızca TRY. */
   toplamAvansBakiye: string
+  /** Dosya kasası masraf toplamı — yalnızca TRY. */
   toplamDosyaMasrafi: string
   toplamMasrafAvansiIadesi: string
-  netKazanc: string
-  enYuksekKazanc: MuvekkilKarlilikDosya | null
-  enDusukKazanc: MuvekkilKarlilikDosya | null
+  /** Ofis Kasası manuel onaylı gelir (kaynakTipi’siz) + DUZELTME neti. */
+  ofisGeliri: MoneyByCurrency
+  /**
+   * Net kazanç para birimine göre bağımsız:
+   * gelir (vekalet tahsilatı alacak PB + ofis manuel) − gider (büro karşıladığı, şu an TRY).
+   */
+  netKazanc: MoneyByCurrency
+  /** Para birimleri birbirleriyle kıyaslanmaz. */
+  kazancDagilimi: Record<KarlilikCurrency, MuvekkilKarlilikDagilim | null>
 }
 
 export type MuvekkilKarlilikResponse = {
   tumZamanlar: MuvekkilKarlilikPayload
   buDonem: MuvekkilKarlilikPayload | null
   donemEtiketi: string | null
+}
+
+async function loadManuelOfisGelirBuckets(
+  tenantId: string,
+  muvekkilId: string,
+  dateFilter?: { gte: Date; lt: Date }
+): Promise<DecimalByCurrency> {
+  const tarihWhere = dateFilter ? { tarih: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
+  const gelirRows = await prisma.ofisKasaHareketi.findMany({
+    where: {
+      tenantId,
+      muvekkilId,
+      islemTipi: OfisKasaIslemTipi.GELIR,
+      onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+      deletedAt: null,
+      ...manuelOfisGelirKaynakWhere(),
+      ...tarihWhere
+    },
+    select: { id: true, tutar: true, paraBirimi: true }
+  })
+  const gelirIds = gelirRows.map((r) => r.id)
+  const duzeltmeRows =
+    gelirIds.length === 0
+      ? []
+      : await prisma.ofisKasaHareketi.findMany({
+          where: {
+            tenantId,
+            islemTipi: OfisKasaIslemTipi.DUZELTME,
+            onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+            deletedAt: null,
+            orijinalHareketId: { in: gelirIds },
+            ...tarihWhere
+          },
+          select: { tutar: true, paraBirimi: true }
+        })
+  return sumKarlilikOfisGelirBuckets(
+    gelirRows.map((r) => ({ tutar: r.tutar, paraBirimi: r.paraBirimi })),
+    duzeltmeRows.map((r) => ({ tutar: r.tutar, paraBirimi: r.paraBirimi }))
+  )
+}
+
+function pickDagilim(
+  rows: MuvekkilKarlilikDosya[]
+): MuvekkilKarlilikDagilim | null {
+  if (rows.length === 0) return null
+  const sorted = [...rows].sort((a, b) =>
+    new Prisma.Decimal(b.netKazanc).comparedTo(new Prisma.Decimal(a.netKazanc))
+  )
+  return {
+    enYuksekKazanc: sorted[0] ?? null,
+    enDusukKazanc: sorted.length > 1 ? sorted[sorted.length - 1]! : null
+  }
 }
 
 async function computeForMuvekkil(
@@ -171,105 +253,165 @@ async function computeForMuvekkil(
     where: { tenantId, muvekkilId },
     select: { id: true, konuBasligi: true, dosyaNo: true, durum: true }
   })
-  if (dosyalar.length === 0) {
-    const z = '0.00'
-    return {
-      toplamDosya: 0,
-      kararlastirilanVekalet: z, tahsilEdilenVekalet: z, kalanAlacak: z,
-      toplamAvansBakiye: z, toplamDosyaMasrafi: z, toplamMasrafAvansiIadesi: z, netKazanc: z,
-      enYuksekKazanc: null, enDusukKazanc: null
-    }
-  }
 
-  const dosyaIds = dosyalar.map(d => d.id)
+  const dosyaIds = dosyalar.map((d) => d.id)
   const kasaDateWhere = dateFilter ? { tarih: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
   const odemeDateWhere = dateFilter ? { odemeTarihi: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
 
-  const [vekaletler, odemeler, kasaRows] = await Promise.all([
-    dateFilter
-      ? Promise.resolve([])
+  const [vekaletler, odemeler, kasaRows, ofisGelir] = await Promise.all([
+    dateFilter || dosyaIds.length === 0
+      ? Promise.resolve(
+          [] as { dosyaId: string; toplamTutar: Prisma.Decimal; paraBirimi: string }[]
+        )
       : prisma.vekaletUcreti.findMany({
-          where: { tenantId, dosyaId: { in: dosyaIds } },
-          select: { dosyaId: true, toplamTutar: true }
+          where: { tenantId, dosyaId: { in: dosyaIds }, durum: 'AKTIF' },
+          select: { dosyaId: true, toplamTutar: true, paraBirimi: true }
         }),
-    prisma.vekaletTaksitOdeme.findMany({
-      where: { tenantId, dosyaId: { in: dosyaIds }, ...odemeDateWhere },
-      select: { dosyaId: true, tutar: true }
-    }),
-    prisma.kasaHareketi.findMany({
-      where: { tenantId, dosyaId: { in: dosyaIds }, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
-      select: { dosyaId: true, tip: true, tutar: true }
-    })
+    dosyaIds.length === 0
+      ? Promise.resolve(
+          [] as {
+            dosyaId: string
+            tutar: Prisma.Decimal
+            alacakParaBirimi: string
+          }[]
+        )
+      : prisma.vekaletTaksitOdeme.findMany({
+          where: { tenantId, dosyaId: { in: dosyaIds }, iptalAt: null, ...odemeDateWhere },
+          select: { dosyaId: true, tutar: true, alacakParaBirimi: true }
+        }),
+    dosyaIds.length === 0
+      ? Promise.resolve([] as { dosyaId: string; tip: string; tutar: Prisma.Decimal }[])
+      : prisma.kasaHareketi.findMany({
+          where: {
+            tenantId,
+            dosyaId: { in: dosyaIds },
+            onayDurumu: KasaOnayDurumu.ONAYLI,
+            deletedAt: null,
+            ...kasaDateWhere
+          },
+          select: { dosyaId: true, tip: true, tutar: true }
+        }),
+    loadManuelOfisGelirBuckets(tenantId, muvekkilId, dateFilter)
   ])
 
-  const vekaletMap = new Map<string, number>()
-  for (const v of vekaletler) vekaletMap.set(v.dosyaId, Number(v.toplamTutar))
+  const vekaletMap = new Map<string, { tutar: Prisma.Decimal; paraBirimi: KarlilikCurrency }>()
+  for (const v of vekaletler) {
+    const pb = resolveKarlilikCurrency(v.paraBirimi) ?? 'TRY'
+    vekaletMap.set(v.dosyaId, { tutar: v.toplamTutar, paraBirimi: pb })
+  }
 
-  const odemeMap = new Map<string, number>()
-  for (const o of odemeler) odemeMap.set(o.dosyaId, (odemeMap.get(o.dosyaId) ?? 0) + Number(o.tutar))
+  /** dosyaId → currency → tahsil (alacak PB / tutar — mevcut kanonik). */
+  const odemeByDosya = new Map<string, DecimalByCurrency>()
+  for (const o of odemeler) {
+    let bucket = odemeByDosya.get(o.dosyaId)
+    if (!bucket) {
+      bucket = emptyDecimalByCurrency()
+      odemeByDosya.set(o.dosyaId, bucket)
+    }
+    addToDecimalByCurrency(bucket, o.alacakParaBirimi, o.tutar)
+  }
 
-  const avansMap = new Map<string, number>()
-  const masrafMap = new Map<string, number>()
-  const duzeltmeMap = new Map<string, number>()
-  const iadeMap = new Map<string, number>()
+  const avansMap = new Map<string, Prisma.Decimal>()
+  const masrafMap = new Map<string, Prisma.Decimal>()
+  const duzeltmeMap = new Map<string, Prisma.Decimal>()
+  const iadeMap = new Map<string, Prisma.Decimal>()
   for (const r of kasaRows) {
-    const v = Number(r.tutar)
-    if (r.tip === 'AVANS_GIRISI') avansMap.set(r.dosyaId, (avansMap.get(r.dosyaId) ?? 0) + v)
-    else if (r.tip === 'MASRAF') masrafMap.set(r.dosyaId, (masrafMap.get(r.dosyaId) ?? 0) + v)
-    else if (r.tip === 'DUZELTME') {
-      duzeltmeMap.set(r.dosyaId, (duzeltmeMap.get(r.dosyaId) ?? 0) + v)
-      if (v < 0) iadeMap.set(r.dosyaId, (iadeMap.get(r.dosyaId) ?? 0) + Math.abs(v))
+    if (r.tip === 'AVANS_GIRISI') {
+      avansMap.set(r.dosyaId, (avansMap.get(r.dosyaId) ?? zeroDecimal()).plus(r.tutar))
+    } else if (r.tip === 'MASRAF') {
+      masrafMap.set(r.dosyaId, (masrafMap.get(r.dosyaId) ?? zeroDecimal()).plus(r.tutar))
+    } else if (r.tip === 'DUZELTME') {
+      duzeltmeMap.set(r.dosyaId, (duzeltmeMap.get(r.dosyaId) ?? zeroDecimal()).plus(r.tutar))
+      if (r.tutar.isNegative()) {
+        iadeMap.set(r.dosyaId, (iadeMap.get(r.dosyaId) ?? zeroDecimal()).plus(r.tutar.abs()))
+      }
     }
   }
 
-  let totalKararlastirilan = 0, totalTahsil = 0, totalAvansBakiye = 0, totalMasraf = 0, totalNetKazanc = 0, totalIade = 0
-  const dosyaKazanclari: MuvekkilKarlilikDosya[] = []
+  const totalKarar = emptyDecimalByCurrency()
+  const totalTahsil = emptyDecimalByCurrency()
+  const totalGelir = emptyDecimalByCurrency()
+  const totalGider = emptyDecimalByCurrency()
+  let totalAvansBakiye = zeroDecimal()
+  let totalMasraf = zeroDecimal()
+  let totalIade = zeroDecimal()
 
-  for (const d of dosyalar) {
-    const kararlastirilan = vekaletMap.get(d.id) ?? 0
-    const tahsil = odemeMap.get(d.id) ?? 0
-    const avans = avansMap.get(d.id) ?? 0
-    const masraf = masrafMap.get(d.id) ?? 0
-    const duzeltme = duzeltmeMap.get(d.id) ?? 0
-    const iade = iadeMap.get(d.id) ?? 0
-    const kasaBakiye = avans - masraf + duzeltme
-    const buroKarsiladi = kasaBakiye < 0 ? Math.abs(kasaBakiye) : 0
-    const net = tahsil - buroKarsiladi
-
-    totalKararlastirilan += kararlastirilan
-    totalTahsil += tahsil
-    totalAvansBakiye += Math.max(0, kasaBakiye)
-    totalMasraf += masraf
-    totalIade += iade
-    totalNetKazanc += net
-
-    dosyaKazanclari.push({
-      dosyaId: d.id,
-      konuBasligi: d.konuBasligi,
-      dosyaNo: d.dosyaNo,
-      durum: d.durum,
-      tahsilEdilenVekalet: tahsil,
-      buroKarsiladigiGider: buroKarsiladi,
-      netKazanc: net
-    })
+  const dagilimRows: Record<KarlilikCurrency, MuvekkilKarlilikDosya[]> = {
+    TRY: [],
+    USD: [],
+    EUR: []
   }
 
-  dosyaKazanclari.sort((a, b) => b.netKazanc - a.netKazanc)
-  const enYuksek = dosyaKazanclari.length > 0 ? dosyaKazanclari[0] : null
-  const enDusuk = dosyaKazanclari.length > 1 ? dosyaKazanclari[dosyaKazanclari.length - 1] : null
+  for (const d of dosyalar) {
+    const vekalet = vekaletMap.get(d.id)
+    if (vekalet) addToDecimalByCurrency(totalKarar, vekalet.paraBirimi, vekalet.tutar)
 
-  const f = (n: number) => n.toFixed(2)
+    const tahsilBucket = odemeByDosya.get(d.id) ?? emptyDecimalByCurrency()
+    for (const c of KARLILIK_CURRENCIES) {
+      totalTahsil[c] = totalTahsil[c].plus(tahsilBucket[c])
+      totalGelir[c] = totalGelir[c].plus(tahsilBucket[c])
+    }
+
+    const avans = avansMap.get(d.id) ?? zeroDecimal()
+    const masraf = masrafMap.get(d.id) ?? zeroDecimal()
+    const duzeltme = duzeltmeMap.get(d.id) ?? zeroDecimal()
+    const iade = iadeMap.get(d.id) ?? zeroDecimal()
+    const kasaBakiye = avans.minus(masraf).plus(duzeltme)
+    const buroKarsiladi = kasaBakiye.isNegative() ? kasaBakiye.abs() : zeroDecimal()
+    totalAvansBakiye = totalAvansBakiye.plus(kasaBakiye.isNegative() ? zeroDecimal() : kasaBakiye)
+    totalMasraf = totalMasraf.plus(masraf)
+    totalIade = totalIade.plus(iade)
+    // Dosya kasası gider etkisi yalnız TRY (şema para birimi yok).
+    totalGider.TRY = totalGider.TRY.plus(buroKarsiladi)
+
+    for (const c of KARLILIK_CURRENCIES) {
+      const tahsilC = tahsilBucket[c]
+      const buroC = c === 'TRY' ? buroKarsiladi : zeroDecimal()
+      const netC = tahsilC.minus(buroC)
+      const hasActivity =
+        isNonZeroDecimal(tahsilC) ||
+        isNonZeroDecimal(buroC) ||
+        (vekalet?.paraBirimi === c && isNonZeroDecimal(vekalet.tutar))
+      if (!hasActivity) continue
+      dagilimRows[c].push({
+        dosyaId: d.id,
+        konuBasligi: d.konuBasligi,
+        dosyaNo: d.dosyaNo,
+        durum: d.durum,
+        paraBirimi: c,
+        tahsilEdilenVekalet: moneyToApiString(tahsilC),
+        buroKarsiladigiGider: moneyToApiString(buroC),
+        netKazanc: moneyToApiString(netC)
+      })
+    }
+  }
+
+  for (const c of KARLILIK_CURRENCIES) {
+    totalGelir[c] = totalGelir[c].plus(ofisGelir[c])
+  }
+
+  const net = netByCurrency(totalGelir, totalGider)
+  const kalan = emptyDecimalByCurrency()
+  for (const c of KARLILIK_CURRENCIES) {
+    const k = totalKarar[c].minus(totalTahsil[c])
+    kalan[c] = k.isNegative() ? zeroDecimal() : k
+  }
+
   return {
     toplamDosya: dosyalar.length,
-    kararlastirilanVekalet: f(totalKararlastirilan),
-    tahsilEdilenVekalet: f(totalTahsil),
-    kalanAlacak: f(Math.max(0, totalKararlastirilan - totalTahsil)),
-    toplamAvansBakiye: f(totalAvansBakiye),
-    toplamDosyaMasrafi: f(totalMasraf),
-    toplamMasrafAvansiIadesi: f(totalIade),
-    netKazanc: f(totalNetKazanc),
-    enYuksekKazanc: enYuksek,
-    enDusukKazanc: enDusuk
+    kararlastirilanVekalet: toMoneyByCurrency(totalKarar),
+    tahsilEdilenVekalet: toMoneyByCurrency(totalTahsil),
+    kalanAlacak: toMoneyByCurrency(kalan),
+    toplamAvansBakiye: moneyToApiString(totalAvansBakiye),
+    toplamDosyaMasrafi: moneyToApiString(totalMasraf),
+    toplamMasrafAvansiIadesi: moneyToApiString(totalIade),
+    ofisGeliri: toMoneyByCurrency(ofisGelir),
+    netKazanc: toMoneyByCurrency(net),
+    kazancDagilimi: {
+      TRY: pickDagilim(dagilimRows.TRY),
+      USD: pickDagilim(dagilimRows.USD),
+      EUR: pickDagilim(dagilimRows.EUR)
+    }
   }
 }
 

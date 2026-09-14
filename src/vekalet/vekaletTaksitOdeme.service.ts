@@ -1,6 +1,7 @@
 import type { OdemeYontemi, OfisKasaOdemeYontemi, ParaBirimi, Prisma, UserRole } from '@prisma/client'
 import { OfisKasaOnayDurumu, Prisma as PrismaNamespace } from '@prisma/client'
 import {
+  formatMoneyDisplay,
   rateToApiString,
   resolveParaBirimi,
   resolvePaymentAmounts,
@@ -25,6 +26,11 @@ import {
   serializeVekaletTaksitiWithOzet,
   syncTaksitOdemeDurumu
 } from './vekalet.service.js'
+import {
+  assertExpectedKalanMatches,
+  computeTaksitOdemeOzeti,
+  filterAktifTahsilatOdemeleri
+} from './taksitOdemeOzet.js'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
 import {
   createOfisKasaGelirFromKaynakInTx,
@@ -71,7 +77,9 @@ export function serializeVekaletTaksitOdeme(o: {
   odemeYontemi: OdemeYontemi
   aciklama: string | null
   makbuzNo: string
+  makbuzDurumu?: string
   smmKesildiMi: boolean
+  iptalAt?: Date | null
   kasaHareketId: string | null
   ofisKasaHareketId: string | null
   tahsilatiYapanUserId: string | null
@@ -101,7 +109,9 @@ export function serializeVekaletTaksitOdeme(o: {
     odemeYontemi: o.odemeYontemi,
     aciklama: o.aciklama,
     makbuzNo: o.makbuzNo,
+    makbuzDurumu: o.makbuzDurumu ?? 'AKTIF',
     smmKesildiMi: o.smmKesildiMi,
+    iptalAt: o.iptalAt ? o.iptalAt.toISOString() : null,
     kasaHareketId: o.kasaHareketId,
     ofisKasaHareketId: o.ofisKasaHareketId,
     tahsilatiYapanUserId: o.tahsilatiYapanUserId,
@@ -141,7 +151,10 @@ async function getTaksitWithOdemeler(tenantId: string, taksitId: string) {
   return prisma.vekaletTaksiti.findFirst({
     where: { id: taksitId, tenantId },
     include: {
-      odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+      odemeler: {
+        orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+        include: odemeAktiflikInclude
+      },
       vekaletUcreti: true,
       dosya: { select: { konuBasligi: true } },
       muvekkil: { select: { gorunenAd: true } }
@@ -149,9 +162,9 @@ async function getTaksitWithOdemeler(tenantId: string, taksitId: string) {
   })
 }
 
-function sumOdemeler(odemeler: { tutar: Prisma.Decimal }[]): number {
-  return odemeler.reduce((s, o) => s + Number(o.tutar), 0)
-}
+const odemeAktiflikInclude = {
+  ofisKasaHareket: { select: { deletedAt: true as const } }
+} as const
 
 type OdemeCreateCtx = {
   tenantId: string
@@ -291,7 +304,10 @@ export async function createVekaletTaksitOdeme(
       const taksit = await tx.vekaletTaksiti.findFirst({
         where: { id: taksitId, tenantId },
         include: {
-          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+          odemeler: {
+            orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+            include: odemeAktiflikInclude
+          },
           vekaletUcreti: true,
           dosya: { select: { konuBasligi: true } },
           muvekkil: { select: { gorunenAd: true } }
@@ -303,15 +319,15 @@ export async function createVekaletTaksitOdeme(
       if (taksit.odemeDurumu === 'IPTAL') {
         throw new AppError(400, 'İptal edilmiş taksit için ödeme alınamaz.', 'INVALID_STATE')
       }
-      const odenen = sumOdemeler(taksit.odemeler)
-      const kalan = Math.max(0, Number(taksit.tutar) - odenen)
       const alacakParaBirimi = taksit.paraBirimi ?? taksit.vekaletUcreti.paraBirimi
+      const ozet = computeTaksitOdemeOzeti(taksit.tutar, taksit.odemeler)
+      assertExpectedKalanMatches(body.expectedKalanTutar, ozet, alacakParaBirimi)
       const payment = resolvePaymentAmounts({
         alacakParaBirimi,
         mahsupTutari: body.tutar,
         odemeParaBirimi: body.odemeParaBirimi,
         kasaTutari: body.kasaTutari,
-        kalanBorc: new PrismaNamespace.Decimal(kalan)
+        kalanBorc: ozet.kalanTutar
       })
       const kurMeta = await resolvePaymentKurSnapshot({
         odemeTarihi,
@@ -356,7 +372,7 @@ export async function createVekaletTaksitOdeme(
 
   void onTaksitOdemeChanged(tenantId, taksitId).catch(() => {})
 
-  return serializeVekaletTaksitiWithOzet(fresh, fresh.odemeler)
+  return serializeVekaletTaksitiWithOzet(fresh, filterAktifTahsilatOdemeleri(fresh.odemeler))
 }
 
 export async function createVekaletPesinOdeme(
@@ -437,7 +453,10 @@ export async function createVekaletPesinOdeme(
           odemeDurumu: { in: ['ODENMEDI', 'KISMI_ODENDI'] }
         },
         include: {
-          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+          odemeler: {
+            orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+            include: odemeAktiflikInclude
+          },
           dosya: { select: { konuBasligi: true } },
           muvekkil: { select: { gorunenAd: true } }
         },
@@ -445,8 +464,8 @@ export async function createVekaletPesinOdeme(
       })
       for (const t of locked) {
         if (remaining <= 0.0001) break
-        const odenen = sumOdemeler(t.odemeler)
-        const kalan = Math.max(0, Number(t.tutar) - odenen)
+        const ozet = computeTaksitOdemeOzeti(t.tutar, t.odemeler)
+        const kalan = Number(ozet.kalanTutar)
         if (kalan <= 0.0001) continue
         const pay = Math.min(remaining, kalan)
         const payRatio = tutarNum > 0 ? pay / tutarNum : 1
@@ -568,19 +587,20 @@ export async function updateVekaletTaksitOdeme(
         FOR UPDATE
       `
       const freshOdemeler = await tx.vekaletTaksitOdeme.findMany({
-        where: { tenantId, taksitId: existing.taksitId }
+        where: { tenantId, taksitId: existing.taksitId },
+        include: odemeAktiflikInclude
       })
-      const otherSum = sumOdemeler(freshOdemeler.filter((o) => o.id !== existing.id))
-      const taksitTutari = Number(existing.taksit.tutar)
-      const maxAllowed = Math.max(0, taksitTutari - otherSum)
       const alacakParaBirimi = existing.taksit.paraBirimi ?? existing.taksit.vekaletUcreti.paraBirimi
-      const mahsupRaw = body.tutar != null ? body.tutar : Number(existing.tutar)
+      const ozet = computeTaksitOdemeOzeti(existing.taksit.tutar, freshOdemeler, {
+        excludeOdemeId: existing.id
+      })
+      const mahsupRaw = body.tutar != null ? body.tutar : existing.tutar
       const payment = resolvePaymentAmounts({
         alacakParaBirimi,
         mahsupTutari: mahsupRaw,
         odemeParaBirimi: body.odemeParaBirimi ?? existing.odemeParaBirimi,
         kasaTutari: body.kasaTutari ?? existing.kasaTutari,
-        kalanBorc: new PrismaNamespace.Decimal(maxAllowed)
+        kalanBorc: ozet.kalanTutar
       })
 
       // TCMB snapshot alanları oluşturma anında sabitlenir; güncellemede

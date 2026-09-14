@@ -34,6 +34,8 @@ export const createKasaHareketiBodySchema = z
   .object({
     tip: z.enum([KasaHareketTipi.AVANS_GIRISI, KasaHareketTipi.MASRAF]),
     tarih: z.coerce.date(),
+    /** MASRAF için tenant gider kalemi. */
+    kalemId: z.string().uuid().optional().nullable(),
     masrafTuru: z.string().trim().max(120).optional().nullable(),
     ozelMasrafAdi: z.string().trim().max(200).optional().nullable(),
     aciklama: z.string().trim().max(4000).optional().nullable(),
@@ -48,24 +50,12 @@ export const createKasaHareketiBodySchema = z
   })
   .superRefine((data, ctx) => {
     if (data.tip === KasaHareketTipi.MASRAF) {
-      const mt = data.masrafTuru?.trim() ?? ''
-      if (mt.length < 2) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Masraf türü zorunludur.', path: ['masrafTuru'] })
-        return
-      }
-      if (!MASRAF_TURU_VALUES.includes(mt as MasrafTuruValue)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçersiz masraf türü.', path: ['masrafTuru'] })
-        return
-      }
-      if (isDigerMasraf(mt)) {
-        const oz = data.ozelMasrafAdi?.trim() ?? ''
-        if (oz.length < 2) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Diğer masraf adı zorunludur.',
-            path: ['ozelMasrafAdi']
-          })
-        }
+      if (!data.kalemId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Masraf kalemi seçimi zorunludur.',
+          path: ['kalemId']
+        })
       }
       const myk = data.masrafiYapanKisi?.trim() ?? ''
       if (myk.length < 2) {
@@ -76,8 +66,8 @@ export const createKasaHareketiBodySchema = z
         })
       }
     } else {
-      if (data.masrafTuru?.trim() || data.ozelMasrafAdi?.trim()) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Avans girişinde masraf türü kullanılmaz.', path: ['masrafTuru'] })
+      if (data.kalemId || data.masrafTuru?.trim() || data.ozelMasrafAdi?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Avans girişinde masraf kalemi kullanılmaz.', path: ['kalemId'] })
       }
       if (data.masrafiYapanKisi?.trim()) {
         ctx.addIssue({

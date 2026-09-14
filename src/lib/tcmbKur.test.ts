@@ -95,6 +95,8 @@ describe('getTcmbRates with fixtures', () => {
       bulunanTcmbKurTarihi: '2026-09-10',
       effectiveDate: '2026-09-10',
       fetchedAt: '2026-09-10T10:00:00.000Z',
+      lastCheckedAt: '2026-09-10T10:00:00.000Z',
+      fromCache: false,
       source: 'TCMB',
       stale: false,
       fallbackKullanildi: false,
@@ -110,6 +112,8 @@ describe('getTcmbRates with fixtures', () => {
       bulunanTcmbKurTarihi: '2026-09-10',
       effectiveDate: '2026-09-10',
       fetchedAt: '2026-09-10T10:00:00.000Z',
+      lastCheckedAt: '2026-09-10T10:00:00.000Z',
+      fromCache: false,
       source: 'TCMB',
       stale: false,
       fallbackKullanildi: false,
@@ -148,6 +152,8 @@ describe('getTcmbRates with fixtures', () => {
       bulunanTcmbKurTarihi: '2026-09-11',
       effectiveDate: '2026-09-11',
       fetchedAt: '2026-09-11T10:00:00.000Z',
+      lastCheckedAt: '2026-09-11T10:00:00.000Z',
+      fromCache: false,
       source: 'TCMB',
       stale: false,
       fallbackKullanildi: false,
@@ -168,6 +174,7 @@ describe('getTcmbRates with fixtures', () => {
     })
     assert.equal(fetchCount, 0)
     assert.equal(cached!.usd.buyingRate, '30.00000000')
+    assert.equal(cached!.fromCache, true)
 
     const forced = await getTcmbRates({
       date: '2026-09-11',
@@ -181,6 +188,101 @@ describe('getTcmbRates with fixtures', () => {
     assert.equal(fetchCount, 1)
     assert.equal(forced!.usd.buyingRate, '34.80000000')
     assert.equal(forced!.stale, false)
+    assert.equal(forced!.fromCache, false)
+  })
+
+  it('concurrent callers share a single TCMB fetch (singleflight)', async () => {
+    let fetchCount = 0
+    let release!: (xml: string) => void
+    const gate = new Promise<string>((resolve) => {
+      release = resolve
+    })
+    const fetchXml = async () => {
+      fetchCount += 1
+      return gate
+    }
+
+    const p1 = getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T12:00:00+03:00'),
+      fetchXml
+    })
+    const p2 = getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T12:00:00+03:00'),
+      fetchXml
+    })
+    release(xml11)
+    const [a, b] = await Promise.all([p1, p2])
+    assert.equal(fetchCount, 1)
+    assert.equal(a!.usd.buyingRate, '34.80000000')
+    assert.equal(b!.usd.buyingRate, '34.80000000')
+  })
+
+  it('serves memory cache within 60m without TCMB hit', async () => {
+    let fetchCount = 0
+    await getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T12:00:00+03:00'),
+      fetchXml: async () => {
+        fetchCount += 1
+        return xml11
+      }
+    })
+    assert.equal(fetchCount, 1)
+    const again = await getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T12:30:00+03:00'),
+      fetchXml: async () => {
+        fetchCount += 1
+        return xml11
+      }
+    })
+    assert.equal(fetchCount, 1)
+    assert.equal(again!.fromCache, true)
+  })
+
+  it('afternoon 16:35 refresh once when today bulletin missing', async () => {
+    seedTcmbCacheForTests({
+      istenilenTarih: '2026-09-11',
+      bulunanTcmbKurTarihi: '2026-09-10',
+      effectiveDate: '2026-09-10',
+      fetchedAt: '2026-09-11T10:00:00.000Z',
+      lastCheckedAt: '2026-09-11T10:00:00.000Z',
+      fromCache: false,
+      source: 'TCMB',
+      stale: false,
+      fallbackKullanildi: true,
+      usd: { currency: 'USD', buyingRate: '30.00000000', sellingRate: '30.10000000', unit: 1 },
+      eur: { currency: 'EUR', buyingRate: '33.00000000', sellingRate: '33.10000000', unit: 1 },
+      usdEurCapraz: '0.90909091',
+      eurUsdCapraz: '1.10000000'
+    })
+
+    let fetchCount = 0
+    const snap = await getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T16:40:00+03:00'),
+      fetchXml: async () => {
+        fetchCount += 1
+        return xml11
+      }
+    })
+    assert.equal(fetchCount, 1)
+    assert.equal(snap!.bulunanTcmbKurTarihi, '2026-09-11')
+    assert.equal(snap!.fromCache, false)
+
+    const again = await getTcmbRates({
+      date: '2026-09-11',
+      now: new Date('2026-09-11T16:50:00+03:00'),
+      fetchXml: async () => {
+        fetchCount += 1
+        return xml11
+      }
+    })
+    // Cache TTL still valid after live fetch — no second TCMB
+    assert.equal(fetchCount, 1)
+    assert.equal(again!.fromCache, true)
   })
 })
 

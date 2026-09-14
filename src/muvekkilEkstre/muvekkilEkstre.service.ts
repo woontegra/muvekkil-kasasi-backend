@@ -13,6 +13,7 @@ import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { serializeTenant } from '../auth/auth.service.js'
 import { serializeDosya } from '../dosya/dosya.service.js'
+import { filterAktifTahsilatOdemeleri } from '../lib/tahsilatOdemeAktif.js'
 import { serializeMuvekkil } from '../muvekkil/muvekkil.service.js'
 
 const TZ_OFFSET = '+03:00'
@@ -189,16 +190,17 @@ export async function buildMuvekkilEkstreForDosya(
   if (!dosya) return null
 
   const [vekalet, kasaRows, ofisGelirRows] = await Promise.all([
-    prisma.vekaletUcreti.findUnique({
-      where: { dosyaId },
+    prisma.vekaletUcreti.findFirst({
+      where: { tenantId, dosyaId, durum: 'AKTIF' },
       include: {
         taksitler: {
           where: { createdAt: { lte: cutoff } },
           orderBy: [{ taksitNo: 'asc' }, { vadeTarihi: 'asc' }],
           include: {
             odemeler: {
-              where: { odemeTarihi: { lte: cutoff } },
-              orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }]
+              where: { odemeTarihi: { lte: cutoff }, iptalAt: null },
+              orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+              include: { ofisKasaHareket: { select: { deletedAt: true } } }
             }
           }
         }
@@ -245,7 +247,8 @@ export async function buildMuvekkilEkstreForDosya(
   for (const t of vekalet?.taksitler ?? []) {
     const iptalMi = t.odemeDurumu === VekaletTaksitOdemeDurumu.IPTAL
     const taksitTutari = Number(t.tutar)
-    const odenen = sumOdeme(t.odemeler)
+    const aktifOdemeler = filterAktifTahsilatOdemeleri(t.odemeler)
+    const odenen = sumOdeme(aktifOdemeler)
     const kalan = iptalMi ? 0 : Math.max(0, taksitTutari - odenen)
 
     if (!iptalMi) {
@@ -284,7 +287,7 @@ export async function buildMuvekkilEkstreForDosya(
       kalanTutar: fmt(kalan),
       durum,
       iptalMi,
-      odemeler: t.odemeler.map((o) => {
+      odemeler: aktifOdemeler.map((o) => {
         const alacakPb = (o.alacakParaBirimi ?? vekaletParaBirimi) as ParaBirimi
         const odemePb = (o.odemeParaBirimi ?? alacakPb) as ParaBirimi
         const mahsup = moneyToApiString(o.tutar)

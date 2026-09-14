@@ -156,7 +156,7 @@ export function resolvePaymentAmounts(input: CrossPaymentInput): ResolvedPayment
   if (mahsupTutari.gt(kalan)) {
     throw new AppError(
       400,
-      `Mahsup tutarı kalan borcu (${moneyToApiString(kalan)} ${alacakParaBirimi}) aşamaz.`,
+      `Mahsup tutarı kalan borcu (${formatMoneyDisplay(kalan, alacakParaBirimi)}) aşamaz.`,
       'MAHSUP_EXCEEDS_REMAINING'
     )
   }

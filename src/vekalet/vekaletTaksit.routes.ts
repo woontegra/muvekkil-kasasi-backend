@@ -9,10 +9,11 @@ import {
   markTaksitPaidBodySchema,
   markTaksitSmmBodySchema,
   updateVekaletTaksitiBodySchema,
-  createVekaletTaksitOdemeBodySchema
+  createVekaletTaksitOdemeBodySchema,
+  guvenliSatirSilBodySchema
 } from './vekalet.schemas.js'
 import {
-  deleteVekaletTaksiti,
+  guvenliSilVekaletTaksiti,
   markVekaletTaksitPaid,
   markVekaletTaksitSmm,
   serializeTaksitApiResponse,
@@ -207,12 +208,37 @@ vekaletTaksitleriRouter.post(
 vekaletTaksitleriRouter.delete(
   '/:id',
   requireAuth,
-  requireRole(...ODEME_ROLLER),
+  asyncHandler(async (_req, res) => {
+    res.status(403).json({
+      ok: false,
+      error: 'FORBIDDEN',
+      message: 'Taksit silme yalnızca büro sahibi güvenli silme ile yapılabilir.'
+    })
+  })
+)
+
+vekaletTaksitleriRouter.post(
+  '/:id/guvenli-sil',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI),
   asyncHandler(async (req, res) => {
     const { id } = idParamSchema.parse(req.params)
     const tenantId = req.auth!.tenantId
     const userId = req.auth!.sub
-    const result = await deleteVekaletTaksiti(tenantId, userId, id, req)
+    const body = guvenliSatirSilBodySchema.parse(req.body)
+    const actor = await prisma.user.findFirst({
+      where: { id: userId, tenantId, aktifMi: true },
+      select: { id: true, role: true, adSoyad: true, sifreHash: true }
+    })
+    if (!actor || actor.role !== UserRole.BURO_SAHIBI) {
+      res.status(403).json({
+        ok: false,
+        error: 'FORBIDDEN',
+        message: 'Bu işlem yalnızca büro sahibi tarafından yapılabilir.'
+      })
+      return
+    }
+    const result = await guvenliSilVekaletTaksiti(tenantId, actor, id, body, req)
     res.json(result)
   })
 )

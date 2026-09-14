@@ -1,9 +1,7 @@
-import bcrypt from 'bcrypt'
-import type { Prisma, User } from '@prisma/client'
-import { OfisKasaIslemTipi, UserRole } from '@prisma/client'
+import type { User } from '@prisma/client'
+import { OfisKasaIslemTipi } from '@prisma/client'
 import type { Request } from 'express'
 import { writeAuditLog } from '../audit/auditService.js'
-import { getRequestMeta } from '../auth/requestMeta.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -11,20 +9,20 @@ import {
   OFIS_KASA_KAYNAK_VEKALET_TAHSILATI,
   serializeOfisKasaHareketi
 } from './ofisKasa.service.js'
-import {
-  assertMasrafSilVerificationAllowed,
-  clearMasrafSilPasswordFailures,
-  masrafSilAttemptKey,
-  recordMasrafSilPasswordFailure
-} from '../kasa/masrafSilRateLimit.js'
 import { buildMasrafSilindiAuditMessage } from '../kasa/masrafGuvenliSil.service.js'
-import { syncTaksitOdemeDurumu } from '../vekalet/vekalet.service.js'
+import {
+  findOdemeIdByOfisHareket,
+  iptalVekaletTahsilatAuthenticated
+} from '../vekalet/vekaletTahsilatIptal.service.js'
 import { onTaksitOdemeChanged } from '../tahsilatBildirim/sync.service.js'
+import {
+  softDeleteOfisHareketAndDuzeltmeler,
+  verifyBuroSahibiPassword,
+  type GuvenliOfisHareketSilBody
+} from './ofisGuvenliSilCore.js'
 
-export type GuvenliOfisHareketSilBody = {
-  sifre: string
-  deleteReason: string
-}
+export type { GuvenliOfisHareketSilBody } from './ofisGuvenliSilCore.js'
+export { softDeleteOfisHareketAndDuzeltmeler, verifyBuroSahibiPassword } from './ofisGuvenliSilCore.js'
 
 export type GuvenliOfisHareketSilMode = 'GIDER_SIL' | 'GELIR_SIL' | 'TAHSILAT_IPTAL'
 
@@ -37,132 +35,6 @@ export type GuvenliOfisHareketSilResult = {
 
 const ORPHAN_MSG =
   'Bu gelir bağlı bir tahsilattan oluştuğu için kaynak ödeme doğrulanmadan silinemez.'
-
-async function verifyBuroSahibiPassword(
-  tenantId: string,
-  actor: Pick<User, 'id' | 'role' | 'adSoyad' | 'sifreHash'>,
-  entityId: string,
-  body: GuvenliOfisHareketSilBody,
-  req: Request,
-  auditPrefix: string
-): Promise<{ reason: string; meta: ReturnType<typeof getRequestMeta> }> {
-  if (actor.role !== UserRole.BURO_SAHIBI) {
-    throw new AppError(403, 'Bu işlem yalnızca büro sahibi tarafından yapılabilir.', 'FORBIDDEN')
-  }
-
-  const reason = body.deleteReason?.trim() ?? ''
-  if (reason.length < 3) {
-    throw new AppError(422, 'Silme / iptal nedeni zorunludur (en az 3 karakter).', 'VALIDATION_ERROR')
-  }
-  if (reason.length > 1000) {
-    throw new AppError(422, 'Neden en fazla 1000 karakter olabilir.', 'VALIDATION_ERROR')
-  }
-  const sifre = body.sifre ?? ''
-  if (!sifre) {
-    throw new AppError(422, 'Şifre zorunludur.', 'VALIDATION_ERROR')
-  }
-
-  const meta = getRequestMeta(req)
-  const rateKey = masrafSilAttemptKey(tenantId, actor.id, meta.ipAddress)
-
-  try {
-    assertMasrafSilVerificationAllowed(rateKey)
-  } catch {
-    await writeAuditLog({
-      tenantId,
-      userId: actor.id,
-      action: `${auditPrefix}_RATE_LIMITED`,
-      entityType: 'OfisKasaHareketi',
-      entityId,
-      meta: { reason: 'PASSWORD_VERIFY_BLOCKED' },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-    throw new AppError(
-      429,
-      'Çok fazla başarısız deneme. 15 dakika sonra tekrar deneyin.',
-      'MASRAF_SIL_RATE_LIMITED'
-    )
-  }
-
-  const passwordOk = await bcrypt.compare(sifre, actor.sifreHash)
-  if (!passwordOk) {
-    const blocked = recordMasrafSilPasswordFailure(rateKey)
-    await writeAuditLog({
-      tenantId,
-      userId: actor.id,
-      action: `${auditPrefix}_PASSWORD_FAILED`,
-      entityType: 'OfisKasaHareketi',
-      entityId,
-      meta: { blocked },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-    throw new AppError(401, 'Şifre yanlış, işlem yapılmadı', 'INVALID_PASSWORD')
-  }
-
-  clearMasrafSilPasswordFailures(rateKey)
-  return { reason, meta }
-}
-
-async function softDeleteOfisHareketAndDuzeltmeler(
-  tx: Prisma.TransactionClient,
-  opts: {
-    tenantId: string
-    hareketId: string
-    actorId: string
-    reason: string
-    now: Date
-    expectedTip: OfisKasaIslemTipi
-    /** Bağlı tahsilat iptalinde unique (kaynakTipi,kaynakId) slotunu bırakır; orijinal id audit’te kalır. */
-    releaseKaynakSlot?: boolean
-    originalKaynakId?: string | null
-  }
-): Promise<string[]> {
-  const primary = await tx.ofisKasaHareketi.updateMany({
-    where: {
-      id: opts.hareketId,
-      tenantId: opts.tenantId,
-      islemTipi: opts.expectedTip,
-      deletedAt: null
-    },
-    data: {
-      deletedAt: opts.now,
-      deletedById: opts.actorId,
-      deleteReason: opts.reason,
-      updatedById: opts.actorId,
-      ...(opts.releaseKaynakSlot && opts.originalKaynakId
-        ? { kaynakId: `${opts.originalKaynakId}#iptal#${opts.now.getTime()}` }
-        : {})
-    }
-  })
-  if (primary.count !== 1) {
-    return []
-  }
-
-  const related = await tx.ofisKasaHareketi.findMany({
-    where: {
-      tenantId: opts.tenantId,
-      islemTipi: OfisKasaIslemTipi.DUZELTME,
-      orijinalHareketId: opts.hareketId,
-      deletedAt: null
-    },
-    select: { id: true }
-  })
-  const relatedIds = related.map((r) => r.id)
-  if (relatedIds.length > 0) {
-    await tx.ofisKasaHareketi.updateMany({
-      where: { id: { in: relatedIds }, tenantId: opts.tenantId, deletedAt: null },
-      data: {
-        deletedAt: opts.now,
-        deletedById: opts.actorId,
-        deleteReason: opts.reason,
-        updatedById: opts.actorId
-      }
-    })
-  }
-  return [opts.hareketId, ...relatedIds]
-}
 
 /**
  * Büro sahibi + şifre ile Ofis Kasası GIDER / manuel GELIR soft-delete
@@ -192,6 +64,28 @@ export async function guvenliOfisHareketSil(
   }
 
   if (row.deletedAt) {
+    // Ofis zaten silinmiş olsa bile vekalet kaynağında iptalAt eksik kalmış olabilir — ortak servis tamir eder.
+    if (
+      row.kaynakTipi === OFIS_KASA_KAYNAK_VEKALET_TAHSILATI ||
+      row.kaynakTipi === 'VEKALET_TAKSIT_ODEME'
+    ) {
+      const odemeId = await findOdemeIdByOfisHareket(tenantId, hareketId, row.kaynakId)
+      if (odemeId) {
+        const fixed = await iptalVekaletTahsilatAuthenticated(
+          tenantId,
+          actor,
+          odemeId,
+          reason,
+          meta
+        )
+        return {
+          softDeletedIds: fixed.softDeletedOfisIds,
+          auditMessage: fixed.auditMessage,
+          mode: 'TAHSILAT_IPTAL',
+          alreadyDone: fixed.alreadyDone
+        }
+      }
+    }
     const mode: GuvenliOfisHareketSilMode =
       row.islemTipi === OfisKasaIslemTipi.GIDER
         ? 'GIDER_SIL'
@@ -317,79 +211,23 @@ export async function guvenliOfisHareketSil(
   }
 
   if (kaynakTipi === OFIS_KASA_KAYNAK_VEKALET_TAHSILATI || kaynakTipi === 'VEKALET_TAKSIT_ODEME') {
-    let odeme = await prisma.vekaletTaksitOdeme.findFirst({
-      where: { id: kaynakId, tenantId },
-      select: { id: true, taksitId: true, ofisKasaHareketId: true, tutar: true, kasaTutari: true }
-    })
-    // Eski import: kaynakId yanlış olabilir; ofis bağlantısından doğrula.
-    if (!odeme || (odeme.ofisKasaHareketId && odeme.ofisKasaHareketId !== hareketId)) {
-      odeme = await prisma.vekaletTaksitOdeme.findFirst({
-        where: { tenantId, ofisKasaHareketId: hareketId },
-        select: { id: true, taksitId: true, ofisKasaHareketId: true, tutar: true, kasaTutari: true }
-      })
-    }
-    if (!odeme) {
+    const odemeId = await findOdemeIdByOfisHareket(tenantId, hareketId, kaynakId)
+    if (!odemeId) {
       throw new AppError(409, ORPHAN_MSG, 'SOURCE_UNVERIFIED')
     }
-
-    const auditMessage = `${actorName}, ${now.toLocaleString('tr-TR')} tarihinde vekalet tahsilatını iptal etti. Neden: ${reason}`
-    const softDeletedIds = await prisma.$transaction(async (tx) => {
-      const ids = await softDeleteOfisHareketAndDuzeltmeler(tx, {
-        tenantId,
-        hareketId,
-        actorId: actor.id,
-        reason,
-        now,
-        expectedTip: OfisKasaIslemTipi.GELIR,
-        releaseKaynakSlot: true,
-        originalKaynakId: kaynakId
-      })
-      if (ids.length === 0) return []
-      // Ödeme satırı / makbuz korunur; bakiyeden düşmesi için ofis.deletedAt yeterlidir.
-      await syncTaksitOdemeDurumu(tx, odeme.taksitId, actor.id)
-      return ids
-    })
-
-    if (softDeletedIds.length === 0) {
-      return {
-        softDeletedIds: [],
-        auditMessage: 'İşlem zaten uygulanmış; bakiye değiştirilmedi.',
-        mode: 'TAHSILAT_IPTAL',
-        alreadyDone: true
-      }
-    }
-
-    await writeAuditLog({
+    const result = await iptalVekaletTahsilatAuthenticated(
       tenantId,
-      userId: actor.id,
-      action: 'OFIS_KASA_VEKALET_TAHSILAT_IPTAL',
-      entityType: 'OfisKasaHareketi',
-      entityId: hareketId,
-      oldValue: serializeOfisKasaHareketi({ ...row, orijinalHareket: null }),
-      newValue: {
-        deletedAt: now.toISOString(),
-        softDeletedIds,
-        kaynakTipi,
-        kaynakId,
-        odemeId: odeme.id,
-        taksitId: odeme.taksitId,
-        message: auditMessage
-      },
-      meta: {
-        belgeNo: row.belgeNo,
-        tutar: row.tutar.toFixed(2),
-        paraBirimi: row.paraBirimi,
-        mahsupTutar: odeme.tutar.toFixed(2),
-        kasaTutari: odeme.kasaTutari.toFixed(2),
-        message: auditMessage
-      },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent
-    })
-
-    void onTaksitOdemeChanged(tenantId, odeme.taksitId).catch(() => {})
-
-    return { softDeletedIds, auditMessage, mode: 'TAHSILAT_IPTAL', alreadyDone: false }
+      actor,
+      odemeId,
+      reason,
+      meta
+    )
+    return {
+      softDeletedIds: result.softDeletedOfisIds,
+      auditMessage: result.auditMessage,
+      mode: 'TAHSILAT_IPTAL',
+      alreadyDone: result.alreadyDone
+    }
   }
 
   // ICRA

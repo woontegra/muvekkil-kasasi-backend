@@ -96,6 +96,10 @@ export const createVekaletTaksitOdemeBodySchema = z.object({
   smmKesildiMi: z.boolean().optional().default(false),
   tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
   tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
+  /**
+   * Modal açılışındaki kanonik kalan (fixed-2). Sunucu ile uyuşmazsa 409 STALE_PAYMENT_SUMMARY.
+   */
+  expectedKalanTutar: z.union([z.string(), z.number()]).optional().nullable(),
   ...crossPaymentBodyFields
 })
 
@@ -162,3 +166,19 @@ export const createTekVekaletTaksitiBodySchema = z.object({
 })
 
 export type CreateTekVekaletTaksitiBody = z.infer<typeof createTekVekaletTaksitiBodySchema>
+
+export const guvenliVekaletUcretiSilBodySchema = z.object({
+  sifre: z.string().min(1, 'Şifre zorunludur.'),
+  deleteReason: z.string().trim().min(3, 'Silme nedeni en az 3 karakter olmalıdır.').max(1000),
+  analysisFingerprint: z.string().min(16, 'Etki analizi parmak izi zorunludur.')
+})
+
+export type GuvenliVekaletUcretiSilBodyParsed = z.infer<typeof guvenliVekaletUcretiSilBodySchema>
+
+/** Büro sahibi güvenli satır silme / tahsilat iptali. */
+export const guvenliSatirSilBodySchema = z.object({
+  sifre: z.string().min(1, 'Şifre zorunludur.'),
+  deleteReason: z.string().trim().min(3, 'Silme nedeni en az 3 karakter olmalıdır.').max(1000)
+})
+
+export type GuvenliSatirSilBody = z.infer<typeof guvenliSatirSilBodySchema>

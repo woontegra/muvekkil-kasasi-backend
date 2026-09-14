@@ -25,7 +25,11 @@ import {
   resolveParaBirimi
 } from '../lib/paraBirimi.js'
 import { resolveDovizDonusumKurMeta } from '../lib/kurSnapshot.js'
-import { isDigerGelir, isDigerGider } from './ofisKasa.schemas.js'
+import {
+  assertOzelAdForKalem,
+  resolveAktifManuelKalem
+} from '../finansKalemi/finansKalemi.service.js'
+import { FinansKalemTuru } from '@prisma/client'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
 import {
   type AccountingPeriodMode,
@@ -570,12 +574,9 @@ export async function createOfisKasaHareketi(
   req: Request
 ): Promise<OfisKasaHareketi> {
   const meta = getRequestMeta(req)
-  const ozel =
-    body.islemTipi === OfisKasaIslemTipi.GELIR && isDigerGelir(body.kategori)
-      ? body.ozelKategoriAdi?.trim() ?? null
-      : body.islemTipi === OfisKasaIslemTipi.GIDER && isDigerGider(body.kategori)
-        ? body.ozelKategoriAdi?.trim() ?? null
-        : null
+  const tur = body.islemTipi === OfisKasaIslemTipi.GELIR ? FinansKalemTuru.GELIR : FinansKalemTuru.GIDER
+  const kalem = await resolveAktifManuelKalem(tenantId, tur, body.kalemId)
+  const ozel = assertOzelAdForKalem(tur, kalem.ad, body.ozelKategoriAdi)
 
   const tutar = new PrismaClient.Decimal(body.tutar)
   const paraBirimi = resolveParaBirimi(body.paraBirimi)
@@ -605,7 +606,8 @@ export async function createOfisKasaHareketi(
             tenantId,
             islemTipi: body.islemTipi,
             tarih: body.tarih,
-            kategori: body.kategori.trim(),
+            kategori: kalem.ad,
+            kalemId: kalem.id,
             ozelKategoriAdi: ozel,
             aciklama: body.aciklama?.trim() || null,
             tutar,

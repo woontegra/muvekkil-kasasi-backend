@@ -6,6 +6,7 @@ import { AppError } from '../middleware/errorHandler.js'
 import { writeAdminAuditLog } from '../admin/adminAudit.service.js'
 import { allocateUniqueSaasLicenseKey } from './allocateUniqueSaasLicenseKey.js'
 import { generateUniqueMusteriNo } from '../lib/musteriNo.js'
+import { bootstrapTenantFinansKalemleri } from '../finansKalemi/finansKalemi.service.js'
 
 export type ProvisionTenantOwnerInput = {
   adSoyad: string
@@ -141,6 +142,8 @@ export async function provisionTenantWithOwner(
           licenseActivatedAt: input.owner.licenseActivatedAt ?? undefined
         }
       })
+
+      await bootstrapTenantFinansKalemleri(tx, tenant.id, ownerUser.id)
 
       return { tenant, ownerUser }
     })

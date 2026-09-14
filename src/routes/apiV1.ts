@@ -32,6 +32,7 @@ import { adminRouter } from '../admin/admin.routes.js'
 import { woontegraWebsiteProvisionRouter } from '../integrations/woontegraWebsite/woontegraWebsiteProvision.routes.js'
 import { randevularRouter } from '../randevu/randevu.routes.js'
 import { kurlarRouter } from '../kurlar/kurlar.routes.js'
+import { finansKalemleriRouter } from '../finansKalemi/finansKalemi.routes.js'
 
 export const apiV1Router = Router()
 
@@ -65,6 +66,7 @@ apiV1Router.use('/import/desktop', desktopImportRouter)
 apiV1Router.use('/users', usersRouter)
 apiV1Router.use('/license', licenseRouter)
 apiV1Router.use('/tenant', tenantRouter)
+apiV1Router.use('/finans-kalemleri', finansKalemleriRouter)
 
 apiV1Router.get('/me', requireAuth, loadAuthContext, meHandler)
 

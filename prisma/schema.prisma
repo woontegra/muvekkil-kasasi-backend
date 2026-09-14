@@ -63,6 +63,7 @@ model Tenant {
   vekaletTaksitleri     VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   ofisKasaHareketleri   OfisKasaHareketi[]
+  finansKalemleri       TenantFinansKalemi[]
   importBatches         ImportBatch[]
   primKurallari         PrimKurali[]
   primKuralKademeleri   PrimKuralKademesi[]
@@ -230,13 +231,17 @@ model User {
   kasaHareketleriDeleted   KasaHareketi[]     @relation("KasaDeletedBy")
   vekaletUcretleriCreated   VekaletUcreti[]   @relation("VekaletUcretiCreatedBy")
   vekaletUcretleriUpdated   VekaletUcreti[]   @relation("VekaletUcretiUpdatedBy")
+  vekaletUcretleriDeleted   VekaletUcreti[]   @relation("VekaletUcretiDeletedBy")
   vekaletTaksitleriCreated   VekaletTaksiti[] @relation("VekaletTaksitCreatedBy")
   vekaletTaksitleriUpdated   VekaletTaksiti[] @relation("VekaletTaksitUpdatedBy")
   vekaletTaksitOdemeleriCreated VekaletTaksitOdeme[] @relation("VekaletTaksitOdemeCreatedBy")
+  vekaletTaksitOdemeleriIptal   VekaletTaksitOdeme[] @relation("VekaletTaksitOdemeIptalBy")
   ofisKasaHareketleriCreated OfisKasaHareketi[] @relation("OfisKasaCreatedBy")
   ofisKasaHareketleriUpdated OfisKasaHareketi[] @relation("OfisKasaUpdatedBy")
   ofisKasaHareketleriOnaylayan OfisKasaHareketi[] @relation("OfisKasaOnaylayan")
   ofisKasaHareketleriDeleted   OfisKasaHareketi[] @relation("OfisKasaDeletedBy")
+  finansKalemleriCreated       TenantFinansKalemi[] @relation("FinansKalemCreatedBy")
+  finansKalemleriUpdated       TenantFinansKalemi[] @relation("FinansKalemUpdatedBy")
   importBatchesCommitted       ImportBatch[]
   tahsilatlariYapanKasa        KasaHareketi[]        @relation("KasaTahsilatiYapan")
   tahsilatlariYapanVekalet     VekaletTaksitOdeme[]  @relation("VekaletOdemeTahsilatiYapan")
@@ -365,7 +370,7 @@ model Dosya {
   createdAt    DateTime     @default(now()) @map("created_at")
   updatedAt    DateTime     @updatedAt @map("updated_at")
   kasaHareketleri   KasaHareketi[]
-  vekaletUcreti     VekaletUcreti?
+  vekaletUcretleri  VekaletUcreti[]
   vekaletTaksitleri VekaletTaksiti[]
   vekaletTaksitOdemeleri VekaletTaksitOdeme[]
   icraTahsilatAlacaklari IcraTahsilatAlacagi[]
@@ -462,6 +467,41 @@ enum OfisKasaOdemeYontemi {
   DIGER
 }
 
+/// Tenant’a özel manuel gelir/gider kalemi (Ofis Kasası + Dosya masraf).
+enum FinansKalemTuru {
+  GELIR
+  GIDER
+}
+
+model TenantFinansKalemi {
+  id           String          @id @default(uuid())
+  tenantId     String          @map("tenant_id")
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tur          FinansKalemTuru
+  /// Sistem kalemleri için sabit kod (VEKALET_TAHSILATI vb.). Kullanıcı kalemlerinde null.
+  kod          String?         @map("kod")
+  ad           String
+  normalizeAd  String          @map("normalize_ad")
+  aktif        Boolean         @default(true)
+  sistemMi     Boolean         @default(false) @map("sistem_mi")
+  sira         Int             @default(0)
+  createdById  String?         @map("created_by_id")
+  createdBy    User?           @relation("FinansKalemCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  updatedById  String?         @map("updated_by_id")
+  updatedBy    User?           @relation("FinansKalemUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  archivedAt   DateTime?       @map("archived_at")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  ofisKasaHareketleri OfisKasaHareketi[]
+  kasaHareketleri     KasaHareketi[]
+
+  @@unique([tenantId, tur, normalizeAd])
+  /// Partial unique (kod IS NOT NULL) migration SQL’de; Prisma şemasında çoklu NULL serbest.
+  @@index([tenantId, kod])
+  @@index([tenantId, tur, aktif, sira])
+  @@map("tenant_finans_kalemi")
+}
+
 model OfisKasaHareketi {
   id                  String               @id @default(uuid())
   tenantId            String               @map("tenant_id")
@@ -470,6 +510,9 @@ model OfisKasaHareketi {
   tarih               DateTime
   kategori            String               @map("kategori")
   ozelKategoriAdi     String?              @map("ozel_kategori_adi")
+  /// Opsiyonel: tenant finans kalemi. Geçmiş kayıtlar null kalabilir; kategori metni snapshot’tır.
+  kalemId             String?              @map("kalem_id")
+  kalem               TenantFinansKalemi?  @relation(fields: [kalemId], references: [id], onDelete: SetNull)
   aciklama            String?
   tutar               Decimal              @db.Decimal(14, 2)
   /// Hareketin para birimi. Mevcut kayıtlar TRY.
@@ -529,6 +572,7 @@ model OfisKasaHareketi {
   @@index([tenantId, muvekkilId])
   @@index([tenantId, dovizDonusumId])
   @@index([tenantId, deletedAt])
+  @@index([tenantId, kalemId])
   @@map("ofis_kasa_hareketi")
 }
 
@@ -544,6 +588,9 @@ model KasaHareketi {
   tarih              DateTime
   masrafTuru         String?          @map("masraf_turu")
   ozelMasrafAdi      String?          @map("ozel_masraf_adi")
+  /// Opsiyonel: tenant GIDER kalemi. masrafTuru işlem anı snapshot’ıdır.
+  kalemId            String?          @map("kalem_id")
+  kalem              TenantFinansKalemi? @relation(fields: [kalemId], references: [id], onDelete: SetNull)
   aciklama           String?
   tutar              Decimal          @db.Decimal(14, 2)
   /** Dosya kasası akışında kullanılmıyor; kolon geriye dönük uyumluluk için nullable. */
@@ -582,6 +629,7 @@ model KasaHareketi {
   @@index([tenantId, dosyaId, deletedAt])
   @@index([tenantId, tahsilatiYapanUserId, tarih])
   @@index([tenantId, tahsilatiYapanPersonelId, tarih])
+  @@index([tenantId, kalemId])
   @@map("kasa_hareketi")
 }
 
@@ -592,29 +640,46 @@ enum VekaletTaksitOdemeDurumu {
   IPTAL
 }
 
-/// Dosya başına tek anlaşılan vekalet ücreti; dosya kasası (avans) ile ilişkilendirilmez.
+enum VekaletUcretiDurum {
+  AKTIF
+  IPTAL
+}
+
+enum MakbuzDurumu {
+  AKTIF
+  IPTAL
+}
+
+/// Dosya başına tek *aktif* anlaşılan vekalet ücreti; iptal sonrası yeni kayıt açılabilir.
 model VekaletUcreti {
-  id           String   @id @default(uuid())
-  tenantId     String   @map("tenant_id")
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  dosyaId      String   @unique @map("dosya_id")
-  dosya        Dosya    @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
-  muvekkilId   String   @map("muvekkil_id")
-  muvekkil     Muvekkil @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
-  toplamTutar  Decimal  @map("toplam_tutar") @db.Decimal(14, 2)
+  id           String            @id @default(uuid())
+  tenantId     String            @map("tenant_id")
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dosyaId      String            @map("dosya_id")
+  dosya        Dosya             @relation(fields: [dosyaId], references: [id], onDelete: Cascade)
+  muvekkilId   String            @map("muvekkil_id")
+  muvekkil     Muvekkil          @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
+  toplamTutar  Decimal           @map("toplam_tutar") @db.Decimal(14, 2)
   /// Alacak para birimi; taksitler bunu devralır.
-  paraBirimi   ParaBirimi @default(TRY) @map("para_birimi")
+  paraBirimi   ParaBirimi        @default(TRY) @map("para_birimi")
   aciklama     String?
-  createdById  String   @map("created_by_id")
-  createdBy    User     @relation("VekaletUcretiCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  updatedById  String?  @map("updated_by_id")
-  updatedBy    User?    @relation("VekaletUcretiUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  durum        VekaletUcretiDurum @default(AKTIF)
+  deletedAt    DateTime?         @map("deleted_at")
+  deletedById  String?           @map("deleted_by_id")
+  deletedBy    User?             @relation("VekaletUcretiDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  deleteReason String?           @map("delete_reason") @db.VarChar(1000)
+  createdById  String            @map("created_by_id")
+  createdBy    User              @relation("VekaletUcretiCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedById  String?           @map("updated_by_id")
+  updatedBy    User?             @relation("VekaletUcretiUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
   taksitler    VekaletTaksiti[]
 
   @@index([tenantId, muvekkilId])
   @@index([tenantId, paraBirimi])
+  @@index([tenantId, dosyaId, durum])
+  @@index([dosyaId, durum])
   @@map("vekalet_ucreti")
 }
 
@@ -690,7 +755,13 @@ model VekaletTaksitOdeme {
   odemeYontemi  OdemeYontemi   @map("odeme_yontemi")
   aciklama      String?
   makbuzNo      String         @map("makbuz_no")
+  makbuzDurumu  MakbuzDurumu   @default(AKTIF) @map("makbuz_durumu")
   smmKesildiMi  Boolean        @default(false) @map("smm_kesildi_mi")
+  /** Güvenli vekalet iptalinde set edilir; satır ve makbuz numarası korunur. */
+  iptalAt       DateTime?      @map("iptal_at")
+  iptalById     String?        @map("iptal_by_id")
+  iptalBy       User?          @relation("VekaletTaksitOdemeIptalBy", fields: [iptalById], references: [id], onDelete: SetNull)
+  iptalNedeni   String?        @map("iptal_nedeni") @db.VarChar(1000)
   kasaHareketId String?        @unique @map("kasa_hareket_id")
   kasaHareket   KasaHareketi?  @relation(fields: [kasaHareketId], references: [id], onDelete: SetNull)
   ofisKasaHareketId String?    @unique @map("ofis_kasa_hareket_id")
@@ -708,6 +779,7 @@ model VekaletTaksitOdeme {
   @@index([tenantId, taksitId])
   @@index([tenantId, dosyaId])
   @@index([tenantId, smmKesildiMi])
+  @@index([tenantId, iptalAt])
   @@index([tenantId, tahsilatiYapanUserId, odemeTarihi])
   @@index([tenantId, tahsilatiYapanPersonelId, odemeTarihi])
   @@map("vekalet_taksit_odeme")

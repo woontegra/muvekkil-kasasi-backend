@@ -2,6 +2,7 @@ import { OfisKasaIslemTipi, OfisKasaOdemeYontemi, OfisKasaOnayDurumu } from '@pr
 import { z } from 'zod'
 import { dovizDonusumKurFields, optionalParaBirimiSchema } from '../lib/paymentCurrency.schemas.js'
 
+/** @deprecated Sabit listeler — tenant finans kalemleri tercih edilir; filtre/rapor etiketleri için tutulur. */
 export const OFIS_KASA_GELIR_KATEGORILERI = [
   'Vekalet ücreti dışı gelir',
   'Vekalet Ücreti Tahsilatı',
@@ -12,6 +13,7 @@ export const OFIS_KASA_GELIR_KATEGORILERI = [
   'Diğer gelir'
 ] as const
 
+/** @deprecated Sabit listeler — tenant finans kalemleri tercih edilir. */
 export const OFIS_KASA_GIDER_KATEGORILERI = [
   'Ofis kirası',
   'Personel maaşı',
@@ -57,7 +59,10 @@ export const createOfisKasaHareketiBodySchema = z
   .object({
     islemTipi: z.enum([OfisKasaIslemTipi.GELIR, OfisKasaIslemTipi.GIDER]),
     tarih: z.coerce.date(),
-    kategori: z.string().trim().min(2).max(120),
+    /** Tenant finans kalemi — aktif manuel kalem zorunlu. */
+    kalemId: z.string().uuid('Geçerli bir kalem seçin.'),
+    /** İstemci gönderirse yok sayılır; sunucu kalem adını snapshot yazar. */
+    kategori: z.string().trim().max(120).optional(),
     ozelKategoriAdi: z.string().trim().max(200).optional().nullable(),
     aciklama: z.string().trim().max(4000).optional().nullable(),
     tutar: tutarPositive,
@@ -84,49 +89,6 @@ export const createOfisKasaHareketiBodySchema = z
         message: 'Gider işlemine müvekkil bağlanamaz.',
         path: ['muvekkilId']
       })
-    }
-    if (data.islemTipi === OfisKasaIslemTipi.GELIR) {
-      if (!OFIS_KASA_GELIR_KATEGORILERI.includes(data.kategori as OfisKasaGelirKategori)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçersiz gelir kategorisi.', path: ['kategori'] })
-        return
-      }
-      if (isDigerGelir(data.kategori)) {
-        const oz = data.ozelKategoriAdi?.trim() ?? ''
-        if (oz.length < 2) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Diğer gelir için özel kategori adı zorunludur.',
-            path: ['ozelKategoriAdi']
-          })
-        }
-      } else if (data.ozelKategoriAdi?.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Özel kategori adı yalnızca «Diğer gelir» için kullanılır.',
-          path: ['ozelKategoriAdi']
-        })
-      }
-    } else {
-      if (!OFIS_KASA_GIDER_KATEGORILERI.includes(data.kategori as OfisKasaGiderKategori)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Geçersiz gider kategorisi.', path: ['kategori'] })
-        return
-      }
-      if (isDigerGider(data.kategori)) {
-        const oz = data.ozelKategoriAdi?.trim() ?? ''
-        if (oz.length < 2) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Diğer gider için özel kategori adı zorunludur.',
-            path: ['ozelKategoriAdi']
-          })
-        }
-      } else if (data.ozelKategoriAdi?.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Özel kategori adı yalnızca «Diğer gider» için kullanılır.',
-          path: ['ozelKategoriAdi']
-        })
-      }
     }
   })
 

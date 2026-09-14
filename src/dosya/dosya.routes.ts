@@ -37,6 +37,8 @@ import {
   upsertVekaletUcreti
 } from '../vekalet/vekalet.service.js'
 import { createVekaletPesinOdeme } from '../vekalet/vekaletTaksitOdeme.service.js'
+import { prisma } from '../lib/prisma.js'
+import { AppError } from '../middleware/errorHandler.js'
 import { muvekkilEkstreRouter } from '../muvekkilEkstre/muvekkilEkstre.routes.js'
 
 export const dosyalarRouter = Router()
@@ -105,6 +107,30 @@ dosyalarRouter.get(
       return
     }
     res.json({ ok: true, ...pack })
+  })
+)
+
+dosyalarRouter.get(
+  '/:id/vekalet/sil-etki-analizi',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    res.status(410).json({
+      ok: false,
+      error: 'FEATURE_DISABLED',
+      message: 'Vekalet ücretinin tamamını silme özelliği kaldırıldı. Yalnız taksit veya tahsilat satırı silinebilir.'
+    })
+  })
+)
+
+dosyalarRouter.post(
+  '/:id/vekalet/guvenli-sil',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    res.status(410).json({
+      ok: false,
+      error: 'FEATURE_DISABLED',
+      message: 'Vekalet ücretinin tamamını silme özelliği kaldırıldı. Yalnız taksit veya tahsilat satırı silinebilir.'
+    })
   })
 )
 

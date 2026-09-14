@@ -24,6 +24,7 @@ const baseGelir = {
   islemTipi: 'GELIR' as const,
   tarih: new Date().toISOString(),
   kategori: 'Danışmanlık geliri',
+  kalemId: '11111111-1111-4111-8111-111111111111',
   tutar: 100,
   odemeYontemi: 'NAKIT' as const
 }
@@ -32,6 +33,7 @@ const baseGider = {
   islemTipi: 'GIDER' as const,
   tarih: new Date().toISOString(),
   kategori: 'Ofis kirası',
+  kalemId: '22222222-2222-4222-8222-222222222222',
   tutar: 100,
   odemeYontemi: 'NAKIT' as const
 }

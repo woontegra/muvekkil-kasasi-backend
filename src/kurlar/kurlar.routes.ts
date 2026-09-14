@@ -51,15 +51,17 @@ kurlarRouter.get('/tcmb', requireAuth, async (req, res, next) => {
       bulunanTcmbKurTarihi: snap.bulunanTcmbKurTarihi,
       effectiveDate: snap.effectiveDate,
       fetchedAt: snap.fetchedAt,
+      lastCheckedAt: snap.lastCheckedAt,
+      fromCache: snap.fromCache,
       source: snap.source,
       sourceLabel: 'Türkiye Cumhuriyet Merkez Bankası',
       stale: snap.stale,
       fallbackKullanildi: snap.fallbackKullanildi,
       /** stale ≠ fallback: önceki iş günü seçimi stale değildir. */
-      cacheNote: snap.fallbackKullanildi && !snap.stale
-        ? 'İstenen günde TCMB bülteni yok; önceki iş günü kuru kullanıldı (güncel referans, stale değil).'
-        : snap.stale
-          ? 'TCMB erişilemedi; son alınan kur gösteriliyor.'
+      cacheNote: snap.stale
+        ? 'TCMB’ye şu anda ulaşılamadı; son yayımlanan kur gösteriliyor.'
+        : snap.fallbackKullanildi
+          ? 'TCMB’nin son yayımladığı kur gösteriliyor (istenilen günde bülten yok).'
           : null,
       usdDovizAlis: snap.usd.buyingRate,
       usdDovizSatis: snap.usd.sellingRate,

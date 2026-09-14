@@ -156,7 +156,11 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
           durum: true,
           muvekkilId: true,
           muvekkil: { select: { id: true, gorunenAd: true } },
-          vekaletUcreti: { select: { toplamTutar: true } },
+          vekaletUcretleri: {
+            where: { durum: 'AKTIF' },
+            select: { toplamTutar: true },
+            take: 1
+          },
           kasaHareketleri: {
             where: { onayDurumu: KasaOnayDurumu.ONAYLI },
             select: { tip: true, tutar: true }
@@ -336,7 +340,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
     for (const t of d.vekaletTaksitleri) {
       toplamOdenen += sumTutarlar(t.odemeler)
     }
-    const toplamVekalet = Number(d.vekaletUcreti?.toplamTutar ?? 0)
+    const toplamVekalet = Number(d.vekaletUcretleri[0]?.toplamTutar ?? 0)
     const kalanAlacak = Math.max(0, toplamVekalet - toplamOdenen)
     if (kalanAlacak > 0.001 && toplamVekalet > 0) {
       let ilkKalanTaksitId: string | undefined

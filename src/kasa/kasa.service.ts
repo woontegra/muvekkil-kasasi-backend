@@ -6,8 +6,12 @@ import { AppError } from '../middleware/errorHandler.js'
 import type { Request } from 'express'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import type { CreateDuzeltmeBody, CreateKasaHareketiBody, ListKasaHareketleriQuery } from './kasa.schemas.js'
-import { isDigerMasraf } from './kasa.schemas.js'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
+import {
+  assertOzelAdForKalem,
+  resolveAktifManuelKalem
+} from '../finansKalemi/finansKalemi.service.js'
+import { FinansKalemTuru } from '@prisma/client'
 
 export type KasaHareketiWithOrijinal = KasaHareketi & {
   orijinalHareket?: { id: string; belgeNo: string } | null
@@ -279,12 +283,14 @@ export async function createKasaHareketi(
     throw new AppError(404, 'Dosya bulunamadı.', 'NOT_FOUND')
   }
 
-  const masrafTuru =
-    body.tip === KasaHareketTipi.MASRAF ? (body.masrafTuru?.trim() ?? null) : null
-  const ozelMasrafAdi =
-    body.tip === KasaHareketTipi.MASRAF && masrafTuru && isDigerMasraf(masrafTuru)
-      ? body.ozelMasrafAdi?.trim() ?? null
+  const masrafKalem =
+    body.tip === KasaHareketTipi.MASRAF && body.kalemId
+      ? await resolveAktifManuelKalem(tenantId, FinansKalemTuru.GIDER, body.kalemId)
       : null
+  const masrafTuru = masrafKalem?.ad ?? null
+  const ozelMasrafAdi = masrafKalem
+    ? assertOzelAdForKalem(FinansKalemTuru.GIDER, masrafKalem.ad, body.ozelMasrafAdi)
+    : null
   const masrafiYapanKisi =
     body.tip === KasaHareketTipi.MASRAF ? (body.masrafiYapanKisi?.trim() ?? null) : null
 
@@ -309,6 +315,7 @@ export async function createKasaHareketi(
             tip: body.tip,
             tarih: body.tarih,
             masrafTuru,
+            kalemId: masrafKalem?.id ?? null,
             ozelMasrafAdi,
             aciklama: body.aciklama?.trim() || null,
             tutar,

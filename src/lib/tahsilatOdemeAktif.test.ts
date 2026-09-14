@@ -7,6 +7,16 @@ describe('isTahsilatOdemeAktif', () => {
     assert.equal(isTahsilatOdemeAktif({ ofisKasaHareketId: null }), true)
   })
 
+  it('iptalAt dolu ise pasif', () => {
+    assert.equal(
+      isTahsilatOdemeAktif({
+        iptalAt: new Date(),
+        ofisKasaHareketId: null
+      }),
+      false
+    )
+  })
+
   it('ofis soft-delete ise pasif', () => {
     assert.equal(
       isTahsilatOdemeAktif({
