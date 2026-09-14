@@ -5,8 +5,10 @@ import {
   OfisKasaIslemTipi,
   OfisKasaOnayDurumu,
   VekaletTaksitOdemeDurumu,
+  type ParaBirimi,
   type Prisma
 } from '@prisma/client'
+import { PARA_BIRIMLERI, formatKurOzeti, moneyToApiString, rateToApiString } from '../lib/paraBirimi.js'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { serializeTenant } from '../auth/auth.service.js'
@@ -81,6 +83,7 @@ export type MuvekkilEkstrePayload = {
     icraDairesi: string | null
   }
   vekaletOzeti: {
+    paraBirimi: ParaBirimi
     kararlastirilanToplam: string
     tahsilEdilenToplam: string
     kalanToplam: string
@@ -101,7 +104,15 @@ export type MuvekkilEkstrePayload = {
     odemeler: Array<{
       id: string
       odemeTarihi: string
+      /** Borca mahsup (alacak PB) */
       tutar: string
+      alacakParaBirimi: string
+      odemeParaBirimi: string
+      kasaTutari: string
+      kur: string | null
+      kurOzeti: string | null
+      /** Çapraz ödeme satır özeti — ana borç PB korunur */
+      caprazOzet: string | null
       odemeYontemi: string
       makbuzNo: string
       aciklama: string | null
@@ -127,7 +138,19 @@ export type MuvekkilEkstrePayload = {
   }>
   /** Dosya dışı ofis kasası gelirleri — vekalet/icra borç-tahsilat toplamlarına dahil edilmez. */
   dosyaDisiOfisGelirleri: {
+    /** Geriye uyumluluk — yalnızca TRY toplamı. */
     toplam: string
+    byCurrency: Record<ParaBirimi, { toplam: string; hareketler: Array<{
+      id: string
+      tarih: string
+      belgeNo: string
+      kategori: string
+      aciklama: string | null
+      odemeYontemi: string
+      personelAd: string | null
+      tutar: string
+      paraBirimi: ParaBirimi
+    }> }>
     hareketler: Array<{
       id: string
       tarih: string
@@ -137,6 +160,7 @@ export type MuvekkilEkstrePayload = {
       odemeYontemi: string
       personelAd: string | null
       tutar: string
+      paraBirimi: ParaBirimi
     }>
   }
   dipnot: string
@@ -185,6 +209,7 @@ export async function buildMuvekkilEkstreForDosya(
         tenantId,
         dosyaId,
         onayDurumu: KasaOnayDurumu.ONAYLI,
+        deletedAt: null,
         tip: { in: [KasaHareketTipi.AVANS_GIRISI, KasaHareketTipi.MASRAF, KasaHareketTipi.DUZELTME] },
         tarih: { lte: cutoff }
       },
@@ -206,6 +231,7 @@ export async function buildMuvekkilEkstreForDosya(
     })
   ])
 
+  const vekaletParaBirimi = vekalet?.paraBirimi ?? 'TRY'
   const anlasilan = Number(vekalet?.toplamTutar ?? 0)
   let odenenToplam = 0
   let gecikmisToplam = 0
@@ -258,14 +284,35 @@ export async function buildMuvekkilEkstreForDosya(
       kalanTutar: fmt(kalan),
       durum,
       iptalMi,
-      odemeler: t.odemeler.map((o) => ({
-        id: o.id,
-        odemeTarihi: o.odemeTarihi.toISOString(),
-        tutar: fmt(Number(o.tutar)),
-        odemeYontemi: o.odemeYontemi,
-        makbuzNo: o.makbuzNo,
-        aciklama: o.aciklama
-      }))
+      odemeler: t.odemeler.map((o) => {
+        const alacakPb = (o.alacakParaBirimi ?? vekaletParaBirimi) as ParaBirimi
+        const odemePb = (o.odemeParaBirimi ?? alacakPb) as ParaBirimi
+        const mahsup = moneyToApiString(o.tutar)
+        const kasa = moneyToApiString(o.kasaTutari ?? o.tutar)
+        const kurStr = rateToApiString(o.kur)
+        const isCross = odemePb !== alacakPb
+        const kurOzeti =
+          isCross && o.kur != null ? formatKurOzeti(alacakPb, odemePb, o.kur) : null
+        const caprazOzet = isCross
+          ? `Tahsil edilen: ${kasa} ${odemePb} / Borca mahsup: ${mahsup} ${alacakPb}${
+              kurOzeti ? ` / Kur: ${kurOzeti}` : ''
+            }`
+          : null
+        return {
+          id: o.id,
+          odemeTarihi: o.odemeTarihi.toISOString(),
+          tutar: fmt(Number(o.tutar)),
+          alacakParaBirimi: alacakPb,
+          odemeParaBirimi: odemePb,
+          kasaTutari: kasa,
+          kur: kurStr,
+          kurOzeti,
+          caprazOzet,
+          odemeYontemi: o.odemeYontemi,
+          makbuzNo: o.makbuzNo,
+          aciklama: o.aciklama
+        }
+      })
     })
   }
 
@@ -339,10 +386,22 @@ export async function buildMuvekkilEkstreForDosya(
       aciklama: h.aciklama,
       odemeYontemi: h.odemeYontemi,
       personelAd,
-      tutar: fmt(Number(h.tutar))
+      tutar: fmt(Number(h.tutar)),
+      paraBirimi: h.paraBirimi
     }
   })
-  const ofisGelirToplam = ofisGelirRows.reduce((s, h) => s + Number(h.tutar), 0)
+  const ofisByCurrency = {} as Record<
+    ParaBirimi,
+    { toplam: string; hareketler: typeof ofisGelirHareketleri }
+  >
+  for (const pb of PARA_BIRIMLERI) {
+    const hareketler = ofisGelirHareketleri.filter((x) => x.paraBirimi === pb)
+    const toplam = ofisGelirRows
+      .filter((h) => h.paraBirimi === pb)
+      .reduce((s, h) => s + Number(h.tutar), 0)
+    ofisByCurrency[pb] = { toplam: fmt(toplam), hareketler }
+  }
+  const ofisGelirToplam = ofisByCurrency.TRY.toplam
 
   const tenantSer = serializeTenant(dosya.tenant) as Record<string, unknown>
   const dosyaSer = serializeDosya(dosya) as Record<string, unknown>
@@ -375,6 +434,7 @@ export async function buildMuvekkilEkstreForDosya(
       icraDairesi: (dosyaSer.icraDairesi as string | null) ?? null
     },
     vekaletOzeti: {
+      paraBirimi: vekaletParaBirimi,
       kararlastirilanToplam: fmt(anlasilan),
       tahsilEdilenToplam: fmt(odenenToplam),
       kalanToplam: fmt(kalanVekalet),
@@ -394,7 +454,8 @@ export async function buildMuvekkilEkstreForDosya(
     },
     masrafHareketleri: hareketler,
     dosyaDisiOfisGelirleri: {
-      toplam: fmt(ofisGelirToplam),
+      toplam: ofisGelirToplam,
+      byCurrency: ofisByCurrency,
       hareketler: ofisGelirHareketleri
     },
     dipnot:

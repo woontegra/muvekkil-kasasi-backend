@@ -43,6 +43,9 @@ export function serializeKasaHareketi(h: KasaHareketiWithOrijinal): Record<strin
     tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
     createdById: h.createdById,
     updatedById: h.updatedById,
+    deletedAt: h.deletedAt?.toISOString() ?? null,
+    deletedById: h.deletedById,
+    deleteReason: h.deleteReason,
     createdAt: h.createdAt.toISOString(),
     updatedAt: h.updatedAt.toISOString()
   }
@@ -86,7 +89,7 @@ export async function assertKasaHareketiForTenant(
   id: string
 ): Promise<KasaHareketi | null> {
   return prisma.kasaHareketi.findFirst({
-    where: { id, tenantId }
+    where: { id, tenantId, deletedAt: null }
   })
 }
 
@@ -178,6 +181,7 @@ export async function listKasaHareketleri(
   const where: Prisma.KasaHareketiWhereInput = {
     tenantId,
     dosyaId,
+    deletedAt: null,
     ...(tip ? { tip } : {}),
     ...(onayDurumu ? { onayDurumu } : {}),
     ...(searchOr && searchOr.length > 0 ? { OR: searchOr } : {})
@@ -210,7 +214,7 @@ export async function listAllKasaHareketleriForDosya(
   if (!dosya) return null
 
   const items = await prisma.kasaHareketi.findMany({
-    where: { tenantId, dosyaId },
+    where: { tenantId, dosyaId, deletedAt: null },
     orderBy: [{ tarih: 'desc' }, { createdAt: 'desc' }],
     take: HESAP_OZETI_KASA_LIMIT,
     include: {
@@ -231,7 +235,7 @@ export async function getKasaOzet(tenantId: string, dosyaId: string): Promise<{
   if (!dosya) return null
 
   const rows = await prisma.kasaHareketi.findMany({
-    where: { tenantId, dosyaId, onayDurumu: KasaOnayDurumu.ONAYLI },
+    where: { tenantId, dosyaId, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null },
     select: { tip: true, tutar: true }
   })
 
@@ -248,7 +252,7 @@ export async function getKasaOzet(tenantId: string, dosyaId: string): Promise<{
   const bakiye = avans - masraf + duzeltme
 
   const onaysizIslemSayisi = await prisma.kasaHareketi.count({
-    where: { tenantId, dosyaId, onayDurumu: KasaOnayDurumu.ONAYSIZ }
+    where: { tenantId, dosyaId, onayDurumu: KasaOnayDurumu.ONAYSIZ, deletedAt: null }
   })
 
   const f = (n: number) => n.toFixed(2)
@@ -499,6 +503,13 @@ export async function deleteKasaHareketi(tenantId: string, userId: string, id: s
   const row = await assertKasaHareketiForTenant(tenantId, id)
   if (!row) {
     throw new AppError(404, 'Kasa hareketi bulunamadı.', 'NOT_FOUND')
+  }
+  if (row.tip === KasaHareketTipi.MASRAF) {
+    throw new AppError(
+      403,
+      'Masraf kayıtları yalnızca büro sahibi tarafından güvenli silme ile silinebilir.',
+      'FORBIDDEN'
+    )
   }
   if (row.onayDurumu !== KasaOnayDurumu.ONAYSIZ) {
     throw new AppError(400, 'Onaylı veya reddedilmiş kayıt silinemez.', 'INVALID_STATE')

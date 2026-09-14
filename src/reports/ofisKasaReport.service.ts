@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js'
 import { listOfisKasaHareketleri, serializeOfisKasaHareketi } from '../ofisKasa/ofisKasa.service.js'
-import { OfisKasaIslemTipi } from '@prisma/client'
+import { OfisKasaIslemTipi, type ParaBirimi } from '@prisma/client'
+import { PARA_BIRIMLERI } from '../lib/paraBirimi.js'
 import type { OfisKasaReportQuery } from './reports.schemas.js'
 import {
   ISLEM_TIPI_LABEL,
@@ -56,15 +57,24 @@ export async function buildOfisKasaReport(tenantId: string, rawQuery: OfisKasaRe
     limit: OFIS_KASA_REPORT_MAX_ROWS
   })
 
-  let toplamGelir = 0
-  let toplamGider = 0
-  let duzeltmeEtkisi = 0
+  const byCurrency: Record<
+    ParaBirimi,
+    { toplamGelir: number; toplamGider: number; duzeltmeEtkisi: number; dovizCikis: number; dovizGiris: number }
+  > = {
+    TRY: { toplamGelir: 0, toplamGider: 0, duzeltmeEtkisi: 0, dovizCikis: 0, dovizGiris: 0 },
+    USD: { toplamGelir: 0, toplamGider: 0, duzeltmeEtkisi: 0, dovizCikis: 0, dovizGiris: 0 },
+    EUR: { toplamGelir: 0, toplamGider: 0, duzeltmeEtkisi: 0, dovizCikis: 0, dovizGiris: 0 }
+  }
 
   const rows = items.map((h) => {
     const tutar = Number(h.tutar)
-    if (h.islemTipi === OfisKasaIslemTipi.GELIR) toplamGelir += tutar
-    else if (h.islemTipi === OfisKasaIslemTipi.GIDER) toplamGider += tutar
-    else if (h.islemTipi === OfisKasaIslemTipi.DUZELTME) duzeltmeEtkisi += tutar
+    const pb = h.paraBirimi
+    const bucket = byCurrency[pb]
+    if (h.islemTipi === OfisKasaIslemTipi.GELIR) bucket.toplamGelir += tutar
+    else if (h.islemTipi === OfisKasaIslemTipi.GIDER) bucket.toplamGider += tutar
+    else if (h.islemTipi === OfisKasaIslemTipi.DUZELTME) bucket.duzeltmeEtkisi += tutar
+    else if (h.islemTipi === OfisKasaIslemTipi.DOVIZ_CIKIS) bucket.dovizCikis += tutar
+    else if (h.islemTipi === OfisKasaIslemTipi.DOVIZ_GIRIS) bucket.dovizGiris += tutar
 
     const base = serializeOfisKasaHareketi(h)
     return {
@@ -76,7 +86,20 @@ export async function buildOfisKasaReport(tenantId: string, rawQuery: OfisKasaRe
     }
   })
 
-  const netBakiye = toplamGelir - toplamGider + duzeltmeEtkisi
+  const tryTotals = byCurrency.TRY
+  const netBakiye = tryTotals.toplamGelir - tryTotals.toplamGider + tryTotals.duzeltmeEtkisi
+  const totalsByCurrency: Record<string, { toplamGelir: string; toplamGider: string; duzeltmeEtkisi: string; netBakiye: string }> =
+    {}
+  for (const pb of PARA_BIRIMLERI) {
+    const b = byCurrency[pb]
+    const net = b.toplamGelir - b.toplamGider + b.duzeltmeEtkisi - b.dovizCikis + b.dovizGiris
+    totalsByCurrency[pb] = {
+      toplamGelir: fmt(b.toplamGelir),
+      toplamGider: fmt(b.toplamGider),
+      duzeltmeEtkisi: fmt(b.duzeltmeEtkisi),
+      netBakiye: fmt(net)
+    }
+  }
 
   return {
     tenant: {
@@ -96,11 +119,12 @@ export async function buildOfisKasaReport(tenantId: string, rawQuery: OfisKasaRe
       q: rawQuery.q || null
     },
     totals: {
-      toplamGelir: fmt(toplamGelir),
-      toplamGider: fmt(toplamGider),
-      duzeltmeEtkisi: fmt(duzeltmeEtkisi),
+      toplamGelir: fmt(tryTotals.toplamGelir),
+      toplamGider: fmt(tryTotals.toplamGider),
+      duzeltmeEtkisi: fmt(tryTotals.duzeltmeEtkisi),
       netBakiye: fmt(netBakiye),
-      hareketSayisi: rows.length
+      hareketSayisi: rows.length,
+      byCurrency: totalsByCurrency
     },
     rows
   }

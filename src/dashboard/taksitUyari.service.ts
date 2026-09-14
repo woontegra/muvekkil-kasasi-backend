@@ -16,6 +16,7 @@ export type TaksitUyariListeSatir = {
   tutar: string
   odenen: string
   kalan: string
+  paraBirimi: string
   durum: 'GECIKTI'
 }
 
@@ -126,6 +127,7 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         tutar: fmt(tutar),
         odenen: fmt(odenen),
         kalan: fmt(kalan),
+        paraBirimi: t.paraBirimi,
         durum: 'GECIKTI'
       })
     } else if (sinif === 'bugunOdenecek') {
@@ -158,6 +160,7 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         tutar: fmt(tutar),
         odenen: fmt(odenen),
         kalan: fmt(kalan),
+        paraBirimi: t.paraBirimi,
         durum: 'GECIKTI'
       })
     } else if (sinif === 'bugunOdenecek') {

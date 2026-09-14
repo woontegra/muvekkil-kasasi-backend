@@ -1,5 +1,6 @@
-import { IcraTahsilatAlacakDurum, type Prisma } from '@prisma/client'
+import { IcraTahsilatAlacakDurum, type ParaBirimi, type Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { PARA_BIRIMLERI } from '../lib/paraBirimi.js'
 import type { IcraTahsilatReportQuery } from './reports.schemas.js'
 import { normalizeReportEndDate, normalizeReportStartDate } from './reports.schemas.js'
 
@@ -144,8 +145,11 @@ export async function buildIcraTahsilatReport(tenantId: string, rawQuery: IcraTa
   })
 
   const alacakItems: Record<string, unknown>[] = []
-  let toplamAlacak = 0
-  let tahsilEdilen = 0
+  const byCurrency: Record<ParaBirimi, { toplamAlacak: number; tahsilEdilen: number }> = {
+    TRY: { toplamAlacak: 0, tahsilEdilen: 0 },
+    USD: { toplamAlacak: 0, tahsilEdilen: 0 },
+    EUR: { toplamAlacak: 0, tahsilEdilen: 0 }
+  }
 
   for (const r of alacakRows) {
     const odenen = await odenenToplamForAlacak(r.id)
@@ -153,8 +157,9 @@ export async function buildIcraTahsilatReport(tenantId: string, rawQuery: IcraTa
     if (durum && durum !== DurumEnum.IPTAL && hesaplananDurum !== durum) continue
 
     const kalan = Math.max(0, num(r.toplamTutar) - odenen)
-    toplamAlacak += num(r.toplamTutar)
-    tahsilEdilen += odenen
+    const pb = r.paraBirimi
+    byCurrency[pb].toplamAlacak += num(r.toplamTutar)
+    byCurrency[pb].tahsilEdilen += odenen
 
     const sonOdeme = r.odemeler[0]
     const personelAd =
@@ -170,6 +175,7 @@ export async function buildIcraTahsilatReport(tenantId: string, rawQuery: IcraTa
       alacakTuru: r.alacakTuru,
       alacakTuruLabel: ICRA_ALACAK_TURU_LABEL[r.alacakTuru] ?? r.alacakTuru,
       toplamTutar: dec(r.toplamTutar),
+      paraBirimi: r.paraBirimi,
       odenenToplam: odenen.toFixed(2),
       kalanTutar: kalan.toFixed(2),
       taksitSayisi: r._count.taksitler,
@@ -235,6 +241,18 @@ export async function buildIcraTahsilatReport(tenantId: string, rawQuery: IcraTa
     where: { tenantId, smmKesildiMi: false, alacak: { durum: { not: DurumEnum.IPTAL } } }
   })
 
+  const tryTotals = byCurrency.TRY
+  const totalsByCurrency: Record<string, { toplamAlacak: string; tahsilEdilen: string; kalanAlacak: string }> =
+    {}
+  for (const pb of PARA_BIRIMLERI) {
+    const b = byCurrency[pb]
+    totalsByCurrency[pb] = {
+      toplamAlacak: b.toplamAlacak.toFixed(2),
+      tahsilEdilen: b.tahsilEdilen.toFixed(2),
+      kalanAlacak: Math.max(0, b.toplamAlacak - b.tahsilEdilen).toFixed(2)
+    }
+  }
+
   return {
     tenant: {
       buroAdi: tenant.buroAdi,
@@ -253,13 +271,14 @@ export async function buildIcraTahsilatReport(tenantId: string, rawQuery: IcraTa
       q: q || null
     },
     totals: {
-      toplamAlacak: toplamAlacak.toFixed(2),
-      tahsilEdilen: tahsilEdilen.toFixed(2),
-      kalanAlacak: Math.max(0, toplamAlacak - tahsilEdilen).toFixed(2),
+      toplamAlacak: tryTotals.toplamAlacak.toFixed(2),
+      tahsilEdilen: tryTotals.tahsilEdilen.toFixed(2),
+      kalanAlacak: Math.max(0, tryTotals.toplamAlacak - tryTotals.tahsilEdilen).toFixed(2),
       vadesiGecmisTaksit,
       smmBekleyen,
       alacakSayisi: alacakItems.length,
-      tahsilatSayisi: tahsilatlar.length
+      tahsilatSayisi: tahsilatlar.length,
+      byCurrency: totalsByCurrency
     },
     alacaklar: alacakItems,
     tahsilatlar

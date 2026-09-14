@@ -35,6 +35,13 @@ export function getAllowedOrigins(): string[] {
   }
   if (env.NODE_ENV === 'production') {
     for (const o of KNOWN_PRODUCTION_FRONTEND_ORIGINS) set.add(o)
+  } else {
+    // Yerel Vite (localhost ↔ 127.0.0.1, 5173/5174) — refresh cookie Origin kontrolü
+    for (const host of ['localhost', '127.0.0.1']) {
+      for (const port of [5173, 5174]) {
+        set.add(`http://${host}:${port}`)
+      }
+    }
   }
   return [...set]
 }

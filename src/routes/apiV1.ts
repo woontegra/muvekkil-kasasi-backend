@@ -31,6 +31,7 @@ import { meHandler } from './me.js'
 import { adminRouter } from '../admin/admin.routes.js'
 import { woontegraWebsiteProvisionRouter } from '../integrations/woontegraWebsite/woontegraWebsiteProvision.routes.js'
 import { randevularRouter } from '../randevu/randevu.routes.js'
+import { kurlarRouter } from '../kurlar/kurlar.routes.js'
 
 export const apiV1Router = Router()
 
@@ -46,6 +47,7 @@ apiV1Router.use('/dosyalar', dosyalarRouter)
 apiV1Router.use('/kasa-hareketleri', kasaHareketleriRouter)
 apiV1Router.use('/vekalet-taksitleri', vekaletTaksitleriRouter)
 apiV1Router.use('/vekalet-taksit-odemeleri', vekaletTaksitOdemeleriRouter)
+apiV1Router.use('/kurlar', kurlarRouter)
 apiV1Router.use('/ofis-kasasi', ofisKasasiRouter)
 apiV1Router.use('/icra-tahsilat', icraTahsilatRouter)
 apiV1Router.use('/prim', primRouter)

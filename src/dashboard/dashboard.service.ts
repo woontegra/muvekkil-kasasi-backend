@@ -19,10 +19,10 @@ export async function getDashboardSummaryForTenant(tenantId: string): Promise<Da
   const [dosyaKasaOnayBekleyen, ofisKasaOnayBekleyen, taksitUyarilari, toplamMuvekkil, aktifDosya, ozet] =
     await Promise.all([
       prisma.kasaHareketi.count({
-        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ }
+        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ, deletedAt: null }
       }),
       prisma.ofisKasaHareketi.count({
-        where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ }
+        where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ, deletedAt: null }
       }),
       getTaksitUyarilariForTenant(tenantId),
       prisma.muvekkil.count({ where: { tenantId, aktifMi: true } }),

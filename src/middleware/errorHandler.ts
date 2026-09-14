@@ -22,7 +22,11 @@ function isPrismaLikeError(err: unknown): boolean {
   if (typeof e.code === 'string' && /^P\d{4}$/.test(e.code)) return true
   if (e.clientVersion != null) return true
   const msg = String(e.message ?? '')
-  return /Unknown argument|Invalid `prisma\.|prisma\./i.test(msg)
+  return (
+    /Unknown argument|Invalid `prisma\.|prisma\.|PrismaClient|column .* does not exist|kur_kaynagi|invocation/i.test(
+      msg
+    ) || /[A-Za-z]:\\Users\\/i.test(msg)
+  )
 }
 
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
@@ -76,14 +80,12 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
 
   if (isPrismaLikeError(err)) {
+    // Prisma/SQL/stack/path asla istemciye sızmasın (dev dahil).
     res.status(500).json({
       ok: false,
       error: 'INTERNAL_ERROR',
-      // Eski sabit “Bildirim ayarları...” metni yanlış ekranlarda yanıltıyordu.
-      message:
-        env.NODE_ENV === 'production'
-          ? 'İşlem şu an tamamlanamadı. Lütfen daha sonra tekrar deneyin.'
-          : `Veritabanı işlemi başarısız oldu: ${errMessage.slice(0, 240)}`
+      code: 'INTERNAL_ERROR',
+      message: 'İşlem şu an tamamlanamadı. Lütfen daha sonra tekrar deneyin.'
     })
     return
   }
@@ -91,6 +93,7 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   res.status(500).json({
     ok: false,
     error: 'INTERNAL_ERROR',
-    message: env.NODE_ENV === 'production' ? 'Sunucu hatası' : 'Beklenmeyen bir sunucu hatası oluştu.'
+    code: 'INTERNAL_ERROR',
+    message: 'İşlem şu an tamamlanamadı. Lütfen daha sonra tekrar deneyin.'
   })
 }

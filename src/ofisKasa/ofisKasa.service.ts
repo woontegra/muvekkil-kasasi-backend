@@ -1,4 +1,5 @@
-import type { OfisKasaHareketi, Prisma, UserRole } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import type { OfisKasaHareketi, ParaBirimi, Prisma, UserRole } from '@prisma/client'
 import {
   OfisKasaIslemTipi,
   OfisKasaOnayDurumu,
@@ -10,10 +11,20 @@ import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import type {
+  CreateDovizDonusumBody,
   CreateOfisKasaDuzeltmeBody,
   CreateOfisKasaHareketiBody,
   ListOfisKasaHareketleriQuery
 } from './ofisKasa.schemas.js'
+import {
+  assertGiderParaBirimiTry,
+  moneyToApiString,
+  PARA_BIRIMLERI,
+  rateToApiString,
+  resolveDovizDonusum,
+  resolveParaBirimi
+} from '../lib/paraBirimi.js'
+import { resolveDovizDonusumKurMeta } from '../lib/kurSnapshot.js'
 import { isDigerGelir, isDigerGider } from './ofisKasa.schemas.js'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
 import {
@@ -38,7 +49,41 @@ export type OfisKasaHareketiWithOrijinal = OfisKasaHareketi & {
 }
 
 function decimalToString(d: Prisma.Decimal): string {
-  return d.toFixed(2)
+  return moneyToApiString(d)
+}
+
+type CurrencyBucket = {
+  toplamGelir: number
+  toplamGider: number
+  toplamDuzeltme: number
+  dovizCikis: number
+  dovizGiris: number
+}
+
+function emptyCurrencyBuckets(): Record<ParaBirimi, CurrencyBucket> {
+  return {
+    TRY: { toplamGelir: 0, toplamGider: 0, toplamDuzeltme: 0, dovizCikis: 0, dovizGiris: 0 },
+    USD: { toplamGelir: 0, toplamGider: 0, toplamDuzeltme: 0, dovizCikis: 0, dovizGiris: 0 },
+    EUR: { toplamGelir: 0, toplamGider: 0, toplamDuzeltme: 0, dovizCikis: 0, dovizGiris: 0 }
+  }
+}
+
+function applyToCurrencyBucket(
+  buckets: Record<ParaBirimi, CurrencyBucket>,
+  islemTipi: OfisKasaIslemTipi,
+  paraBirimi: ParaBirimi,
+  tutar: number
+): void {
+  const b = buckets[paraBirimi]
+  if (islemTipi === OfisKasaIslemTipi.GELIR) b.toplamGelir += tutar
+  else if (islemTipi === OfisKasaIslemTipi.GIDER) b.toplamGider += tutar
+  else if (islemTipi === OfisKasaIslemTipi.DUZELTME) b.toplamDuzeltme += tutar
+  else if (islemTipi === OfisKasaIslemTipi.DOVIZ_CIKIS) b.dovizCikis += tutar
+  else if (islemTipi === OfisKasaIslemTipi.DOVIZ_GIRIS) b.dovizGiris += tutar
+}
+
+function currencyBucketBalance(b: CurrencyBucket): number {
+  return b.toplamGelir - b.toplamGider + b.toplamDuzeltme - b.dovizCikis + b.dovizGiris
 }
 
 function resolveMuvekkilAd(
@@ -70,6 +115,14 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
     ozelKategoriAdi: h.ozelKategoriAdi,
     aciklama: h.aciklama,
     tutar: decimalToString(h.tutar),
+    paraBirimi: h.paraBirimi,
+    dovizDonusumId: h.dovizDonusumId,
+    kur: rateToApiString(h.kur),
+    kurBazParaBirimi: h.kurBazParaBirimi,
+    kurKarsiParaBirimi: h.kurKarsiParaBirimi,
+    kurKaynagi: h.kurKaynagi ?? null,
+    tcmbKurTarihi: h.tcmbKurTarihi ? h.tcmbKurTarihi.toISOString().slice(0, 10) : null,
+    tcmbReferansKur: rateToApiString(h.tcmbReferansKur),
     odemeYontemi: h.odemeYontemi,
     belgeNo: h.belgeNo,
     onayDurumu: h.onayDurumu,
@@ -95,6 +148,9 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
       : null,
     createdById: h.createdById,
     updatedById: h.updatedById,
+    deletedAt: h.deletedAt?.toISOString() ?? null,
+    deletedById: h.deletedById,
+    deleteReason: h.deleteReason,
     createdAt: h.createdAt.toISOString(),
     updatedAt: h.updatedAt.toISOString()
   }
@@ -134,7 +190,15 @@ async function nextBelgeNo(
 ): Promise<string> {
   const year = tarih.getFullYear()
   const p =
-    tip === OfisKasaIslemTipi.GELIR ? 'OFG' : tip === OfisKasaIslemTipi.GIDER ? 'OFD' : 'OFDZT'
+    tip === OfisKasaIslemTipi.GELIR
+      ? 'OFG'
+      : tip === OfisKasaIslemTipi.GIDER
+        ? 'OFD'
+        : tip === OfisKasaIslemTipi.DOVIZ_CIKIS
+          ? 'OFDC'
+          : tip === OfisKasaIslemTipi.DOVIZ_GIRIS
+            ? 'OFDG'
+            : 'OFDZT'
   const prefix = `${p}-${year}-`
   const last = await tx.ofisKasaHareketi.findFirst({
     where: { tenantId, belgeNo: { startsWith: prefix } },
@@ -155,7 +219,7 @@ export async function assertOfisKasaHareketiForTenant(
   id: string
 ): Promise<OfisKasaHareketi | null> {
   return prisma.ofisKasaHareketi.findFirst({
-    where: { id, tenantId }
+    where: { id, tenantId, deletedAt: null }
   })
 }
 
@@ -163,7 +227,8 @@ export async function listOfisKasaHareketleri(
   tenantId: string,
   query: ListOfisKasaHareketleriQuery
 ): Promise<{ items: OfisKasaHareketiWithOrijinal[]; total: number }> {
-  const { q, islemTipi, onayDurumu, kategori, muvekkilId, startDate, endDate, page, limit } = query
+  const { q, islemTipi, onayDurumu, kategori, muvekkilId, paraBirimi, startDate, endDate, page, limit } =
+    query
   const skip = (page - 1) * limit
 
   const tarihFilter: Prisma.DateTimeFilter | undefined =
@@ -176,10 +241,12 @@ export async function listOfisKasaHareketleri(
 
   const where: Prisma.OfisKasaHareketiWhereInput = {
     tenantId,
+    deletedAt: null,
     ...(islemTipi ? { islemTipi } : {}),
     ...(onayDurumu ? { onayDurumu } : {}),
     ...(kategori ? { kategori } : {}),
     ...(muvekkilId ? { muvekkilId } : {}),
+    ...(paraBirimi ? { paraBirimi } : {}),
     ...(tarihFilter ? { tarih: tarihFilter } : {}),
     ...(q.length > 0
       ? {
@@ -227,7 +294,8 @@ export async function listDosyaDisiOfisGelirleriForMuvekkil(
   const where: Prisma.OfisKasaHareketiWhereInput = {
     tenantId,
     muvekkilId,
-    islemTipi: OfisKasaIslemTipi.GELIR
+    islemTipi: OfisKasaIslemTipi.GELIR,
+    deletedAt: null
   }
 
   const [total, items] = await prisma.$transaction([
@@ -252,21 +320,24 @@ function monthRangeLocal(d: Date): { start: Date; end: Date } {
   return { start, end }
 }
 
-async function sumApprovedByTip(
+async function aggregateApprovedByCurrency(
   tenantId: string,
-  tip: OfisKasaIslemTipi,
   tarih?: Prisma.DateTimeFilter
-): Promise<number> {
-  const r = await prisma.ofisKasaHareketi.aggregate({
+): Promise<Record<ParaBirimi, CurrencyBucket>> {
+  const rows = await prisma.ofisKasaHareketi.findMany({
     where: {
       tenantId,
       onayDurumu: OfisKasaOnayDurumu.ONAYLI,
-      islemTipi: tip,
+      deletedAt: null,
       ...(tarih ? { tarih } : {})
     },
-    _sum: { tutar: true }
+    select: { islemTipi: true, paraBirimi: true, tutar: true }
   })
-  return Number(r._sum.tutar ?? 0)
+  const buckets = emptyCurrencyBuckets()
+  for (const r of rows) {
+    applyToCurrencyBucket(buckets, r.islemTipi, r.paraBirimi, Number(r.tutar))
+  }
+  return buckets
 }
 
 export async function getOfisKasaOzet(tenantId: string): Promise<{
@@ -277,30 +348,67 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
   onaysizIslemSayisi: number
   buAyGelir: string
   buAyGider: string
+  byCurrency: Record<
+    ParaBirimi,
+    {
+      toplamGelir: string
+      toplamGider: string
+      toplamDuzeltme: string
+      kasaBakiyesi: string
+      buAyGelir: string
+      buAyGider: string
+    }
+  >
+  bakiyeler: Record<ParaBirimi, string>
 }> {
-  const gelir = await sumApprovedByTip(tenantId, OfisKasaIslemTipi.GELIR)
-  const gider = await sumApprovedByTip(tenantId, OfisKasaIslemTipi.GIDER)
-  const duzeltme = await sumApprovedByTip(tenantId, OfisKasaIslemTipi.DUZELTME)
-  const kasa = gelir - gider + duzeltme
-
+  const lifetime = await aggregateApprovedByCurrency(tenantId)
   const { start, end } = monthRangeLocal(new Date())
-  const tarihAy: Prisma.DateTimeFilter = { gte: start, lte: end }
-  const buAyGelir = await sumApprovedByTip(tenantId, OfisKasaIslemTipi.GELIR, tarihAy)
-  const buAyGider = await sumApprovedByTip(tenantId, OfisKasaIslemTipi.GIDER, tarihAy)
+  const monthBuckets = await aggregateApprovedByCurrency(tenantId, { gte: start, lte: end })
 
   const onaysizIslemSayisi = await prisma.ofisKasaHareketi.count({
-    where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ }
+    where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ, deletedAt: null }
   })
 
+  const tryLifetime = lifetime.TRY
+  const tryMonth = monthBuckets.TRY
   const f = (n: number) => n.toFixed(2)
+
+  const byCurrency = {} as Record<
+    ParaBirimi,
+    {
+      toplamGelir: string
+      toplamGider: string
+      toplamDuzeltme: string
+      kasaBakiyesi: string
+      buAyGelir: string
+      buAyGider: string
+    }
+  >
+  const bakiyeler = {} as Record<ParaBirimi, string>
+  for (const pb of PARA_BIRIMLERI) {
+    const life = lifetime[pb]
+    const month = monthBuckets[pb]
+    byCurrency[pb] = {
+      toplamGelir: f(life.toplamGelir),
+      toplamGider: f(life.toplamGider),
+      toplamDuzeltme: f(life.toplamDuzeltme),
+      kasaBakiyesi: f(currencyBucketBalance(life)),
+      buAyGelir: f(month.toplamGelir),
+      buAyGider: f(month.toplamGider)
+    }
+    bakiyeler[pb] = byCurrency[pb].kasaBakiyesi
+  }
+
   return {
-    toplamGelir: f(gelir),
-    toplamGider: f(gider),
-    toplamDuzeltme: f(duzeltme),
-    kasaBakiyesi: f(kasa),
+    toplamGelir: f(tryLifetime.toplamGelir),
+    toplamGider: f(tryLifetime.toplamGider),
+    toplamDuzeltme: f(tryLifetime.toplamDuzeltme),
+    kasaBakiyesi: f(currencyBucketBalance(tryLifetime)),
     onaysizIslemSayisi,
-    buAyGelir: f(buAyGelir),
-    buAyGider: f(buAyGider)
+    buAyGelir: f(tryMonth.toplamGelir),
+    buAyGider: f(tryMonth.toplamGider),
+    byCurrency,
+    bakiyeler
   }
 }
 
@@ -324,6 +432,19 @@ export async function getOfisKasaAnaSayfaOzet(
   donemNetSonucu: string
   kasaBakiyesi: string
   bugunGider: string
+  byCurrency: Record<
+    ParaBirimi,
+    {
+      devredenBakiye: string
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNetSonucu: string
+      kasaBakiyesi: string
+      bugunGider: string
+    }
+  >
+  bakiyeler: Record<ParaBirimi, string>
 }> {
   const tenant = await prisma.tenant.findUniqueOrThrow({
     where: { id: tenantId },
@@ -339,48 +460,81 @@ export async function getOfisKasaAnaSayfaOzet(
 
   const approvedWhere = {
     tenantId,
-    onayDurumu: OfisKasaOnayDurumu.ONAYLI
+    onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+    deletedAt: null
   } as const
 
-  const [allBeforePeriod, periodRows, lifetimeGelir, lifetimeGider, lifetimeDuzeltme] =
-    await Promise.all([
-      prisma.ofisKasaHareketi.findMany({
-        where: { ...approvedWhere, tarih: { lt: periodStartDate } },
-        select: { islemTipi: true, tutar: true }
-      }),
-      prisma.ofisKasaHareketi.findMany({
-        where: { ...approvedWhere, tarih: { gte: periodStartDate, lt: nextDayAfterEnd } },
-        select: { islemTipi: true, tutar: true, tarih: true }
-      }),
-      sumApprovedByTip(tenantId, OfisKasaIslemTipi.GELIR),
-      sumApprovedByTip(tenantId, OfisKasaIslemTipi.GIDER),
-      sumApprovedByTip(tenantId, OfisKasaIslemTipi.DUZELTME)
-    ])
+  const [allBeforePeriod, periodRows, lifetimeBuckets] = await Promise.all([
+    prisma.ofisKasaHareketi.findMany({
+      where: { ...approvedWhere, tarih: { lt: periodStartDate } },
+      select: { islemTipi: true, tutar: true, paraBirimi: true }
+    }),
+    prisma.ofisKasaHareketi.findMany({
+      where: { ...approvedWhere, tarih: { gte: periodStartDate, lt: nextDayAfterEnd } },
+      select: { islemTipi: true, tutar: true, tarih: true, paraBirimi: true }
+    }),
+    aggregateApprovedByCurrency(tenantId)
+  ])
 
-  let devGelir = 0, devGider = 0, devDuz = 0
+  const devBuckets = emptyCurrencyBuckets()
   for (const r of allBeforePeriod) {
-    const t = Number(r.tutar)
-    if (r.islemTipi === 'GELIR') devGelir += t
-    else if (r.islemTipi === 'GIDER') devGider += t
-    else if (r.islemTipi === 'DUZELTME') devDuz += t
+    applyToCurrencyBucket(devBuckets, r.islemTipi, r.paraBirimi, Number(r.tutar))
   }
-  const devredenBakiye = devGelir - devGider + devDuz
 
-  let donemGelir = 0, donemGider = 0, donemDuz = 0, bugunGider = 0
+  const periodBuckets = emptyCurrencyBuckets()
+  const bugunGiderByPb = emptyCurrencyBuckets()
   const bugun = toLocalYmd()
   for (const r of periodRows) {
     const t = Number(r.tutar)
+    applyToCurrencyBucket(periodBuckets, r.islemTipi, r.paraBirimi, t)
     const tarihYmd = r.tarih.toISOString().slice(0, 10)
-    if (r.islemTipi === 'GELIR') donemGelir += t
-    else if (r.islemTipi === 'GIDER') {
-      donemGider += t
-      if (tarihYmd === bugun) bugunGider += t
-    } else if (r.islemTipi === 'DUZELTME') donemDuz += t
+    if (r.islemTipi === OfisKasaIslemTipi.GIDER && tarihYmd === bugun) {
+      bugunGiderByPb[r.paraBirimi].toplamGider += t
+    }
   }
+
+  const tryDev = devBuckets.TRY
+  const tryPeriod = periodBuckets.TRY
+  const tryLifetime = lifetimeBuckets.TRY
+  const devredenBakiye = currencyBucketBalance(tryDev)
+  const donemGelir = tryPeriod.toplamGelir
+  const donemGider = tryPeriod.toplamGider
+  const donemDuz = tryPeriod.toplamDuzeltme
   const donemNet = donemGelir - donemGider + donemDuz
-  const kasaBakiyesi = lifetimeGelir - lifetimeGider + lifetimeDuzeltme
+  const kasaBakiyesi = currencyBucketBalance(tryLifetime)
+  const bugunGider = bugunGiderByPb.TRY.toplamGider
 
   const f = (n: number) => n.toFixed(2)
+  const byCurrency = {} as Record<
+    ParaBirimi,
+    {
+      devredenBakiye: string
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNetSonucu: string
+      kasaBakiyesi: string
+      bugunGider: string
+    }
+  >
+  const bakiyeler = {} as Record<ParaBirimi, string>
+  for (const pb of PARA_BIRIMLERI) {
+    const dev = devBuckets[pb]
+    const per = periodBuckets[pb]
+    const life = lifetimeBuckets[pb]
+    const net = per.toplamGelir - per.toplamGider + per.toplamDuzeltme
+    byCurrency[pb] = {
+      devredenBakiye: f(currencyBucketBalance(dev)),
+      donemGelir: f(per.toplamGelir),
+      donemGider: f(per.toplamGider),
+      donemDuzeltmeEtkisi: f(per.toplamDuzeltme),
+      donemNetSonucu: f(net),
+      kasaBakiyesi: f(currencyBucketBalance(life)),
+      bugunGider: f(bugunGiderByPb[pb].toplamGider)
+    }
+    bakiyeler[pb] = byCurrency[pb].kasaBakiyesi
+  }
+
   return {
     mode,
     period: { bas: period.bas, bit: period.bit, etiket: period.etiket },
@@ -392,7 +546,9 @@ export async function getOfisKasaAnaSayfaOzet(
     donemDuzeltmeEtkisi: f(donemDuz),
     donemNetSonucu: f(donemNet),
     kasaBakiyesi: f(kasaBakiyesi),
-    bugunGider: f(bugunGider)
+    bugunGider: f(bugunGider),
+    byCurrency,
+    bakiyeler
   }
 }
 
@@ -422,6 +578,10 @@ export async function createOfisKasaHareketi(
         : null
 
   const tutar = new PrismaClient.Decimal(body.tutar)
+  const paraBirimi = resolveParaBirimi(body.paraBirimi)
+  if (body.islemTipi === OfisKasaIslemTipi.GIDER) {
+    assertGiderParaBirimiTry(paraBirimi)
+  }
 
   const tahsilati =
     body.islemTipi === OfisKasaIslemTipi.GELIR
@@ -449,6 +609,7 @@ export async function createOfisKasaHareketi(
             ozelKategoriAdi: ozel,
             aciklama: body.aciklama?.trim() || null,
             tutar,
+            paraBirimi,
             odemeYontemi: body.odemeYontemi,
             belgeNo,
             onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
@@ -491,7 +652,11 @@ export async function createOfisKasaGelirFromKaynakInTx(
     tarih: Date
     kategori: string
     aciklama: string | null
-    tutar: Prisma.Decimal
+    kasaTutari: Prisma.Decimal
+    paraBirimi: ParaBirimi
+    kur?: Prisma.Decimal | null
+    kurBazParaBirimi?: ParaBirimi | null
+    kurKarsiParaBirimi?: ParaBirimi | null
     odemeYontemi: import('@prisma/client').OfisKasaOdemeYontemi
     tahsilatiYapanPersonelId: string | null
     tahsilatiYapanUserId: string | null
@@ -500,7 +665,12 @@ export async function createOfisKasaGelirFromKaynakInTx(
   }
 ): Promise<OfisKasaHareketi> {
   const existing = await tx.ofisKasaHareketi.findFirst({
-    where: { tenantId: opts.tenantId, kaynakTipi: opts.kaynakTipi, kaynakId: opts.kaynakId }
+    where: {
+      tenantId: opts.tenantId,
+      kaynakTipi: opts.kaynakTipi,
+      kaynakId: opts.kaynakId,
+      deletedAt: null
+    }
   })
   if (existing) return existing
 
@@ -512,7 +682,11 @@ export async function createOfisKasaGelirFromKaynakInTx(
       tarih: opts.tarih,
       kategori: opts.kategori,
       aciklama: opts.aciklama,
-      tutar: opts.tutar,
+      tutar: opts.kasaTutari,
+      paraBirimi: opts.paraBirimi,
+      kur: opts.kur ?? null,
+      kurBazParaBirimi: opts.kurBazParaBirimi ?? null,
+      kurKarsiParaBirimi: opts.kurKarsiParaBirimi ?? null,
       odemeYontemi: opts.odemeYontemi,
       belgeNo,
       onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
@@ -628,6 +802,7 @@ export async function createOfisKasaDuzeltme(
   }
 
   const tutar = new PrismaClient.Decimal(body.tutar)
+  const paraBirimi = resolveParaBirimi(body.paraBirimi ?? orijinal.paraBirimi)
   let attempts = 0
   while (attempts < 5) {
     attempts += 1
@@ -643,6 +818,7 @@ export async function createOfisKasaDuzeltme(
             ozelKategoriAdi: null,
             aciklama: body.aciklama.trim(),
             tutar,
+            paraBirimi,
             odemeYontemi: body.odemeYontemi,
             belgeNo,
             onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
@@ -676,14 +852,170 @@ export async function createOfisKasaDuzeltme(
   throw new AppError(409, 'Belge numarası üretilemedi, tekrar deneyin.', 'BELGE_NO_CONFLICT')
 }
 
+export async function createDovizDonusum(
+  tenantId: string,
+  userId: string,
+  body: CreateDovizDonusumBody,
+  req: Request
+): Promise<{ cikis: OfisKasaHareketi; giris: OfisKasaHareketi }> {
+  const meta = getRequestMeta(req)
+  const resolved = resolveDovizDonusum({
+    kaynakParaBirimi: body.kaynakParaBirimi,
+    hedefParaBirimi: body.hedefParaBirimi,
+    kaynakTutar: body.kaynakTutar,
+    hedefTutar: body.hedefTutar
+  })
+  const kurMeta = await resolveDovizDonusumKurMeta({
+    tarih: body.tarih,
+    kaynakParaBirimi: resolved.kaynakParaBirimi,
+    hedefParaBirimi: resolved.hedefParaBirimi,
+    kurKaynagi: body.kurKaynagi,
+    tcmbKurTarihi: body.tcmbKurTarihi,
+    tcmbReferansKur: body.tcmbReferansKur
+  })
+  const dovizDonusumId = randomUUID()
+  const aciklama =
+    body.aciklama?.trim() ||
+    `Döviz dönüşümü: ${moneyToApiString(resolved.kaynakTutar)} ${resolved.kaynakParaBirimi} → ${moneyToApiString(resolved.hedefTutar)} ${resolved.hedefParaBirimi} (${resolved.kurOzeti})`
+
+  let attempts = 0
+  while (attempts < 5) {
+    attempts += 1
+    try {
+      const pair = await prisma.$transaction(async (tx) => {
+        const belgeCikis = await nextBelgeNo(tx, tenantId, OfisKasaIslemTipi.DOVIZ_CIKIS, body.tarih)
+        const belgeGiris = await nextBelgeNo(tx, tenantId, OfisKasaIslemTipi.DOVIZ_GIRIS, body.tarih)
+        const cikis = await tx.ofisKasaHareketi.create({
+          data: {
+            tenantId,
+            islemTipi: OfisKasaIslemTipi.DOVIZ_CIKIS,
+            tarih: body.tarih,
+            kategori: 'Döviz dönüşümü',
+            aciklama,
+            tutar: resolved.kaynakTutar,
+            paraBirimi: resolved.kaynakParaBirimi,
+            odemeYontemi: body.odemeYontemi,
+            belgeNo: belgeCikis,
+            onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
+            dovizDonusumId,
+            kur: resolved.kur,
+            kurBazParaBirimi: resolved.kaynakParaBirimi,
+            kurKarsiParaBirimi: resolved.hedefParaBirimi,
+            kurKaynagi: kurMeta.kurKaynagi,
+            tcmbKurTarihi: kurMeta.tcmbKurTarihi,
+            tcmbReferansKur: kurMeta.tcmbReferansKur,
+            createdById: userId
+          }
+        })
+        const giris = await tx.ofisKasaHareketi.create({
+          data: {
+            tenantId,
+            islemTipi: OfisKasaIslemTipi.DOVIZ_GIRIS,
+            tarih: body.tarih,
+            kategori: 'Döviz dönüşümü',
+            aciklama,
+            tutar: resolved.hedefTutar,
+            paraBirimi: resolved.hedefParaBirimi,
+            odemeYontemi: body.odemeYontemi,
+            belgeNo: belgeGiris,
+            onayDurumu: OfisKasaOnayDurumu.ONAYSIZ,
+            dovizDonusumId,
+            kur: resolved.kur,
+            kurBazParaBirimi: resolved.kaynakParaBirimi,
+            kurKarsiParaBirimi: resolved.hedefParaBirimi,
+            kurKaynagi: kurMeta.kurKaynagi,
+            tcmbKurTarihi: kurMeta.tcmbKurTarihi,
+            tcmbReferansKur: kurMeta.tcmbReferansKur,
+            createdById: userId
+          }
+        })
+        return { cikis, giris }
+      })
+
+      await writeAuditLog({
+        tenantId,
+        userId,
+        action: 'OFIS_KASA_DOVIZ_DONUSUM_CREATED',
+        entityType: 'OfisKasaHareketi',
+        entityId: pair.cikis.id,
+        newValue: {
+          dovizDonusumId,
+          cikisId: pair.cikis.id,
+          girisId: pair.giris.id,
+          kurOzeti: resolved.kurOzeti
+        },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent
+      })
+
+      return pair
+    } catch (e: unknown) {
+      const code = e && typeof e === 'object' && 'code' in e ? String((e as { code: string }).code) : ''
+      if (code === 'P2002' && attempts < 5) continue
+      throw e
+    }
+  }
+  throw new AppError(409, 'Belge numarası üretilemedi, tekrar deneyin.', 'BELGE_NO_CONFLICT')
+}
+
+export async function deleteDovizDonusum(
+  tenantId: string,
+  userId: string,
+  dovizDonusumId: string,
+  req: Request
+): Promise<void> {
+  const meta = getRequestMeta(req)
+  const rows = await prisma.ofisKasaHareketi.findMany({
+    where: { tenantId, dovizDonusumId }
+  })
+  if (rows.length === 0) {
+    throw new AppError(404, 'Döviz dönüşümü bulunamadı.', 'NOT_FOUND')
+  }
+  if (rows.length !== 2) {
+    throw new AppError(400, 'Döviz dönüşümü çifti eksik veya bozuk.', 'INVALID_STATE')
+  }
+  if (rows.some((r) => r.onayDurumu !== OfisKasaOnayDurumu.ONAYSIZ)) {
+    throw new AppError(400, 'Onaylı döviz dönüşümü silinemez.', 'INVALID_STATE')
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const r of rows) {
+      await tx.ofisKasaHareketi.delete({ where: { id: r.id } })
+    }
+  })
+
+  await writeAuditLog({
+    tenantId,
+    userId,
+    action: 'OFIS_KASA_DOVIZ_DONUSUM_DELETED',
+    entityType: 'OfisKasaHareketi',
+    entityId: dovizDonusumId,
+    oldValue: { ids: rows.map((r) => r.id) },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  })
+}
+
 export async function deleteOfisKasaHareketi(tenantId: string, userId: string, id: string, req: Request): Promise<void> {
   const meta = getRequestMeta(req)
   const row = await assertOfisKasaHareketiForTenant(tenantId, id)
   if (!row) {
     throw new AppError(404, 'Ofis kasa hareketi bulunamadı.', 'NOT_FOUND')
   }
+  if (row.islemTipi === OfisKasaIslemTipi.GIDER) {
+    throw new AppError(
+      403,
+      'Gider (masraf) kayıtları yalnızca büro sahibi tarafından güvenli silme ile silinebilir.',
+      'FORBIDDEN'
+    )
+  }
   if (row.onayDurumu !== OfisKasaOnayDurumu.ONAYSIZ) {
     throw new AppError(400, 'Onaylı veya reddedilmiş kayıt silinemez.', 'INVALID_STATE')
+  }
+
+  if (row.dovizDonusumId) {
+    await deleteDovizDonusum(tenantId, userId, row.dovizDonusumId, req)
+    return
   }
 
   await prisma.ofisKasaHareketi.delete({ where: { id } })

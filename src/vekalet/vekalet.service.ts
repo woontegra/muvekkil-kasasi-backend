@@ -1,5 +1,6 @@
-import type { Prisma, UserRole, VekaletTaksitOdemeDurumu, VekaletTaksiti } from '@prisma/client'
+import type { ParaBirimi, Prisma, UserRole, VekaletTaksitOdemeDurumu, VekaletTaksiti } from '@prisma/client'
 import { Prisma as PrismaNamespace } from '@prisma/client'
+import { resolveParaBirimi } from '../lib/paraBirimi.js'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -14,6 +15,15 @@ import type {
   UpdateVekaletTaksitiBody,
   UpsertVekaletUcretiBody
 } from './vekalet.schemas.js'
+import {
+  assertVekaletParaBirimiDegisimiIzinli,
+  classifyVekaletUpsertMode,
+  isPersistedVekaletUcreti,
+  isVekaletParaBirimiUpdateDegisimi,
+  shouldCascadeVekaletTaksitParaBirimi
+} from './vekaletParaBirimi.js'
+
+import { filterAktifTahsilatOdemeleri } from '../lib/tahsilatOdemeAktif.js'
 
 export type TaksitComputedDurum = 'ODENMEDI' | 'KISMI_ODENDI' | 'ODENDI' | 'GECIKTI'
 export type TaksitSmmDurum = 'YOK' | 'BEKLIYOR' | 'KESILDI'
@@ -114,19 +124,25 @@ export async function syncTaksitOdemeDurumu(
 ): Promise<VekaletTaksiti> {
   const taksit = await tx.vekaletTaksiti.findUniqueOrThrow({
     where: { id: taksitId },
-    include: { odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] } }
+    include: {
+      odemeler: {
+        orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+        include: { ofisKasaHareket: { select: { deletedAt: true } } }
+      }
+    }
   })
   if (taksit.odemeDurumu === 'IPTAL') return taksit
 
-  const odenen = sumOdemeTutar(taksit.odemeler)
+  const aktifOdemeler = filterAktifTahsilatOdemeleri(taksit.odemeler)
+  const odenen = sumOdemeTutar(aktifOdemeler)
   const taksitTutari = Number(taksit.tutar)
   let odemeDurumu: VekaletTaksitOdemeDurumu = 'ODENMEDI'
   if (odenen <= 0) odemeDurumu = 'ODENMEDI'
   else if (odenen + 0.0001 < taksitTutari) odemeDurumu = 'KISMI_ODENDI'
   else odemeDurumu = 'ODENDI'
 
-  const son = taksit.odemeler[taksit.odemeler.length - 1]
-  const allSmm = taksit.odemeler.length > 0 && taksit.odemeler.every((o) => o.smmKesildiMi)
+  const son = aktifOdemeler[aktifOdemeler.length - 1]
+  const allSmm = aktifOdemeler.length > 0 && aktifOdemeler.every((o) => o.smmKesildiMi)
 
   return tx.vekaletTaksiti.update({
     where: { id: taksitId },
@@ -134,7 +150,7 @@ export async function syncTaksitOdemeDurumu(
       odemeDurumu,
       odemeTarihi: son?.odemeTarihi ?? null,
       makbuzNo: son?.makbuzNo ?? null,
-      smmKesildiMi: taksit.odemeler.length > 0 ? allSmm : false,
+      smmKesildiMi: aktifOdemeler.length > 0 ? allSmm : false,
       smmKesimTarihi: allSmm ? (taksit.smmKesimTarihi ?? new Date()) : null,
       updatedById: userId
     }
@@ -151,6 +167,7 @@ export function serializeVekaletUcreti(v: {
   dosyaId: string
   muvekkilId: string
   toplamTutar: Prisma.Decimal
+  paraBirimi?: ParaBirimi
   aciklama: string | null
   createdById: string
   updatedById: string | null
@@ -163,6 +180,7 @@ export function serializeVekaletUcreti(v: {
     dosyaId: v.dosyaId,
     muvekkilId: v.muvekkilId,
     toplamTutar: decimalStr(v.toplamTutar),
+    paraBirimi: v.paraBirimi ?? 'TRY',
     aciklama: v.aciklama,
     createdById: v.createdById,
     updatedById: v.updatedById,
@@ -180,6 +198,7 @@ export function serializeVekaletTaksiti(t: {
   taksitNo: number
   vadeTarihi: Date
   tutar: Prisma.Decimal
+  paraBirimi?: ParaBirimi
   odemeDurumu: VekaletTaksitOdemeDurumu
   odemeTarihi: Date | null
   aciklama: string | null
@@ -204,6 +223,7 @@ export function serializeVekaletTaksiti(t: {
     taksitNo: t.taksitNo,
     vadeTarihi: t.vadeTarihi.toISOString(),
     tutar: decimalStr(t.tutar),
+    paraBirimi: t.paraBirimi ?? 'TRY',
     odemeDurumu: t.odemeDurumu,
     odemeTarihi: t.odemeTarihi?.toISOString() ?? null,
     aciklama: t.aciklama,
@@ -369,6 +389,11 @@ export async function listSmmBekleyenForDosya(
     taksitId: o.taksitId,
     odemeTarihi: o.odemeTarihi.toISOString(),
     tutar: decimalStr(o.tutar),
+    mahsupTutari: decimalStr(o.tutar),
+    kasaTutari: decimalStr(o.kasaTutari),
+    alacakParaBirimi: o.alacakParaBirimi,
+    odemeParaBirimi: o.odemeParaBirimi,
+    paraBirimi: o.odemeParaBirimi,
     makbuzNo: o.makbuzNo,
     smmKesildiMi: o.smmKesildiMi
   }))
@@ -392,7 +417,10 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
       taksitler: {
         orderBy: [{ taksitNo: 'asc' }, { vadeTarihi: 'asc' }],
         include: {
-          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] }
+          odemeler: {
+            orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }],
+            include: { ofisKasaHareket: { select: { deletedAt: true } } }
+          }
         }
       }
     }
@@ -408,10 +436,18 @@ export async function getDosyaVekaletPackage(tenantId: string, dosyaId: string):
     }
   }
 
-  const ozet = computeOzet(vekalet.toplamTutar, vekalet.taksitler)
+  const ozet = computeOzet(
+    vekalet.toplamTutar,
+    vekalet.taksitler.map((t) => ({
+      ...t,
+      odemeler: filterAktifTahsilatOdemeleri(t.odemeler)
+    }))
+  )
   return {
     vekaletUcreti: serializeVekaletUcreti(vekalet),
-    taksitler: vekalet.taksitler.map((t) => serializeVekaletTaksitiWithOzet(t, t.odemeler)),
+    taksitler: vekalet.taksitler.map((t) =>
+      serializeVekaletTaksitiWithOzet(t, filterAktifTahsilatOdemeleri(t.odemeler))
+    ),
     ozet,
     smmBekleyen: smmBekleyenRows
   }
@@ -431,16 +467,59 @@ export async function upsertVekaletUcreti(
 
   const meta = getRequestMeta(req)
   const tutar = new PrismaNamespace.Decimal(body.toplamTutar)
+  const paraBirimi = resolveParaBirimi(body.paraBirimi)
 
-  const existing = await prisma.vekaletUcreti.findUnique({ where: { dosyaId } })
-  if (existing) {
-    const updated = await prisma.vekaletUcreti.update({
-      where: { id: existing.id },
-      data: {
-        toplamTutar: tutar,
-        aciklama: body.aciklama?.trim() || null,
-        updatedById: userId
+  const existing = await prisma.vekaletUcreti.findFirst({
+    where: { dosyaId, tenantId },
+    include: {
+      taksitler: { select: { tutar: true, odemeDurumu: true } }
+    }
+  })
+
+  if (isPersistedVekaletUcreti(existing)) {
+    const current = existing
+    const odemeCount = await prisma.vekaletTaksitOdeme.count({
+      where: { tenantId, dosyaId }
+    })
+    const mode = classifyVekaletUpsertMode({
+      existing: current,
+      tahsilatSayisi: odemeCount,
+      taksitler: current.taksitler
+    })
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // initialize / edit: aynı id üzerinde güncelle — mükerrer satır yok.
+      if (
+        isVekaletParaBirimiUpdateDegisimi({
+          mode,
+          mevcut: current.paraBirimi,
+          hedef: paraBirimi
+        })
+      ) {
+        assertVekaletParaBirimiDegisimiIzinli({
+          mevcut: current.paraBirimi,
+          hedef: paraBirimi,
+          tahsilatSayisi: odemeCount
+        })
       }
+
+      if (shouldCascadeVekaletTaksitParaBirimi(current.paraBirimi, paraBirimi)) {
+        // Ödeme yokken (initialize veya ödemesiz edit) tutarlar aynı sayısal değerle kalır.
+        await tx.vekaletTaksiti.updateMany({
+          where: { tenantId, vekaletUcretiId: current.id },
+          data: { paraBirimi, updatedById: userId }
+        })
+      }
+
+      return tx.vekaletUcreti.update({
+        where: { id: current.id },
+        data: {
+          toplamTutar: tutar,
+          paraBirimi,
+          aciklama: body.aciklama?.trim() || null,
+          updatedById: userId
+        }
+      })
     })
     await writeAuditLog({
       tenantId,
@@ -448,9 +527,9 @@ export async function upsertVekaletUcreti(
       action: 'VEKALET_UCRETI_UPSERTED',
       entityType: 'VekaletUcreti',
       entityId: updated.id,
-      oldValue: serializeVekaletUcreti(existing),
+      oldValue: serializeVekaletUcreti(current),
       newValue: serializeVekaletUcreti(updated),
-      meta: { dosyaId },
+      meta: { dosyaId, mode },
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     })
@@ -463,6 +542,7 @@ export async function upsertVekaletUcreti(
       dosyaId,
       muvekkilId: dosya.muvekkilId,
       toplamTutar: tutar,
+      paraBirimi,
       aciklama: body.aciklama?.trim() || null,
       createdById: userId
     }
@@ -474,7 +554,7 @@ export async function upsertVekaletUcreti(
     entityType: 'VekaletUcreti',
     entityId: created.id,
     newValue: serializeVekaletUcreti(created),
-    meta: { dosyaId },
+    meta: { dosyaId, mode: 'create' },
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent
   })
@@ -510,6 +590,7 @@ export async function createVekaletTaksiti(
         taksitNo: body.taksitNo,
         vadeTarihi: body.vadeTarihi,
         tutar,
+        paraBirimi: vekalet.paraBirimi,
         aciklama: body.aciklama?.trim() || null,
         createdById: userId
       }
@@ -586,6 +667,7 @@ export async function createTekVekaletTaksiti(
         taksitNo,
         vadeTarihi: body.vadeTarihi,
         tutar: new PrismaNamespace.Decimal(tutarNum),
+        paraBirimi: vekalet.paraBirimi,
         aciklama: body.aciklama?.trim() || null,
         createdById: userId
       }
@@ -696,6 +778,7 @@ export async function createVekaletTaksitPlani(
           taksitNo,
           vadeTarihi: satir.vadeTarihi,
           tutar: new PrismaNamespace.Decimal(satir.tutar),
+          paraBirimi: vekalet.paraBirimi,
           aciklama: satir.aciklama,
           createdById: userId
         }

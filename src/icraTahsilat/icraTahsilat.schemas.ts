@@ -1,5 +1,6 @@
 import { IcraTahsilatAlacakDurum, IcraTahsilatAlacakTuru, OfisKasaOdemeYontemi } from '@prisma/client'
 import { z } from 'zod'
+import { crossPaymentBodyFields, optionalParaBirimiSchema } from '../lib/paymentCurrency.schemas.js'
 
 const tutarPositive = z.preprocess(
   (v) => (typeof v === 'string' ? Number(v.replace(',', '.')) : v),
@@ -55,7 +56,9 @@ export const createIcraTahsilatBodySchema = z
     odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
     tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
     tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
-    aciklama: z.string().trim().max(4000).optional().nullable()
+    aciklama: z.string().trim().max(4000).optional().nullable(),
+    paraBirimi: optionalParaBirimiSchema,
+    ...crossPaymentBodyFields
   })
   .superRefine((data, ctx) => {
     const tip = resolveIcraTahsilatTipi(data)
@@ -124,7 +127,8 @@ export const createIcraTaksitOdemeBodySchema = z.object({
   odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
   tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
   tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
-  aciklama: z.string().trim().max(4000).optional().nullable()
+  aciklama: z.string().trim().max(4000).optional().nullable(),
+  ...crossPaymentBodyFields
 })
 
 export type ListIcraTahsilatQuery = z.infer<typeof listIcraTahsilatQuerySchema>

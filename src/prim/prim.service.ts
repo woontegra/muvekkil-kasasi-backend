@@ -1,7 +1,8 @@
-import type { PrimKurali, Prisma, UserRole } from '@prisma/client'
+import type { ParaBirimi, PrimKurali, Prisma, UserRole } from '@prisma/client'
 import {
   IcraTahsilatAlacakDurum as IcraAlacakDurumEnum,
   OfisKasaOnayDurumu,
+  ParaBirimi as ParaBirimiEnum,
   PrimDonemOdemeDurumu,
   PrimHesaplamaTipi,
   PrimKuralKapsam,
@@ -26,6 +27,11 @@ export type TahsilatSatir = {
   kaynak: TahsilatKaynak
   tarih: string
   tutar: string
+  /** Kasaya giren tutar (ödeme PB) — prim matrahı için esas. */
+  kasaTutari: string
+  paraBirimi: string
+  /** Prim kademesi için TRY matrah snapshot; yabancı para dönüşümü dahil. */
+  primTryMatrahi: string | null
   aciklama: string | null
   muvekkilAd: string | null
   dosyaBaslik: string | null
@@ -263,12 +269,25 @@ export async function resolvePrimKuraliForPersonel(tenantId: string, primPersone
   })
 }
 
+function resolvePrimTryMatrahForOdeme(o: {
+  primTryMatrahi: Prisma.Decimal | null
+  kasaTutari: Prisma.Decimal
+  odemeParaBirimi: ParaBirimi
+}): number | null {
+  if (o.primTryMatrahi != null) return Number(o.primTryMatrahi)
+  if (o.odemeParaBirimi === ParaBirimiEnum.TRY) return Number(o.kasaTutari)
+  return null
+}
+
 function toTahsilatSatir(row: PersonelTahsilatSatir): TahsilatSatir {
   return {
     id: row.id,
     kaynak: row.kaynak,
     tarih: row.tarih,
     tutar: row.tutar,
+    kasaTutari: row.kasaTutari,
+    paraBirimi: row.paraBirimi,
+    primTryMatrahi: row.primTryMatrahi,
     aciklama: row.aciklama,
     muvekkilAd: row.muvekkilAd,
     dosyaBaslik: row.dosyaBaslik,
@@ -369,8 +388,14 @@ export async function hesaplaPrimRaporu(
       query.tahsilatTuru
     )
     const primRows = allRows.filter((r) => r.primHesabinaDahilMi)
-    const primToplam = primRows.reduce((s, t) => s + Number(t.tutar), 0)
+    const primMatrahRows = primRows.filter((r) => r.primTryMatrah != null)
+    const primToplam = primMatrahRows.reduce((s, t) => s + (t.primTryMatrah ?? 0), 0)
     const hesap = computePremium(primToplam, rule.hesaplamaTipi, rule.kademeler)
+    const byCurrency = {
+      TRY: primRows.filter((r) => r.paraBirimi === 'TRY').reduce((s, t) => s + Number(t.kasaTutari), 0),
+      USD: primRows.filter((r) => r.paraBirimi === 'USD').reduce((s, t) => s + Number(t.kasaTutari), 0),
+      EUR: primRows.filter((r) => r.paraBirimi === 'EUR').reduce((s, t) => s + Number(t.kasaTutari), 0)
+    }
 
     const saved = await prisma.primDonemOdemesi.upsert({
       where: {
@@ -388,8 +413,17 @@ export async function hesaplaPrimRaporu(
         hesaplamaTipi: rule.hesaplamaTipi,
         hesaplamaDetay: {
           kademeler: hesap.kademeler,
-          tahsilatSayisi: primRows.length,
-          toplamTahsilatBuAy: allRows.reduce((s, t) => s + Number(t.tutar), 0)
+          tahsilatSayisi: primMatrahRows.length,
+          tahsilatSayisiTumPb: primRows.length,
+          toplamPrimTryMatrahi: primToplam,
+          toplamTahsilatBuAyTry: primToplam,
+          tahsilatByCurrency: {
+            TRY: byCurrency.TRY.toFixed(2),
+            USD: byCurrency.USD.toFixed(2),
+            EUR: byCurrency.EUR.toFixed(2)
+          },
+          primMatrahiParaBirimi: 'TRY',
+          not: 'Prim matrahı primTryMatrahi snapshot üzerinden TRY olarak toplanır; farklı para birimleri ham tutar olarak karıştırılmaz.'
         },
         durum: PrimDonemOdemeDurumu.HESAPLANDI
       },
@@ -401,8 +435,17 @@ export async function hesaplaPrimRaporu(
         hesaplamaTipi: rule.hesaplamaTipi,
         hesaplamaDetay: {
           kademeler: hesap.kademeler,
-          tahsilatSayisi: primRows.length,
-          toplamTahsilatBuAy: allRows.reduce((s, t) => s + Number(t.tutar), 0)
+          tahsilatSayisi: primMatrahRows.length,
+          tahsilatSayisiTumPb: primRows.length,
+          toplamPrimTryMatrahi: primToplam,
+          toplamTahsilatBuAyTry: primToplam,
+          tahsilatByCurrency: {
+            TRY: byCurrency.TRY.toFixed(2),
+            USD: byCurrency.USD.toFixed(2),
+            EUR: byCurrency.EUR.toFixed(2)
+          },
+          primMatrahiParaBirimi: 'TRY',
+          not: 'Prim matrahı primTryMatrahi snapshot üzerinden TRY olarak toplanır; farklı para birimleri ham tutar olarak karıştırılmaz.'
         },
         durum: PrimDonemOdemeDurumu.HESAPLANDI,
         odendiTarihi: null,
@@ -417,11 +460,18 @@ export async function hesaplaPrimRaporu(
       userId: personel.bagliUserId,
       yil: query.yil,
       ay: query.ay,
-      toplamTahsilat: dec(saved.toplamTahsilat),
-      hesaplananPrim: dec(saved.hesaplananPrim),
+      toplamTahsilat: primToplam.toFixed(2),
+      toplamPrimTryMatrahi: primToplam.toFixed(2),
+      toplamTahsilatByCurrency: {
+        TRY: byCurrency.TRY.toFixed(2),
+        USD: byCurrency.USD.toFixed(2),
+        EUR: byCurrency.EUR.toFixed(2)
+      },
+      hesaplananPrim: hesap.toplamPrim.toFixed(2),
       uygulananKuralAd: rule.ad,
       hesaplamaTipi: rule.hesaplamaTipi,
-      durum: saved.durum
+      durum: saved.durum,
+      paraBirimi: 'TRY'
     })
   }
 
@@ -583,6 +633,8 @@ export type TahsilatOnayDurumu = 'ONAYSIZ' | 'ONAYLI' | 'REDDEDILDI'
 export type PersonelTahsilatSatir = TahsilatSatir & {
   onayDurumu: TahsilatOnayDurumu
   primHesabinaDahilMi: boolean
+  /** Prim kademesi için TRY matrah; yabancı para snapshot yoksa null. */
+  primTryMatrah: number | null
   tahsilatiYapanPersonelId: string
   tahsilatiYapanAdSoyad: string
 }
@@ -637,11 +689,15 @@ async function collectPersonelTahsilatlari(
     const onay = (o.ofisKasaHareket?.onayDurumu ?? OfisKasaOnayDurumu.ONAYLI) as TahsilatOnayDurumu
     // İcra tahsilat ödemesi gerçek tahsilattır; ofis kasa onay beklemesi primi engellemez.
     const primHesabinaDahilMi = kaynakRuleEnabled(rule, 'ICRA')
+    const primTryMatrah = resolvePrimTryMatrahForOdeme(o)
     rows.push({
       id: `icra-${o.id}`,
       kaynak: 'ICRA',
       tarih: o.odemeTarihi.toISOString(),
       tutar: dec(o.tutar),
+      kasaTutari: dec(o.kasaTutari),
+      paraBirimi: o.odemeParaBirimi,
+      primTryMatrahi: primTryMatrah != null ? primTryMatrah.toFixed(2) : null,
       aciklama: o.aciklama,
       muvekkilAd: o.alacak.muvekkil?.gorunenAd ?? null,
       dosyaBaslik: o.alacak.dosya?.konuBasligi ?? null,
@@ -649,6 +705,7 @@ async function collectPersonelTahsilatlari(
       kaynakKayitId: o.id,
       onayDurumu: onay,
       primHesabinaDahilMi,
+      primTryMatrah,
       tahsilatiYapanPersonelId: primPersonelId,
       tahsilatiYapanAdSoyad: personelAdSoyad
     })
@@ -711,21 +768,30 @@ function buildPersonelOzetFromTahsilatlar(
   primDonem: { id: string; hesaplananPrim: Prisma.Decimal; durum: PrimDonemOdemeDurumu } | null
 ) {
   const primDahilRows = rows.filter((r) => r.primHesabinaDahilMi)
-  const primDahilTahsilat = primDahilRows.reduce((s, t) => s + Number(t.tutar), 0)
+  const primMatrahRows = primDahilRows.filter((r) => r.primTryMatrah != null)
+  const primDahilTahsilat = primMatrahRows.reduce((s, t) => s + (t.primTryMatrah ?? 0), 0)
   const hesap = rule ? computePremium(primDahilTahsilat, rule.hesaplamaTipi, rule.kademeler) : { toplamPrim: 0, kademeler: [] }
   const tahminiPrim =
     primDonem?.durum === PrimDonemOdemeDurumu.ODENDI
       ? Number(primDonem.hesaplananPrim)
       : hesap.toplamPrim
   const odenmisPrim = primDonem?.durum === PrimDonemOdemeDurumu.ODENDI ? tahminiPrim : 0
+  const byCurrency = {
+    TRY: primDahilRows.filter((r) => r.paraBirimi === 'TRY').reduce((s, t) => s + Number(t.kasaTutari), 0).toFixed(2),
+    USD: primDahilRows.filter((r) => r.paraBirimi === 'USD').reduce((s, t) => s + Number(t.kasaTutari), 0).toFixed(2),
+    EUR: primDahilRows.filter((r) => r.paraBirimi === 'EUR').reduce((s, t) => s + Number(t.kasaTutari), 0).toFixed(2)
+  }
 
   return {
     toplamTahsilatBuAy: primDahilTahsilat.toFixed(2),
     primDahilTahsilat: primDahilTahsilat.toFixed(2),
+    toplamPrimTryMatrahi: primDahilTahsilat.toFixed(2),
+    tahsilatByCurrency: byCurrency,
+    paraBirimi: 'TRY',
     tahminiPrim: tahminiPrim.toFixed(2),
     odenmisPrim: odenmisPrim.toFixed(2),
-    tahsilatAdedi: primDahilRows.length,
-    primDahilTahsilatAdedi: primDahilRows.length,
+    tahsilatAdedi: primMatrahRows.length,
+    primDahilTahsilatAdedi: primMatrahRows.length,
     kademeHesabi: hesap.kademeler,
     primDonemId: primDonem?.id ?? null,
     primDonemDurum: primDonem?.durum ?? null

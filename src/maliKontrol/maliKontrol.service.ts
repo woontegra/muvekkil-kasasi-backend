@@ -1,5 +1,6 @@
-import { DosyaDurumu, KasaHareketTipi, KasaOnayDurumu, VekaletTaksitOdemeDurumu } from '@prisma/client'
+import { DosyaDurumu, KasaHareketTipi, KasaOnayDurumu, ParaBirimi, VekaletTaksitOdemeDurumu } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { formatMoneyDisplay } from '../lib/paraBirimi.js'
 
 export type UyariSeviyesi = 'KRITIK' | 'UYARI' | 'BILGI'
 
@@ -59,6 +60,10 @@ export type MaliKontrolResponse = {
 
 function fmt(n: number): string {
   return n.toFixed(2)
+}
+
+function fmtTry(n: number): string {
+  return formatMoneyDisplay(n.toFixed(2), ParaBirimi.TRY)
 }
 
 function ymdLocal(d: Date): string {
@@ -223,7 +228,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik,
         tutar: fmt(kalan),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} vadesi geçmiş; kalan: ${fmt(kalan)} ₺`,
+        aciklama: `Taksit ${t.taksitNo} vadesi geçmiş; kalan: ${fmtTry(kalan)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     } else if (vadeYmd <= ymdLocal(ucGunSonra)) {
@@ -238,7 +243,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik,
         tutar: fmt(kalan),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} 3 gün içinde vadesi dolacak; kalan: ${fmt(kalan)} ₺`,
+        aciklama: `Taksit ${t.taksitNo} 3 gün içinde vadesi dolacak; kalan: ${fmtTry(kalan)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     } else if (t.odemeDurumu === VekaletTaksitOdemeDurumu.KISMI_ODENDI) {
@@ -253,7 +258,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik,
         tutar: fmt(kalan),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} kısmi ödenmiş; kalan: ${fmt(kalan)} ₺`,
+        aciklama: `Taksit ${t.taksitNo} kısmi ödenmiş; kalan: ${fmtTry(kalan)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     }
@@ -292,7 +297,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik: d.dosyaBaslik,
         tutar: fmt(Math.abs(bakiye)),
         tarih: null,
-        aciklama: `Masraf avansı negatife düştü; büro ${fmt(Math.abs(bakiye))} ₺ karşılıyor`,
+        aciklama: `Masraf avansı negatife düştü; büro ${fmtTry(Math.abs(bakiye))} karşılıyor`,
         ...buildAction(d.muvekkilId, dosyaId, 'DOSYA_MALI', 'mali')
       })
     }
@@ -321,7 +326,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik,
         tutar: fmt(bakiye),
         tarih: null,
-        aciklama: `Kapalı dosyada ${fmt(bakiye)} ₺ masraf avansı bakiyesi bulunuyor`,
+        aciklama: `Kapalı dosyada ${fmtTry(bakiye)} masraf avansı bakiyesi bulunuyor`,
         ...buildAction(d.muvekkilId, d.id, 'DOSYA_MALI', 'mali')
       })
     }
@@ -352,7 +357,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         dosyaBaslik,
         tutar: fmt(kalanAlacak),
         tarih: null,
-        aciklama: `Kapalı dosyada ${fmt(kalanAlacak)} ₺ tahsil edilmemiş vekalet ücreti alacağı var`,
+        aciklama: `Kapalı dosyada ${fmtTry(kalanAlacak)} tahsil edilmemiş vekalet ücreti alacağı var`,
         ...(ilkKalanTaksitId
           ? buildAction(d.muvekkilId, d.id, 'VEKALET_TAKSIT', 'vekalet', { taksitId: ilkKalanTaksitId })
           : buildAction(d.muvekkilId, d.id, 'DOSYA_VEKALET', 'vekalet'))
@@ -374,7 +379,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
       dosyaBaslik,
       tutar: fmt(Number(o.tutar)),
       tarih: ymdLocal(o.odemeTarihi),
-      aciklama: `${fmt(Number(o.tutar))} ₺ tahsilat için SMM kesilmemiş`,
+      aciklama: `${fmtTry(Number(o.tutar))} tahsilat için SMM kesilmemiş`,
       ...buildAction(o.muvekkilId, o.dosyaId, 'SMM_ODEME', 'smm', { odemeId: o.id })
     })
   }
@@ -399,7 +404,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
       dosyaBaslik,
       tutar: fmt(Number(r.tutar)),
       tarih: ymdLocal(r.tarih),
-      aciklama: `${tipEtiket[r.tip] ?? r.tip} onay bekliyor: ${fmt(Number(r.tutar))} ₺`,
+      aciklama: `${tipEtiket[r.tip] ?? r.tip} onay bekliyor: ${fmtTry(Number(r.tutar))}`,
       ...buildAction(r.muvekkil.id, r.dosyaId, 'KASA_HAREKET', 'kasa', {
         kasaHareketiId: r.id,
         kasaFilter: 'onaysiz'
@@ -421,7 +426,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
       dosyaBaslik,
       tutar: fmt(Number(o.tutar)),
       tarih: ymdLocal(o.odemeTarihi),
-      aciklama: `${fmt(Number(o.tutar))} ₺ tahsilatın makbuz numarası eksik`,
+      aciklama: `${fmtTry(Number(o.tutar))} tahsilatın makbuz numarası eksik`,
       ...buildAction(o.muvekkilId, o.dosyaId, 'MAKBUZ_ODEME', 'makbuz', { odemeId: o.id })
     })
   }

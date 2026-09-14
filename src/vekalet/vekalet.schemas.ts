@@ -1,5 +1,6 @@
 import { OdemeYontemi } from '@prisma/client'
 import { z } from 'zod'
+import { crossPaymentBodyFields, optionalParaBirimiSchema } from '../lib/paymentCurrency.schemas.js'
 
 const tutarPositive = z.preprocess(
   (v) => {
@@ -45,7 +46,8 @@ const calendarDate = z.preprocess(
 
 export const upsertVekaletUcretiBodySchema = z.object({
   toplamTutar: tutarPositive,
-  aciklama: z.string().trim().max(4000).optional().nullable()
+  aciklama: z.string().trim().max(4000).optional().nullable(),
+  paraBirimi: optionalParaBirimiSchema
 })
 
 export type UpsertVekaletUcretiBody = z.infer<typeof upsertVekaletUcretiBodySchema>
@@ -86,13 +88,15 @@ export const markTaksitSmmBodySchema = z.object({
 export type MarkTaksitSmmBody = z.infer<typeof markTaksitSmmBodySchema>
 
 export const createVekaletTaksitOdemeBodySchema = z.object({
+  /** Borçtan düşülecek tutar (alacak para biriminde). */
   tutar: tutarPositive,
   odemeTarihi: z.coerce.date().optional(),
   odemeYontemi: z.nativeEnum(OdemeYontemi),
   aciklama: z.string().trim().max(4000).optional().nullable(),
   smmKesildiMi: z.boolean().optional().default(false),
   tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
-  tahsilatiYapanUserId: z.string().uuid().optional().nullable()
+  tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
+  ...crossPaymentBodyFields
 })
 
 export type CreateVekaletTaksitOdemeBody = z.infer<typeof createVekaletTaksitOdemeBodySchema>
@@ -106,7 +110,8 @@ export const updateVekaletTaksitOdemeBodySchema = z.object({
   tutar: tutarPositive.optional(),
   odemeTarihi: z.coerce.date().optional(),
   odemeYontemi: z.nativeEnum(OdemeYontemi).optional(),
-  aciklama: z.string().trim().max(4000).optional().nullable()
+  aciklama: z.string().trim().max(4000).optional().nullable(),
+  ...crossPaymentBodyFields
 })
 
 export type UpdateVekaletTaksitOdemeBody = z.infer<typeof updateVekaletTaksitOdemeBodySchema>

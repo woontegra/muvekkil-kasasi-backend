@@ -227,6 +227,7 @@ model User {
   kasaHareketleriCreated KasaHareketi[]        @relation("KasaCreatedBy")
   kasaHareketleriUpdated KasaHareketi[]        @relation("KasaUpdatedBy")
   kasaHareketleriOnaylayan KasaHareketi[]     @relation("KasaOnaylayan")
+  kasaHareketleriDeleted   KasaHareketi[]     @relation("KasaDeletedBy")
   vekaletUcretleriCreated   VekaletUcreti[]   @relation("VekaletUcretiCreatedBy")
   vekaletUcretleriUpdated   VekaletUcreti[]   @relation("VekaletUcretiUpdatedBy")
   vekaletTaksitleriCreated   VekaletTaksiti[] @relation("VekaletTaksitCreatedBy")
@@ -235,6 +236,7 @@ model User {
   ofisKasaHareketleriCreated OfisKasaHareketi[] @relation("OfisKasaCreatedBy")
   ofisKasaHareketleriUpdated OfisKasaHareketi[] @relation("OfisKasaUpdatedBy")
   ofisKasaHareketleriOnaylayan OfisKasaHareketi[] @relation("OfisKasaOnaylayan")
+  ofisKasaHareketleriDeleted   OfisKasaHareketi[] @relation("OfisKasaDeletedBy")
   importBatchesCommitted       ImportBatch[]
   tahsilatlariYapanKasa        KasaHareketi[]        @relation("KasaTahsilatiYapan")
   tahsilatlariYapanVekalet     VekaletTaksitOdeme[]  @relation("VekaletOdemeTahsilatiYapan")
@@ -428,6 +430,23 @@ enum OfisKasaIslemTipi {
   GELIR
   GIDER
   DUZELTME
+  /// Döviz dönüşümü: kaynak kasadan çıkış (gelir/gider sayılmaz)
+  DOVIZ_CIKIS
+  /// Döviz dönüşümü: hedef kasaya giriş (gelir/gider sayılmaz)
+  DOVIZ_GIRIS
+}
+
+/// Uygulama genelinde desteklenen para birimleri.
+enum ParaBirimi {
+  TRY
+  USD
+  EUR
+}
+
+/// Ödeme / döviz dönüşümünde uygulanan kurun kaynağı.
+enum KurKaynagi {
+  TCMB
+  MANUEL
 }
 
 enum OfisKasaOnayDurumu {
@@ -453,6 +472,8 @@ model OfisKasaHareketi {
   ozelKategoriAdi     String?              @map("ozel_kategori_adi")
   aciklama            String?
   tutar               Decimal              @db.Decimal(14, 2)
+  /// Hareketin para birimi. Mevcut kayıtlar TRY.
+  paraBirimi          ParaBirimi           @default(TRY) @map("para_birimi")
   odemeYontemi        OfisKasaOdemeYontemi @map("odeme_yontemi")
   belgeNo             String               @map("belge_no")
   onayDurumu          OfisKasaOnayDurumu   @default(ONAYSIZ) @map("onay_durumu")
@@ -472,6 +493,11 @@ model OfisKasaHareketi {
   tahsilatiYapanPersonel PrimPersonel?     @relation("OfisKasaTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
   updatedById         String?              @map("updated_by_id")
   updatedBy           User?                @relation("OfisKasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  /** Güvenli soft-delete — listeden/toplamlardan düşer, satır korunur. */
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedById         String?              @map("deleted_by_id")
+  deletedBy           User?                @relation("OfisKasaDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  deleteReason        String?              @map("delete_reason") @db.VarChar(1000)
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
   kaynakTipi          String?              @map("kaynak_tipi")
@@ -480,6 +506,15 @@ model OfisKasaHareketi {
   muvekkilId          String?              @map("muvekkil_id")
   muvekkil            Muvekkil?            @relation(fields: [muvekkilId], references: [id], onDelete: SetNull)
   muvekkilAdiSnapshot String?              @map("muvekkil_adi_snapshot")
+  /// Döviz dönüşümü çifti — aynı UUID iki harekette (CIKIS + GIRIS).
+  dovizDonusumId      String?              @map("doviz_donusum_id")
+  /// Dönüşümde uygulanan kur (1 baz = kur karşı).
+  kur                 Decimal?             @map("kur") @db.Decimal(24, 8)
+  kurBazParaBirimi    ParaBirimi?          @map("kur_baz_para_birimi")
+  kurKarsiParaBirimi  ParaBirimi?          @map("kur_karsi_para_birimi")
+  kurKaynagi          KurKaynagi?          @map("kur_kaynagi")
+  tcmbKurTarihi       DateTime?            @map("tcmb_kur_tarihi") @db.Date
+  tcmbReferansKur     Decimal?             @map("tcmb_referans_kur") @db.Decimal(24, 8)
   icraTahsilatOdeme   IcraTahsilatOdeme?
   vekaletTaksitOdeme  VekaletTaksitOdeme?
 
@@ -488,9 +523,12 @@ model OfisKasaHareketi {
   @@index([tenantId, tarih])
   @@index([tenantId, onayDurumu])
   @@index([tenantId, islemTipi])
+  @@index([tenantId, paraBirimi, tarih])
   @@index([tenantId, tahsilatiYapanUserId, tarih])
   @@index([tenantId, tahsilatiYapanPersonelId, tarih])
   @@index([tenantId, muvekkilId])
+  @@index([tenantId, dovizDonusumId])
+  @@index([tenantId, deletedAt])
   @@map("ofis_kasa_hareketi")
 }
 
@@ -529,6 +567,11 @@ model KasaHareketi {
   tahsilatiYapanPersonel PrimPersonel? @relation("KasaTahsilatiYapanPersonel", fields: [tahsilatiYapanPersonelId], references: [id], onDelete: SetNull)
   updatedById        String?          @map("updated_by_id")
   updatedBy          User?            @relation("KasaUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  /** Güvenli soft-delete — soft-silinen kayıt listeden/toplamlardan düşer, satır korunur. */
+  deletedAt          DateTime?        @map("deleted_at")
+  deletedById        String?          @map("deleted_by_id")
+  deletedBy          User?            @relation("KasaDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
+  deleteReason       String?          @map("delete_reason") @db.VarChar(1000)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
   vekaletTaksitOdeme VekaletTaksitOdeme?
@@ -536,6 +579,7 @@ model KasaHareketi {
   @@unique([tenantId, belgeNo])
   @@index([tenantId, dosyaId, tarih])
   @@index([tenantId, dosyaId, onayDurumu])
+  @@index([tenantId, dosyaId, deletedAt])
   @@index([tenantId, tahsilatiYapanUserId, tarih])
   @@index([tenantId, tahsilatiYapanPersonelId, tarih])
   @@map("kasa_hareketi")
@@ -558,6 +602,8 @@ model VekaletUcreti {
   muvekkilId   String   @map("muvekkil_id")
   muvekkil     Muvekkil @relation(fields: [muvekkilId], references: [id], onDelete: Restrict)
   toplamTutar  Decimal  @map("toplam_tutar") @db.Decimal(14, 2)
+  /// Alacak para birimi; taksitler bunu devralır.
+  paraBirimi   ParaBirimi @default(TRY) @map("para_birimi")
   aciklama     String?
   createdById  String   @map("created_by_id")
   createdBy    User     @relation("VekaletUcretiCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
@@ -568,6 +614,7 @@ model VekaletUcreti {
   taksitler    VekaletTaksiti[]
 
   @@index([tenantId, muvekkilId])
+  @@index([tenantId, paraBirimi])
   @@map("vekalet_ucreti")
 }
 
@@ -584,6 +631,8 @@ model VekaletTaksiti {
   taksitNo        Int                      @map("taksit_no")
   vadeTarihi      DateTime                 @map("vade_tarihi")
   tutar           Decimal                  @db.Decimal(14, 2)
+  /// Vekalet ücretinin para birimi ile aynı (snapshot).
+  paraBirimi      ParaBirimi               @default(TRY) @map("para_birimi")
   odemeDurumu     VekaletTaksitOdemeDurumu @default(ODENMEDI) @map("odeme_durumu")
   odemeTarihi     DateTime?                @map("odeme_tarihi")
   aciklama        String?
@@ -619,7 +668,25 @@ model VekaletTaksitOdeme {
   taksitId      String         @map("taksit_id")
   taksit        VekaletTaksiti @relation(fields: [taksitId], references: [id], onDelete: Cascade)
   odemeTarihi   DateTime       @map("odeme_tarihi")
+  /// Borçtan düşülen tutar (alacak para biriminde).
   tutar         Decimal        @db.Decimal(14, 2)
+  /// Kasaya giren tutar (ödeme para biriminde). Aynı para biriminde tutar ile eşit.
+  kasaTutari    Decimal        @map("kasa_tutari") @db.Decimal(14, 2)
+  /// Alacak/taksit para birimi (mahsup).
+  alacakParaBirimi ParaBirimi  @default(TRY) @map("alacak_para_birimi")
+  /// Kasaya yazılan para birimi.
+  odemeParaBirimi  ParaBirimi  @default(TRY) @map("odeme_para_birimi")
+  /// 1 baz = kur karşı (yalnız çapraz ödemede veya dönüşümde).
+  kur              Decimal?    @map("kur") @db.Decimal(24, 8)
+  kurBazParaBirimi ParaBirimi? @map("kur_baz_para_birimi")
+  kurKarsiParaBirimi ParaBirimi? @map("kur_karsi_para_birimi")
+  kurKaynagi       KurKaynagi? @map("kur_kaynagi")
+  /// TCMB’nin yayımladığı kur günü (işlem tarihinden farklı olabilir).
+  tcmbKurTarihi    DateTime?   @map("tcmb_kur_tarihi") @db.Date
+  /// Formda önerilen TCMB referans kuru (Döviz Alış); snapshot.
+  tcmbReferansKur  Decimal?    @map("tcmb_referans_kur") @db.Decimal(24, 8)
+  /// Prim TL matrahı snapshot — sonraki kur değişimlerinden etkilenmez.
+  primTryMatrahi   Decimal?    @map("prim_try_matrahi") @db.Decimal(14, 2)
   odemeYontemi  OdemeYontemi   @map("odeme_yontemi")
   aciklama      String?
   makbuzNo      String         @map("makbuz_no")
@@ -718,6 +785,7 @@ model IcraTahsilatAlacagi {
   dosya                    Dosya?                   @relation(fields: [dosyaId], references: [id], onDelete: SetNull)
   toplamTutar              Decimal                  @map("toplam_tutar") @db.Decimal(14, 2)
   pesinatTutar             Decimal                  @default(0) @map("pesinat_tutar") @db.Decimal(14, 2)
+  paraBirimi               ParaBirimi               @default(TRY) @map("para_birimi")
   taksitSayisi             Int                      @map("taksit_sayisi")
   ilkVadeTarihi            DateTime                 @map("ilk_vade_tarihi")
   varsayilanOdemeYontemi   OfisKasaOdemeYontemi     @map("varsayilan_odeme_yontemi")
@@ -736,6 +804,7 @@ model IcraTahsilatAlacagi {
   @@index([tenantId, createdAt])
   @@index([tenantId, muvekkilId])
   @@index([tenantId, dosyaId])
+  @@index([tenantId, paraBirimi])
   @@map("icra_tahsilat_alacak")
 }
 
@@ -747,6 +816,7 @@ model IcraTahsilatTaksit {
   alacak      IcraTahsilatAlacagi  @relation(fields: [alacakId], references: [id], onDelete: Cascade)
   taksitNo    Int                  @map("taksit_no")
   tutar       Decimal              @db.Decimal(14, 2)
+  paraBirimi  ParaBirimi           @default(TRY) @map("para_birimi")
   vadeTarihi  DateTime             @map("vade_tarihi")
   aciklama    String?
   createdAt   DateTime             @default(now()) @map("created_at")
@@ -767,7 +837,18 @@ model IcraTahsilatOdeme {
   taksitId                 String?              @map("taksit_id")
   taksit                   IcraTahsilatTaksit?  @relation(fields: [taksitId], references: [id], onDelete: SetNull)
   odemeTarihi              DateTime             @map("odeme_tarihi")
+  /// Borçtan düşülen tutar (alacak para biriminde).
   tutar                    Decimal              @db.Decimal(14, 2)
+  kasaTutari               Decimal              @map("kasa_tutari") @db.Decimal(14, 2)
+  alacakParaBirimi         ParaBirimi           @default(TRY) @map("alacak_para_birimi")
+  odemeParaBirimi          ParaBirimi           @default(TRY) @map("odeme_para_birimi")
+  kur                      Decimal?             @map("kur") @db.Decimal(24, 8)
+  kurBazParaBirimi         ParaBirimi?          @map("kur_baz_para_birimi")
+  kurKarsiParaBirimi       ParaBirimi?          @map("kur_karsi_para_birimi")
+  kurKaynagi               KurKaynagi?          @map("kur_kaynagi")
+  tcmbKurTarihi            DateTime?            @map("tcmb_kur_tarihi") @db.Date
+  tcmbReferansKur          Decimal?             @map("tcmb_referans_kur") @db.Decimal(24, 8)
+  primTryMatrahi           Decimal?             @map("prim_try_matrahi") @db.Decimal(14, 2)
   odemeYontemi             OfisKasaOdemeYontemi @map("odeme_yontemi")
   aciklama                 String?
   smmKesildiMi             Boolean              @default(false) @map("smm_kesildi_mi")

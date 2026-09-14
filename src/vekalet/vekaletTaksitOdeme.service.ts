@@ -1,5 +1,12 @@
-import type { OdemeYontemi, OfisKasaOdemeYontemi, Prisma, UserRole } from '@prisma/client'
+import type { OdemeYontemi, OfisKasaOdemeYontemi, ParaBirimi, Prisma, UserRole } from '@prisma/client'
 import { OfisKasaOnayDurumu, Prisma as PrismaNamespace } from '@prisma/client'
+import {
+  rateToApiString,
+  resolveParaBirimi,
+  resolvePaymentAmounts,
+  type ResolvedPayment
+} from '../lib/paraBirimi.js'
+import { resolvePaymentKurSnapshot } from '../lib/kurSnapshot.js'
 import { prisma } from '../lib/prisma.js'
 import { writeAuditLog } from '../audit/auditService.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -51,6 +58,16 @@ export function serializeVekaletTaksitOdeme(o: {
   taksitId: string
   odemeTarihi: Date
   tutar: Prisma.Decimal
+  kasaTutari: Prisma.Decimal
+  alacakParaBirimi: ParaBirimi
+  odemeParaBirimi: ParaBirimi
+  kur?: Prisma.Decimal | null
+  kurBazParaBirimi?: ParaBirimi | null
+  kurKarsiParaBirimi?: ParaBirimi | null
+  kurKaynagi?: string | null
+  tcmbKurTarihi?: Date | null
+  tcmbReferansKur?: Prisma.Decimal | null
+  primTryMatrahi?: Prisma.Decimal | null
   odemeYontemi: OdemeYontemi
   aciklama: string | null
   makbuzNo: string
@@ -71,6 +88,16 @@ export function serializeVekaletTaksitOdeme(o: {
     taksitId: o.taksitId,
     odemeTarihi: o.odemeTarihi.toISOString(),
     tutar: decimalStr(o.tutar),
+    kasaTutari: decimalStr(o.kasaTutari),
+    alacakParaBirimi: o.alacakParaBirimi,
+    odemeParaBirimi: o.odemeParaBirimi,
+    kur: rateToApiString(o.kur),
+    kurBazParaBirimi: o.kurBazParaBirimi ?? null,
+    kurKarsiParaBirimi: o.kurKarsiParaBirimi ?? null,
+    kurKaynagi: o.kurKaynagi ?? null,
+    tcmbKurTarihi: o.tcmbKurTarihi ? o.tcmbKurTarihi.toISOString().slice(0, 10) : null,
+    tcmbReferansKur: rateToApiString(o.tcmbReferansKur),
+    primTryMatrahi: o.primTryMatrahi != null ? decimalStr(o.primTryMatrahi) : null,
     odemeYontemi: o.odemeYontemi,
     aciklama: o.aciklama,
     makbuzNo: o.makbuzNo,
@@ -135,11 +162,18 @@ type OdemeCreateCtx = {
     muvekkilId: string
     taksitNo: number
     tutar: Prisma.Decimal
+    paraBirimi: ParaBirimi
     odemeler: { tutar: Prisma.Decimal }[]
     dosya: { konuBasligi: string }
     muvekkil: { gorunenAd: string }
   }
-  tutar: Prisma.Decimal
+  payment: ResolvedPayment
+  kurMeta: {
+    kurKaynagi: import('@prisma/client').KurKaynagi | null
+    tcmbKurTarihi: Date | null
+    tcmbReferansKur: Prisma.Decimal | null
+    primTryMatrahi: Prisma.Decimal
+  }
   odemeTarihi: Date
   odemeYontemi: OdemeYontemi
   aciklama: string | null
@@ -149,6 +183,8 @@ type OdemeCreateCtx = {
 
 async function createVekaletOdemeInTx(tx: Prisma.TransactionClient, ctx: OdemeCreateCtx) {
   const makbuzNo = await nextOdemeMakbuzNo(tx, ctx.tenantId, ctx.odemeTarihi)
+  const p = ctx.payment
+  const km = ctx.kurMeta
 
   const odeme = await tx.vekaletTaksitOdeme.create({
     data: {
@@ -157,7 +193,17 @@ async function createVekaletOdemeInTx(tx: Prisma.TransactionClient, ctx: OdemeCr
       dosyaId: ctx.taksit.dosyaId,
       taksitId: ctx.taksit.id,
       odemeTarihi: ctx.odemeTarihi,
-      tutar: ctx.tutar,
+      tutar: p.mahsupTutari,
+      kasaTutari: p.kasaTutari,
+      alacakParaBirimi: p.alacakParaBirimi,
+      odemeParaBirimi: p.odemeParaBirimi,
+      kur: p.kur,
+      kurBazParaBirimi: p.kurBazParaBirimi,
+      kurKarsiParaBirimi: p.kurKarsiParaBirimi,
+      kurKaynagi: km.kurKaynagi,
+      tcmbKurTarihi: km.tcmbKurTarihi,
+      tcmbReferansKur: km.tcmbReferansKur,
+      primTryMatrahi: km.primTryMatrahi,
       odemeYontemi: ctx.odemeYontemi,
       aciklama: ctx.aciklama,
       makbuzNo,
@@ -168,17 +214,27 @@ async function createVekaletOdemeInTx(tx: Prisma.TransactionClient, ctx: OdemeCr
     }
   })
 
+  const ofisAciklamaBase = vekaletOfisAciklama(
+    ctx.taksit.muvekkil.gorunenAd,
+    ctx.taksit.dosya.konuBasligi,
+    ctx.taksit.taksitNo
+  )
+  const ofisAciklamaFull =
+    p.isCrossCurrency && p.kurOzeti
+      ? `${ofisAciklamaBase} (${p.kurOzeti})`
+      : ofisAciklamaBase
+
   const ofis = await createOfisKasaGelirFromKaynakInTx(tx, {
     tenantId: ctx.tenantId,
     userId: ctx.userId,
     tarih: ctx.odemeTarihi,
     kategori: OFIS_KASA_KATEGORI_VEKALET_TAHSILATI,
-    aciklama: vekaletOfisAciklama(
-      ctx.taksit.muvekkil.gorunenAd,
-      ctx.taksit.dosya.konuBasligi,
-      ctx.taksit.taksitNo
-    ),
-    tutar: ctx.tutar,
+    aciklama: ofisAciklamaFull,
+    kasaTutari: p.kasaTutari,
+    paraBirimi: p.odemeParaBirimi,
+    kur: p.kur,
+    kurBazParaBirimi: p.kurBazParaBirimi,
+    kurKarsiParaBirimi: p.kurKarsiParaBirimi,
     odemeYontemi: toOfisOdemeYontemi(ctx.odemeYontemi),
     tahsilatiYapanPersonelId: ctx.tahsilatiPersonelId,
     tahsilatiYapanUserId: ctx.tahsilatiUserId,
@@ -214,7 +270,6 @@ export async function createVekaletTaksitOdeme(
     throw new AppError(400, 'İptal edilmiş taksit için ödeme alınamaz.', 'INVALID_STATE')
   }
 
-  const tutar = new PrismaNamespace.Decimal(body.tutar)
   const meta = getRequestMeta(req)
   const odemeTarihi = body.odemeTarihi ?? new Date()
   const aciklama = body.aciklama?.trim() || null
@@ -250,15 +305,28 @@ export async function createVekaletTaksitOdeme(
       }
       const odenen = sumOdemeler(taksit.odemeler)
       const kalan = Math.max(0, Number(taksit.tutar) - odenen)
-      if (Number(tutar) > kalan + 0.0001) {
-        throw new AppError(400, 'Ödeme tutarı kalan taksit tutarını aşamaz.', 'TAKSIT_OVERPAYMENT')
-      }
+      const alacakParaBirimi = taksit.paraBirimi ?? taksit.vekaletUcreti.paraBirimi
+      const payment = resolvePaymentAmounts({
+        alacakParaBirimi,
+        mahsupTutari: body.tutar,
+        odemeParaBirimi: body.odemeParaBirimi,
+        kasaTutari: body.kasaTutari,
+        kalanBorc: new PrismaNamespace.Decimal(kalan)
+      })
+      const kurMeta = await resolvePaymentKurSnapshot({
+        odemeTarihi,
+        payment,
+        kurKaynagi: body.kurKaynagi,
+        tcmbKurTarihi: body.tcmbKurTarihi,
+        tcmbReferansKur: body.tcmbReferansKur
+      })
 
       return createVekaletOdemeInTx(tx, {
         tenantId,
         userId,
-        taksit,
-        tutar,
+        taksit: { ...taksit, paraBirimi: alacakParaBirimi },
+        payment,
+        kurMeta,
         odemeTarihi,
         odemeYontemi: body.odemeYontemi,
         aciklama,
@@ -305,13 +373,17 @@ export async function createVekaletPesinOdeme(
   }
 
   const kalanVekalet = Number(pack.ozet.kalanVekalet)
-  const tutarNum = Number(body.tutar)
-  if (tutarNum <= 0) {
-    throw new AppError(400, 'Tutar 0\'dan büyük olmalıdır.', 'INVALID_AMOUNT')
-  }
-  if (tutarNum > kalanVekalet + 0.0001) {
-    throw new AppError(400, 'Tutar kalan vekaleti aşamaz.', 'OVERPAYMENT')
-  }
+  const alacakParaBirimi = resolveParaBirimi(
+    typeof pack.vekaletUcreti?.paraBirimi === 'string' ? pack.vekaletUcreti.paraBirimi : undefined
+  )
+  const totalPayment = resolvePaymentAmounts({
+    alacakParaBirimi,
+    mahsupTutari: body.tutar,
+    odemeParaBirimi: body.odemeParaBirimi,
+    kasaTutari: body.kasaTutari,
+    kalanBorc: new PrismaNamespace.Decimal(kalanVekalet)
+  })
+  const tutarNum = Number(totalPayment.mahsupTutari)
 
   const taksitler = await prisma.vekaletTaksiti.findMany({
     where: {
@@ -377,11 +449,28 @@ export async function createVekaletPesinOdeme(
         const kalan = Math.max(0, Number(t.tutar) - odenen)
         if (kalan <= 0.0001) continue
         const pay = Math.min(remaining, kalan)
+        const payRatio = tutarNum > 0 ? pay / tutarNum : 1
+        const sliceKasa = totalPayment.kasaTutari.mul(payRatio).toDecimalPlaces(2, PrismaNamespace.Decimal.ROUND_HALF_UP)
+        const slicePayment = resolvePaymentAmounts({
+          alacakParaBirimi,
+          mahsupTutari: pay,
+          odemeParaBirimi: totalPayment.odemeParaBirimi,
+          kasaTutari: sliceKasa,
+          kalanBorc: new PrismaNamespace.Decimal(kalan)
+        })
+        const kurMeta = await resolvePaymentKurSnapshot({
+          odemeTarihi,
+          payment: slicePayment,
+          kurKaynagi: body.kurKaynagi,
+          tcmbKurTarihi: body.tcmbKurTarihi,
+          tcmbReferansKur: body.tcmbReferansKur
+        })
         const odeme = await createVekaletOdemeInTx(tx, {
           tenantId,
           userId,
-          taksit: t,
-          tutar: new PrismaNamespace.Decimal(pay),
+          taksit: { ...t, paraBirimi: alacakParaBirimi },
+          payment: slicePayment,
+          kurMeta,
           odemeTarihi,
           odemeYontemi: body.odemeYontemi,
           aciklama,
@@ -451,7 +540,8 @@ export async function updateVekaletTaksitOdeme(
     include: {
       taksit: {
         include: {
-          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] }
+          odemeler: { orderBy: [{ odemeTarihi: 'asc' }, { createdAt: 'asc' }] },
+          vekaletUcreti: true
         }
       },
       ofisKasaHareket: true
@@ -483,19 +573,32 @@ export async function updateVekaletTaksitOdeme(
       const otherSum = sumOdemeler(freshOdemeler.filter((o) => o.id !== existing.id))
       const taksitTutari = Number(existing.taksit.tutar)
       const maxAllowed = Math.max(0, taksitTutari - otherSum)
-      const newTutar = body.tutar != null ? Number(body.tutar) : Number(existing.tutar)
-      if (newTutar > maxAllowed + 0.0001) {
-        throw new AppError(
-          400,
-          'Ödeme tutarı kalan taksit tutarını aşamaz.',
-          'TAKSIT_OVERPAYMENT'
-        )
-      }
+      const alacakParaBirimi = existing.taksit.paraBirimi ?? existing.taksit.vekaletUcreti.paraBirimi
+      const mahsupRaw = body.tutar != null ? body.tutar : Number(existing.tutar)
+      const payment = resolvePaymentAmounts({
+        alacakParaBirimi,
+        mahsupTutari: mahsupRaw,
+        odemeParaBirimi: body.odemeParaBirimi ?? existing.odemeParaBirimi,
+        kasaTutari: body.kasaTutari ?? existing.kasaTutari,
+        kalanBorc: new PrismaNamespace.Decimal(maxAllowed)
+      })
 
+      // TCMB snapshot alanları oluşturma anında sabitlenir; güncellemede
+      // canlı kur ile yeniden yazılmaz (geçmiş tahsilat değişmesin).
       const row = await tx.vekaletTaksitOdeme.update({
         where: { id: existing.id },
         data: {
-          tutar: new PrismaNamespace.Decimal(newTutar),
+          tutar: payment.mahsupTutari,
+          kasaTutari: payment.kasaTutari,
+          alacakParaBirimi: payment.alacakParaBirimi,
+          odemeParaBirimi: payment.odemeParaBirimi,
+          kur: payment.kur,
+          kurBazParaBirimi: payment.kurBazParaBirimi,
+          kurKarsiParaBirimi: payment.kurKarsiParaBirimi,
+          kurKaynagi: existing.kurKaynagi,
+          tcmbKurTarihi: existing.tcmbKurTarihi,
+          tcmbReferansKur: existing.tcmbReferansKur,
+          primTryMatrahi: existing.primTryMatrahi,
           odemeTarihi,
           odemeYontemi,
           aciklama
@@ -506,7 +609,15 @@ export async function updateVekaletTaksitOdeme(
         await tx.ofisKasaHareketi.update({
           where: { id: existing.ofisKasaHareketId },
           data: {
-            tutar: new PrismaNamespace.Decimal(newTutar),
+            tutar: payment.kasaTutari,
+            paraBirimi: payment.odemeParaBirimi,
+            kur: payment.kur,
+            kurBazParaBirimi: payment.kurBazParaBirimi,
+            kurKarsiParaBirimi: payment.kurKarsiParaBirimi,
+            kurKaynagi: existing.ofisKasaHareket?.kurKaynagi ?? existing.kurKaynagi,
+            tcmbKurTarihi: existing.ofisKasaHareket?.tcmbKurTarihi ?? existing.tcmbKurTarihi,
+            tcmbReferansKur:
+              existing.ofisKasaHareket?.tcmbReferansKur ?? existing.tcmbReferansKur,
             tarih: odemeTarihi,
             odemeYontemi: toOfisOdemeYontemi(odemeYontemi),
             updatedById: userId

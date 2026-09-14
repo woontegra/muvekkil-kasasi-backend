@@ -1,5 +1,6 @@
 import { OfisKasaIslemTipi, OfisKasaOdemeYontemi, OfisKasaOnayDurumu } from '@prisma/client'
 import { z } from 'zod'
+import { dovizDonusumKurFields, optionalParaBirimiSchema } from '../lib/paymentCurrency.schemas.js'
 
 export const OFIS_KASA_GELIR_KATEGORILERI = [
   'Vekalet ücreti dışı gelir',
@@ -65,9 +66,18 @@ export const createOfisKasaHareketiBodySchema = z
     tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
     tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
     /** Yalnızca GELIR — isteğe bağlı müvekkil bağlantısı (dosya dışı ofis geliri). */
-    muvekkilId: z.string().uuid().optional().nullable()
+    muvekkilId: z.string().uuid().optional().nullable(),
+    /** Hareket para birimi; boş → TRY. GIDER yalnızca TRY. */
+    paraBirimi: optionalParaBirimiSchema
   })
   .superRefine((data, ctx) => {
+    if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.paraBirimi && data.paraBirimi !== 'TRY') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Ofis kasası giderleri yalnızca TRY cinsinden kaydedilebilir.',
+        path: ['paraBirimi']
+      })
+    }
     if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.muvekkilId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -132,8 +142,23 @@ export const createOfisKasaDuzeltmeBodySchema = z.object({
   tarih: z.coerce.date(),
   tutar: tutarSigned.refine((n) => n !== 0, { message: 'Düzeltme tutarı sıfır olamaz.' }),
   aciklama: z.string().trim().min(3, 'Açıklama en az 3 karakter olmalıdır.').max(4000),
-  odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi)
+  odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
+  /** Bağımsız düzeltmede para birimi; orijinale bağlı düzeltmede servis orijinali kullanır. */
+  paraBirimi: optionalParaBirimiSchema
 })
+
+export const createDovizDonusumBodySchema = z.object({
+  tarih: z.coerce.date(),
+  kaynakParaBirimi: optionalParaBirimiSchema,
+  hedefParaBirimi: optionalParaBirimiSchema,
+  kaynakTutar: tutarPositive,
+  hedefTutar: tutarPositive,
+  odemeYontemi: z.nativeEnum(OfisKasaOdemeYontemi),
+  aciklama: z.string().trim().max(4000).optional().nullable(),
+  ...dovizDonusumKurFields
+})
+
+export type CreateDovizDonusumBody = z.infer<typeof createDovizDonusumBodySchema>
 
 export type CreateOfisKasaDuzeltmeBody = z.infer<typeof createOfisKasaDuzeltmeBodySchema>
 
@@ -154,6 +179,10 @@ export const listOfisKasaHareketleriQuerySchema = z.object({
   muvekkilId: z.preprocess(
     (v) => (v === '' || v === undefined || v === null ? undefined : v),
     z.string().uuid().optional()
+  ),
+  paraBirimi: z.preprocess(
+    (v) => (v === '' || v === undefined || v === null ? undefined : v),
+    optionalParaBirimiSchema.optional()
   ),
   startDate: z.preprocess((v) => (v === '' || v === undefined || v === null ? undefined : v), z.coerce.date().optional()),
   endDate: z.preprocess((v) => (v === '' || v === undefined || v === null ? undefined : v), z.coerce.date().optional()),

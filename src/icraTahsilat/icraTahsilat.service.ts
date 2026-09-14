@@ -4,6 +4,7 @@ import type {
   IcraTahsilatAlacakTuru,
   IcraTahsilatOdeme,
   IcraTahsilatTaksit,
+  ParaBirimi,
   Prisma,
   UserRole
 } from '@prisma/client'
@@ -15,6 +16,7 @@ import { AppError } from '../middleware/errorHandler.js'
 import { getRequestMeta } from '../auth/requestMeta.js'
 import { tahsilatIcraPersonelWhere } from '../lib/primTahsilatFilter.js'
 import { resolveTahsilatiYapanPersonel } from '../lib/tahsilatiYapanPersonel.js'
+import { filterAktifTahsilatOdemeleri, isTahsilatOdemeAktif } from '../lib/tahsilatOdemeAktif.js'
 import {
   createOfisKasaGelirFromKaynakInTx,
   OFIS_KASA_KAYNAK_ICRA_TAHSILAT
@@ -28,6 +30,14 @@ import type {
   PatchIcraTaksitBody
 } from './icraTahsilat.schemas.js'
 import { resolveIcraTahsilatTipi } from './icraTahsilat.schemas.js'
+import {
+  PARA_BIRIMLERI,
+  rateToApiString,
+  resolveParaBirimi,
+  resolvePaymentAmounts,
+  type ResolvedPayment
+} from '../lib/paraBirimi.js'
+import { resolvePaymentKurSnapshot } from '../lib/kurSnapshot.js'
 
 export type TaksitDurumApi = 'ODENMEDI' | 'KISMI_ODENDI' | 'ODENDI' | 'GECIKTI'
 export type SmmDurumApi = 'YOK' | 'BEKLIYOR' | 'KESILDI'
@@ -112,9 +122,11 @@ function serializeOdeme(
     tahsilatiYapanPersonel?: { adSoyad: string } | null
     tahsilatiYapanUser?: { adSoyad: string; kullaniciAdi: string; eposta: string | null } | null
     createdBy?: { adSoyad: string; kullaniciAdi: string; eposta: string | null } | null
+    ofisKasaHareket?: { deletedAt: Date | null } | null
   }
 ): Record<string, unknown> {
   const tahsilatiYapanAd = resolveTahsilatciDisplayName(o)
+  const iptalMi = !isTahsilatOdemeAktif(o)
   return {
     id: o.id,
     tenantId: o.tenantId,
@@ -122,11 +134,22 @@ function serializeOdeme(
     taksitId: o.taksitId,
     odemeTarihi: o.odemeTarihi.toISOString(),
     tutar: dec(o.tutar),
+    kasaTutari: dec(o.kasaTutari),
+    alacakParaBirimi: o.alacakParaBirimi,
+    odemeParaBirimi: o.odemeParaBirimi,
+    kur: rateToApiString(o.kur),
+    kurBazParaBirimi: o.kurBazParaBirimi,
+    kurKarsiParaBirimi: o.kurKarsiParaBirimi,
+    kurKaynagi: o.kurKaynagi ?? null,
+    tcmbKurTarihi: o.tcmbKurTarihi ? o.tcmbKurTarihi.toISOString().slice(0, 10) : null,
+    tcmbReferansKur: rateToApiString(o.tcmbReferansKur),
+    primTryMatrahi: o.primTryMatrahi != null ? dec(o.primTryMatrahi) : null,
     odemeYontemi: o.odemeYontemi,
     aciklama: o.aciklama,
     smmKesildiMi: o.smmKesildiMi,
     pesinatMi: o.pesinatMi,
     ofisKasaHareketId: o.ofisKasaHareketId,
+    iptalMi,
     tahsilatiYapanPersonelId: o.tahsilatiYapanPersonelId,
     tahsilatiYapanUserId: o.tahsilatiYapanUserId,
     tahsilatiYapanAd,
@@ -180,20 +203,24 @@ async function loadSonTahsilatciByAlacak(alacakIds: string[]): Promise<Map<strin
 }
 
 function enrichTaksit(
-  taksit: IcraTahsilatTaksit & { odemeler: IcraTahsilatOdeme[] }
+  taksit: IcraTahsilatTaksit & {
+    odemeler: (IcraTahsilatOdeme & { ofisKasaHareket?: { deletedAt: Date | null } | null })[]
+  }
 ): Record<string, unknown> {
   const tutar = num(taksit.tutar)
-  const odenenToplam = taksit.odemeler.reduce((s, o) => s + num(o.tutar), 0)
+  const aktif = filterAktifTahsilatOdemeleri(taksit.odemeler)
+  const odenenToplam = aktif.reduce((s, o) => s + num(o.tutar), 0)
   const kalanTutar = Math.max(0, tutar - odenenToplam)
-  const sonOdeme = taksit.odemeler[0] ?? null
-  const odemelerWithId = taksit.odemeler.map((o) => ({ ...o, id: o.id }))
+  const sonOdeme = aktif[0] ?? null
+  const odemelerWithId = aktif.map((o) => ({ ...o, id: o.id }))
   const { smmDurumu, smmBekleyenOdemeId } = hesaplaSmmDurumu(odemelerWithId)
-  const bekleyen = taksit.odemeler.find((o) => !o.smmKesildiMi)
+  const bekleyen = aktif.find((o) => !o.smmKesildiMi)
   return {
     id: taksit.id,
     alacakId: taksit.alacakId,
     taksitNo: taksit.taksitNo,
     tutar: dec(taksit.tutar),
+    paraBirimi: taksit.paraBirimi,
     vadeTarihi: taksit.vadeTarihi.toISOString(),
     aciklama: taksit.aciklama,
     odenenToplam: odenenToplam.toFixed(2),
@@ -207,11 +234,11 @@ function enrichTaksit(
 }
 
 async function odenenToplamForAlacak(alacakId: string): Promise<number> {
-  const r = await prisma.icraTahsilatOdeme.aggregate({
+  const odemeler = await prisma.icraTahsilatOdeme.findMany({
     where: { alacakId },
-    _sum: { tutar: true }
+    include: { ofisKasaHareket: { select: { deletedAt: true } } }
   })
-  return Number(r._sum.tutar ?? 0)
+  return filterAktifTahsilatOdemeleri(odemeler).reduce((s, o) => s + num(o.tutar), 0)
 }
 
 async function hesaplaAlacakDurum(
@@ -238,7 +265,10 @@ async function hesaplaAlacakDurum(
     WHERE t.alacak_id = ${alacak.id}
       AND t.vade_tarihi < ${today}
       AND (
-        SELECT COALESCE(SUM(o.tutar), 0) FROM icra_tahsilat_odeme o WHERE o.taksit_id = t.id
+        SELECT COALESCE(SUM(o.tutar), 0) FROM icra_tahsilat_odeme o
+        LEFT JOIN ofis_kasa_hareketi h ON h.id = o.ofis_kasa_hareket_id
+        WHERE o.taksit_id = t.id
+          AND (o.ofis_kasa_hareket_id IS NULL OR h.deleted_at IS NULL)
       ) < t.tutar - 0.001
   `
   if (Number(gecikmisKismi[0]?.c ?? 0) > 0 || gecikmis > 0) return DurumEnum.GECIKTI
@@ -263,7 +293,10 @@ async function assertTaksitForTenant(tenantId: string, taksitId: string) {
     where: { id: taksitId, tenantId },
     include: {
       alacak: true,
-      odemeler: { orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }] }
+      odemeler: {
+        orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }],
+        include: { ofisKasaHareket: { select: { deletedAt: true } } }
+      }
     }
   })
   if (!row) throw new AppError(404, 'Taksit bulunamadı.', 'NOT_FOUND')
@@ -279,7 +312,13 @@ async function icraOdemeKaydetInTx(
     alacak: Pick<IcraTahsilatAlacagi, 'id' | 'borcluAd' | 'alacakTuru'>
     taksitId: string | null
     taksitNo: number | null
-    tutar: Prisma.Decimal
+    payment: ResolvedPayment
+    kurMeta: {
+      kurKaynagi: import('@prisma/client').KurKaynagi | null
+      tcmbKurTarihi: Date | null
+      tcmbReferansKur: Prisma.Decimal | null
+      primTryMatrahi: Prisma.Decimal
+    }
     odemeTarihi: Date
     odemeYontemi: import('@prisma/client').OfisKasaOdemeYontemi
     aciklama: string | null
@@ -289,13 +328,25 @@ async function icraOdemeKaydetInTx(
     tahsilatiYapanUserId: string | null
   }
 ): Promise<IcraTahsilatOdeme> {
+  const p = opts.payment
+  const km = opts.kurMeta
   const odeme = await tx.icraTahsilatOdeme.create({
     data: {
       tenantId: opts.tenantId,
       alacakId: opts.alacak.id,
       taksitId: opts.taksitId,
       odemeTarihi: opts.odemeTarihi,
-      tutar: opts.tutar,
+      tutar: p.mahsupTutari,
+      kasaTutari: p.kasaTutari,
+      alacakParaBirimi: p.alacakParaBirimi,
+      odemeParaBirimi: p.odemeParaBirimi,
+      kur: p.kur,
+      kurBazParaBirimi: p.kurBazParaBirimi,
+      kurKarsiParaBirimi: p.kurKarsiParaBirimi,
+      kurKaynagi: km.kurKaynagi,
+      tcmbKurTarihi: km.tcmbKurTarihi,
+      tcmbReferansKur: km.tcmbReferansKur,
+      primTryMatrahi: km.primTryMatrahi,
       odemeYontemi: opts.odemeYontemi,
       aciklama: opts.aciklama,
       pesinatMi: opts.pesinatMi,
@@ -306,16 +357,24 @@ async function icraOdemeKaydetInTx(
     }
   })
 
+  const ofisAciklamaBase = ofisAciklama(opts.alacak.borcluAd, opts.alacak.alacakTuru, opts.taksitNo, {
+    pesinat: opts.pesinatMi,
+    pesinTahsil: opts.pesinTahsil
+  })
+  const ofisAciklamaFull =
+    p.isCrossCurrency && p.kurOzeti ? `${ofisAciklamaBase} (${p.kurOzeti})` : ofisAciklamaBase
+
   const ofis = await createOfisKasaGelirFromKaynakInTx(tx, {
     tenantId: opts.tenantId,
     userId: opts.userId,
     tarih: opts.odemeTarihi,
     kategori: icraAlacakTuruToOfisKategori(opts.alacak.alacakTuru),
-    aciklama: ofisAciklama(opts.alacak.borcluAd, opts.alacak.alacakTuru, opts.taksitNo, {
-      pesinat: opts.pesinatMi,
-      pesinTahsil: opts.pesinTahsil
-    }),
-    tutar: opts.tutar,
+    aciklama: ofisAciklamaFull,
+    kasaTutari: p.kasaTutari,
+    paraBirimi: p.odemeParaBirimi,
+    kur: p.kur,
+    kurBazParaBirimi: p.kurBazParaBirimi,
+    kurKarsiParaBirimi: p.kurKarsiParaBirimi,
     odemeYontemi: opts.odemeYontemi,
     tahsilatiYapanPersonelId: opts.tahsilatiYapanPersonelId,
     tahsilatiYapanUserId: opts.userId,
@@ -332,13 +391,17 @@ async function icraOdemeKaydetInTx(
 export async function getIcraTahsilatOzet(tenantId: string): Promise<Record<string, unknown>> {
   const alacaklar = await prisma.icraTahsilatAlacagi.findMany({
     where: { tenantId, durum: { not: DurumEnum.IPTAL } },
-    select: { id: true, toplamTutar: true }
+    select: { id: true, toplamTutar: true, paraBirimi: true }
   })
-  let toplamAlacak = 0
-  let tahsilEdilen = 0
+  const byCurrency: Record<ParaBirimi, { toplamAlacak: number; tahsilEdilen: number }> = {
+    TRY: { toplamAlacak: 0, tahsilEdilen: 0 },
+    USD: { toplamAlacak: 0, tahsilEdilen: 0 },
+    EUR: { toplamAlacak: 0, tahsilEdilen: 0 }
+  }
   for (const a of alacaklar) {
-    toplamAlacak += num(a.toplamTutar)
-    tahsilEdilen += await odenenToplamForAlacak(a.id)
+    const pb = a.paraBirimi
+    byCurrency[pb].toplamAlacak += num(a.toplamTutar)
+    byCurrency[pb].tahsilEdilen += await odenenToplamForAlacak(a.id)
   }
 
   const today = startOfTodayLocal()
@@ -348,27 +411,52 @@ export async function getIcraTahsilatOzet(tenantId: string): Promise<Record<stri
     WHERE a.tenant_id = ${tenantId} AND a.durum != 'IPTAL'
       AND t.vade_tarihi < ${today}
       AND (
-        SELECT COALESCE(SUM(o.tutar), 0) FROM icra_tahsilat_odeme o WHERE o.taksit_id = t.id
+        SELECT COALESCE(SUM(o.tutar), 0) FROM icra_tahsilat_odeme o
+        LEFT JOIN ofis_kasa_hareketi h ON h.id = o.ofis_kasa_hareket_id
+        WHERE o.taksit_id = t.id
+          AND (o.ofis_kasa_hareket_id IS NULL OR h.deleted_at IS NULL)
       ) < t.tutar - 0.001
   `
 
   const { start, end } = monthRangeLocal()
-  const buAy = await prisma.icraTahsilatOdeme.aggregate({
+  const buAyRows = await prisma.icraTahsilatOdeme.findMany({
     where: { tenantId, odemeTarihi: { gte: start, lte: end } },
-    _sum: { tutar: true }
+    select: { tutar: true, alacakParaBirimi: true }
   })
+  const buAyByPb: Record<ParaBirimi, number> = { TRY: 0, USD: 0, EUR: 0 }
+  for (const o of buAyRows) {
+    buAyByPb[o.alacakParaBirimi] += num(o.tutar)
+  }
 
   const smmBekleyen = await prisma.icraTahsilatOdeme.count({
     where: { tenantId, smmKesildiMi: false }
   })
 
+  const tryOzet = byCurrency.TRY
+  const byCurrencyOut: Record<string, { toplamAlacak: string; tahsilEdilen: string; kalanAlacak: string }> =
+    {}
+  for (const pb of PARA_BIRIMLERI) {
+    const b = byCurrency[pb]
+    byCurrencyOut[pb] = {
+      toplamAlacak: b.toplamAlacak.toFixed(2),
+      tahsilEdilen: b.tahsilEdilen.toFixed(2),
+      kalanAlacak: Math.max(0, b.toplamAlacak - b.tahsilEdilen).toFixed(2)
+    }
+  }
+
   return {
-    toplamAlacak: toplamAlacak.toFixed(2),
-    tahsilEdilen: tahsilEdilen.toFixed(2),
-    kalanAlacak: Math.max(0, toplamAlacak - tahsilEdilen).toFixed(2),
+    toplamAlacak: tryOzet.toplamAlacak.toFixed(2),
+    tahsilEdilen: tryOzet.tahsilEdilen.toFixed(2),
+    kalanAlacak: Math.max(0, tryOzet.toplamAlacak - tryOzet.tahsilEdilen).toFixed(2),
     vadesiGecmisTaksit: Number(gecikmis[0]?.c ?? 0),
-    buAyTahsilat: Number(buAy._sum.tutar ?? 0).toFixed(2),
-    smmBekleyen
+    buAyTahsilat: buAyByPb.TRY.toFixed(2),
+    smmBekleyen,
+    byCurrency: byCurrencyOut,
+    buAyTahsilatByCurrency: {
+      TRY: buAyByPb.TRY.toFixed(2),
+      USD: buAyByPb.USD.toFixed(2),
+      EUR: buAyByPb.EUR.toFixed(2)
+    }
   }
 }
 
@@ -451,6 +539,7 @@ export async function listIcraTahsilat(
       alacakTuru: r.alacakTuru,
       alacakTuruLabel: ICRA_ALACAK_TURU_LABEL[r.alacakTuru],
       toplamTutar: dec(r.toplamTutar),
+      paraBirimi: r.paraBirimi,
       pesinatTutar: dec(r.pesinatTutar),
       odenenToplam: odenen.toFixed(2),
       kalanTutar: Math.max(0, num(r.toplamTutar) - odenen).toFixed(2),
@@ -472,16 +561,25 @@ export async function getIcraTahsilatById(tenantId: string, id: string): Promise
   const alacak = await assertAlacakForTenant(tenantId, id)
   const taksitler = await prisma.icraTahsilatTaksit.findMany({
     where: { alacakId: id, tenantId },
-    include: { odemeler: { orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }] } },
+    include: {
+      odemeler: {
+        orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }],
+        include: { ofisKasaHareket: { select: { deletedAt: true } } }
+      }
+    },
     orderBy: { taksitNo: 'asc' }
   })
   const odemeler = await prisma.icraTahsilatOdeme.findMany({
     where: { alacakId: id, tenantId },
     orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }],
-    include: odemeCollectorInclude
+    include: {
+      ...odemeCollectorInclude,
+      ofisKasaHareket: { select: { deletedAt: true } }
+    }
   })
 
-  const odenen = odemeler.reduce((s, o) => s + num(o.tutar), 0)
+  const aktifOdemeler = filterAktifTahsilatOdemeleri(odemeler)
+  const odenen = aktifOdemeler.reduce((s, o) => s + num(o.tutar), 0)
   const taksitToplam = taksitler.reduce((s, t) => s + num(t.tutar), 0)
   const pesinat = num(alacak.pesinatTutar)
   const toplam = num(alacak.toplamTutar)
@@ -498,6 +596,7 @@ export async function getIcraTahsilatById(tenantId: string, id: string): Promise
     dosyaBaslik: alacak.dosya?.konuBasligi ?? null,
     dosyaNo: alacak.dosya?.dosyaNo ?? null,
     toplamTutar: dec(alacak.toplamTutar),
+    paraBirimi: alacak.paraBirimi,
     pesinatTutar: dec(alacak.pesinatTutar),
     taksitSayisi: alacak.taksitSayisi,
     ilkVadeTarihi: alacak.ilkVadeTarihi.toISOString(),
@@ -536,6 +635,7 @@ export async function createIcraTahsilatAlacagi(
   const meta = getRequestMeta(req)
   const tip = resolveIcraTahsilatTipi(body)
   const tahsilatTarihi = body.tahsilatTarihi ?? new Date()
+  const paraBirimi = resolveParaBirimi(body.paraBirimi)
 
   if (body.muvekkilId) {
     const m = await prisma.muvekkil.findFirst({ where: { id: body.muvekkilId, tenantId } })
@@ -566,6 +666,7 @@ export async function createIcraTahsilatAlacagi(
           muvekkilId: body.muvekkilId ?? null,
           dosyaId: body.dosyaId ?? null,
           toplamTutar: new PrismaNs.Decimal(body.toplamTutar),
+          paraBirimi,
           pesinatTutar: new PrismaNs.Decimal(0),
           taksitSayisi: 0,
           ilkVadeTarihi: body.ilkVadeTarihi ?? tahsilatTarihi,
@@ -576,6 +677,21 @@ export async function createIcraTahsilatAlacagi(
         }
       })
 
+      const payment = resolvePaymentAmounts({
+        alacakParaBirimi: paraBirimi,
+        mahsupTutari: body.toplamTutar,
+        odemeParaBirimi: body.odemeParaBirimi,
+        kasaTutari: body.kasaTutari,
+        kalanBorc: new PrismaNs.Decimal(body.toplamTutar)
+      })
+      const kurMeta = await resolvePaymentKurSnapshot({
+        odemeTarihi: tahsilatTarihi,
+        payment,
+        kurKaynagi: body.kurKaynagi,
+        tcmbKurTarihi: body.tcmbKurTarihi,
+        tcmbReferansKur: body.tcmbReferansKur
+      })
+
       await icraOdemeKaydetInTx(tx, {
         tenantId,
         userId,
@@ -583,7 +699,8 @@ export async function createIcraTahsilatAlacagi(
         alacak,
         taksitId: null,
         taksitNo: null,
-        tutar: new PrismaNs.Decimal(body.toplamTutar),
+        payment,
+        kurMeta,
         odemeTarihi: tahsilatTarihi,
         odemeYontemi: body.odemeYontemi,
         aciklama: body.aciklama?.trim() || null,
@@ -638,6 +755,7 @@ export async function createIcraTahsilatAlacagi(
         muvekkilId: body.muvekkilId ?? null,
         dosyaId: body.dosyaId ?? null,
         toplamTutar: new PrismaNs.Decimal(body.toplamTutar),
+        paraBirimi,
         pesinatTutar: new PrismaNs.Decimal(pesinat),
         taksitSayisi: body.taksitSayisi,
         ilkVadeTarihi: ilkVade,
@@ -654,12 +772,27 @@ export async function createIcraTahsilatAlacagi(
           alacakId: alacak.id,
           taksitNo: i + 1,
           tutar: new PrismaNs.Decimal(tutarlar[i]),
+          paraBirimi,
           vadeTarihi: vadeEkleAy(ilkVade, i)
         }
       })
     }
 
     if (pesinat > 0.001 && tahsilati) {
+      const payment = resolvePaymentAmounts({
+        alacakParaBirimi: paraBirimi,
+        mahsupTutari: pesinat,
+        odemeParaBirimi: body.odemeParaBirimi,
+        kasaTutari: body.kasaTutari,
+        kalanBorc: new PrismaNs.Decimal(body.toplamTutar)
+      })
+      const kurMeta = await resolvePaymentKurSnapshot({
+        odemeTarihi: tahsilatTarihi,
+        payment,
+        kurKaynagi: body.kurKaynagi,
+        tcmbKurTarihi: body.tcmbKurTarihi,
+        tcmbReferansKur: body.tcmbReferansKur
+      })
       await icraOdemeKaydetInTx(tx, {
         tenantId,
         userId,
@@ -667,7 +800,8 @@ export async function createIcraTahsilatAlacagi(
         alacak,
         taksitId: null,
         taksitNo: null,
-        tutar: new PrismaNs.Decimal(pesinat),
+        payment,
+        kurMeta,
         odemeTarihi: tahsilatTarihi,
         odemeYontemi: body.odemeYontemi,
         aciklama: body.aciklama?.trim() || null,
@@ -829,9 +963,14 @@ export async function createIcraTaksitOdeme(
 
   const odenen = taksit.odemeler.reduce((s, o) => s + num(o.tutar), 0)
   const kalan = Math.max(0, num(taksit.tutar) - odenen)
-  if (body.tutar > kalan + 0.001) {
-    throw new AppError(400, 'Ödeme tutarı kalan taksit tutarını aşamaz.', 'INVALID_STATE')
-  }
+  const alacakParaBirimi = taksit.alacak.paraBirimi
+  const payment = resolvePaymentAmounts({
+    alacakParaBirimi,
+    mahsupTutari: body.tutar,
+    odemeParaBirimi: body.odemeParaBirimi,
+    kasaTutari: body.kasaTutari,
+    kalanBorc: new PrismaNs.Decimal(kalan)
+  })
 
   const tahsilati = await resolveTahsilatiYapanPersonel(
     tenantId,
@@ -839,6 +978,14 @@ export async function createIcraTaksitOdeme(
     actorRole,
     body.tahsilatiYapanPersonelId
   )
+
+  const kurMeta = await resolvePaymentKurSnapshot({
+    odemeTarihi: body.odemeTarihi,
+    payment,
+    kurKaynagi: body.kurKaynagi,
+    tcmbKurTarihi: body.tcmbKurTarihi,
+    tcmbReferansKur: body.tcmbReferansKur
+  })
 
   await prisma.$transaction(async (tx) => {
     await icraOdemeKaydetInTx(tx, {
@@ -848,7 +995,8 @@ export async function createIcraTaksitOdeme(
       alacak,
       taksitId,
       taksitNo: taksit.taksitNo,
-      tutar: new PrismaNs.Decimal(body.tutar),
+      payment,
+      kurMeta,
       odemeTarihi: body.odemeTarihi,
       odemeYontemi: body.odemeYontemi,
       aciklama: body.aciklama?.trim() || null,

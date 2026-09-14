@@ -47,15 +47,15 @@ async function computeForDosya(
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.aggregate({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.AVANS_GIRISI, onayDurumu: KasaOnayDurumu.ONAYLI, ...kasaDateWhere },
+      where: { tenantId, dosyaId, tip: KasaHareketTipi.AVANS_GIRISI, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.aggregate({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.MASRAF, onayDurumu: KasaOnayDurumu.ONAYLI, ...kasaDateWhere },
+      where: { tenantId, dosyaId, tip: KasaHareketTipi.MASRAF, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.findMany({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.DUZELTME, onayDurumu: KasaOnayDurumu.ONAYLI, ...kasaDateWhere },
+      where: { tenantId, dosyaId, tip: KasaHareketTipi.DUZELTME, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
       select: { tutar: true }
     })
   ])
@@ -197,7 +197,7 @@ async function computeForMuvekkil(
       select: { dosyaId: true, tutar: true }
     }),
     prisma.kasaHareketi.findMany({
-      where: { tenantId, dosyaId: { in: dosyaIds }, onayDurumu: KasaOnayDurumu.ONAYLI, ...kasaDateWhere },
+      where: { tenantId, dosyaId: { in: dosyaIds }, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
       select: { dosyaId: true, tip: true, tutar: true }
     })
   ])

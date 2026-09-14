@@ -190,7 +190,7 @@ export async function sendPasswordResetEmail(params: SendPasswordResetEmailParam
     if (allowMailDevConsoleFallback()) {
       console.info('[DEV ONLY] Password reset link:', resetUrl)
       console.info('[mail] Password reset mail skipped (SMTP not configured, MAIL_DEV_CONSOLE_FALLBACK)')
-      return
+    return
     }
     console.error('[mail] Password reset mail FAILED — SMTP not configured')
     throw new AppError(

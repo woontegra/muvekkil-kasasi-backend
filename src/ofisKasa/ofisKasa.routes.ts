@@ -6,15 +6,19 @@ import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireRole } from '../middleware/requireRole.js'
 import {
+  createDovizDonusumBodySchema,
   createOfisKasaDuzeltmeBodySchema,
   createOfisKasaHareketiBodySchema,
   listOfisKasaHareketleriQuerySchema,
   rejectOfisKasaBodySchema
 } from './ofisKasa.schemas.js'
+import { guvenliMasrafSilBodySchema } from '../kasa/kasa.schemas.js'
 import {
   approveOfisKasaHareketi,
+  createDovizDonusum,
   createOfisKasaDuzeltme,
   createOfisKasaHareketi,
+  deleteDovizDonusum,
   deleteOfisKasaHareketi,
   getOfisKasaOzet,
   getOfisKasaAnaSayfaOzet,
@@ -23,6 +27,8 @@ import {
   rejectOfisKasaHareketi,
   serializeOfisKasaHareketi
 } from './ofisKasa.service.js'
+import { guvenliOfisHareketSil } from './ofisGiderGuvenliSil.service.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 export const ofisKasasiRouter = Router()
 
@@ -97,6 +103,39 @@ ofisKasasiRouter.get(
 )
 
 ofisKasasiRouter.post(
+  '/doviz-donusum',
+  requireAuth,
+  requireRole(...HAREKET_OLUSTURMA_ROLLER),
+  asyncHandler(async (req, res) => {
+    const body = createDovizDonusumBodySchema.parse(req.body)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const pair = await createDovizDonusum(tenantId, userId, body, req)
+    res.status(201).json({
+      ok: true,
+      dovizDonusumId: pair.cikis.dovizDonusumId,
+      cikis: serializeOfisKasaHareketi({ ...pair.cikis, orijinalHareket: null }),
+      giris: serializeOfisKasaHareketi({ ...pair.giris, orijinalHareket: null })
+    })
+  })
+)
+
+const dovizDonusumIdParamSchema = z.object({ dovizDonusumId: z.string().uuid('Geçersiz döviz dönüşüm id.') })
+
+ofisKasasiRouter.delete(
+  '/doviz-donusum/:dovizDonusumId',
+  requireAuth,
+  requireRole(...YONETICI_ROLLER),
+  asyncHandler(async (req, res) => {
+    const { dovizDonusumId } = dovizDonusumIdParamSchema.parse(req.params)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    await deleteDovizDonusum(tenantId, userId, dovizDonusumId, req)
+    res.status(204).send()
+  })
+)
+
+ofisKasasiRouter.post(
   '/hareketler',
   requireAuth,
   requireRole(...HAREKET_OLUSTURMA_ROLLER),
@@ -160,7 +199,7 @@ ofisKasasiRouter.post(
     const userId = req.auth!.sub
     const created = await createOfisKasaDuzeltme(tenantId, userId, id, body, req)
     const row = await prisma.ofisKasaHareketi.findFirst({
-      where: { id: created.id, tenantId },
+      where: { id: created.id, tenantId, deletedAt: null },
       include: { orijinalHareket: { select: { id: true, belgeNo: true } } }
     })
     if (!row) {
@@ -168,6 +207,49 @@ ofisKasasiRouter.post(
       return
     }
     res.status(201).json({ ok: true, ofisKasaHareketi: serializeOfisKasaHareketi(row) })
+  })
+)
+
+/**
+ * Güvenli ofis GIDER / GELIR soft-delete veya bağlı tahsilat iptali — yalnız BURO_SAHIBI + şifre.
+ */
+ofisKasasiRouter.post(
+  '/hareketler/:id/guvenli-sil',
+  requireAuth,
+  requireRole(UserRole.BURO_SAHIBI),
+  asyncHandler(async (req, res) => {
+    const { id } = idParamSchema.parse(req.params)
+    const body = guvenliMasrafSilBodySchema.parse(req.body)
+    const tenantId = req.auth!.tenantId
+    const userId = req.auth!.sub
+    const actor = await prisma.user.findFirst({
+      where: { id: userId, tenantId, aktifMi: true },
+      select: { id: true, role: true, adSoyad: true, sifreHash: true }
+    })
+    if (!actor || actor.role !== UserRole.BURO_SAHIBI) {
+      throw new AppError(403, 'Bu işlem yalnızca büro sahibi tarafından yapılabilir.', 'FORBIDDEN')
+    }
+    const result = await guvenliOfisHareketSil(tenantId, actor, id, body, req)
+    const message =
+      result.mode === 'TAHSILAT_IPTAL'
+        ? result.alreadyDone
+          ? 'Tahsilat zaten iptal edilmişti'
+          : 'Tahsilat iptal edildi ve denetim kaydı oluşturuldu'
+        : result.mode === 'GELIR_SIL'
+          ? result.alreadyDone
+            ? 'Gelir zaten silinmişti'
+            : 'Gelir silindi ve denetim kaydı oluşturuldu'
+          : result.alreadyDone
+            ? 'Masraf zaten silinmişti'
+            : 'Masraf silindi ve denetim kaydı oluşturuldu'
+    res.json({
+      ok: true,
+      message,
+      mode: result.mode,
+      alreadyDone: result.alreadyDone,
+      softDeletedIds: result.softDeletedIds,
+      auditMessage: result.auditMessage
+    })
   })
 )
 

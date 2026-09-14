@@ -57,5 +57,7 @@ export const ONAY_LABEL: Record<OfisKasaOnayDurumu, string> = {
 export const ISLEM_TIPI_LABEL: Record<OfisKasaIslemTipi, string> = {
   GELIR: 'Gelir',
   GIDER: 'Gider',
-  DUZELTME: 'Düzeltme'
+  DUZELTME: 'Düzeltme',
+  DOVIZ_CIKIS: 'Döviz çıkış',
+  DOVIZ_GIRIS: 'Döviz giriş'
 }

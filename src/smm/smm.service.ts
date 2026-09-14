@@ -12,6 +12,12 @@ export type SmmBekleyenRowDto = {
   tahsilatTarihi: string | null
   tahsilatTuru: string
   tutar: string
+  /** Mahsup tutarı (alacak PB). */
+  mahsupTutari: string
+  kasaTutari: string
+  alacakParaBirimi: string
+  odemeParaBirimi: string
+  paraBirimi: string
   odemeYontemi: string | null
   belgeNo: string | null
   smmKesildiMi: boolean
@@ -66,6 +72,11 @@ export async function listSmmBekleyenlerForTenant(tenantId: string): Promise<Smm
     tahsilatTarihi: r.odemeTarihi.toISOString(),
     tahsilatTuru: 'Vekalet taksiti',
     tutar: dec(r.tutar),
+    mahsupTutari: dec(r.tutar),
+    kasaTutari: dec(r.kasaTutari),
+    alacakParaBirimi: r.alacakParaBirimi,
+    odemeParaBirimi: r.odemeParaBirimi,
+    paraBirimi: r.odemeParaBirimi,
     odemeYontemi: ODEME_YONTEMI_LABEL[r.odemeYontemi] ?? r.odemeYontemi,
     belgeNo: r.makbuzNo,
     smmKesildiMi: r.smmKesildiMi,

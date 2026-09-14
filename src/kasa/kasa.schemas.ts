@@ -105,6 +105,18 @@ export const createDuzeltmeBodySchema = z.object({
 
 export type CreateDuzeltmeBody = z.infer<typeof createDuzeltmeBodySchema>
 
+/** Büro sahibi güvenli masraf soft-delete — şifre yalnızca bu istekte doğrulanır. */
+export const guvenliMasrafSilBodySchema = z.object({
+  sifre: z.string().min(1, 'Şifre zorunludur.'),
+  deleteReason: z
+    .string()
+    .trim()
+    .min(3, 'Silme nedeni zorunludur (en az 3 karakter).')
+    .max(1000, 'Silme nedeni en fazla 1000 karakter olabilir.')
+})
+
+export type GuvenliMasrafSilBodyParsed = z.infer<typeof guvenliMasrafSilBodySchema>
+
 export const listKasaHareketleriQuerySchema = z.object({
   q: z.string().trim().optional().default(''),
   tip: z.preprocess(
