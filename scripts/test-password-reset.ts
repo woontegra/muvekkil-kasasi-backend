@@ -2,9 +2,13 @@
  * Şifre sıfırlama akışı doğrulaması.
  * Çalıştır: npx tsx scripts/test-password-reset.ts
  */
+
 import { createApp } from '../src/app.js'
 import { hashResetToken } from '../src/auth/passwordReset.service.js'
 import { prisma } from '../src/lib/prisma.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 async function post(base: string, path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
   const res = await fetch(`${base}${path}`, {

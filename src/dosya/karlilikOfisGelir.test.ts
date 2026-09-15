@@ -63,6 +63,24 @@ describe('sumKarlilikOfisGelirBuckets + netByCurrency', () => {
     assert.equal(net.TRY.toFixed(2), '400.00')
   })
 
+  it('USD gelir + USD tahsilat − USD gider → Net USD', () => {
+    // Senaryo: vekalet/tahsil gelir kovası $10.000 + ofis gelir $2.500 − gider $2.000 = $10.500
+    const gelir = emptyDecimalByCurrency()
+    gelir.USD = D('10000.00').plus(D('2500.00'))
+    const gider = emptyDecimalByCurrency()
+    gider.USD = D('2000.00')
+    const net = netByCurrency(gelir, gider)
+    assert.equal(net.USD.toFixed(2), '10500.00')
+  })
+
+  it('EUR gelir − EUR gider → Net EUR', () => {
+    const gelir = emptyDecimalByCurrency()
+    gelir.EUR = D('5000.00')
+    const gider = emptyDecimalByCurrency()
+    gider.EUR = D('750.00')
+    assert.equal(netByCurrency(gelir, gider).EUR.toFixed(2), '4250.00')
+  })
+
   it('moneyStringNonZero', () => {
     assert.equal(moneyStringNonZero('0.00'), false)
     assert.equal(moneyStringNonZero('10.00'), true)

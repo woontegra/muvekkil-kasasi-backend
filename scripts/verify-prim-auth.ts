@@ -2,10 +2,14 @@
  * Prim API yetki doğrulaması.
  * Çalıştır: npx tsx scripts/verify-prim-auth.ts
  */
+
 import { UserRole } from '@prisma/client'
 import { createApp } from '../src/app.js'
 import { signAccessToken } from '../src/auth/jwt.js'
 import { prisma } from '../src/lib/prisma.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 type Case = { method: string; path: string; body?: unknown }
 

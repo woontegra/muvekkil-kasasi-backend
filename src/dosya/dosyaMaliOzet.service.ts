@@ -8,6 +8,10 @@ import {
 import { moneyToApiString } from '../lib/paraBirimi.js'
 import { manuelOfisGelirKaynakWhere } from '../lib/primTahsilatFilter.js'
 import {
+  aktifTahsilatOdemeWhere,
+  filterAktifTahsilatOdemeleri
+} from '../lib/tahsilatOdemeAktif.js'
+import {
   type DecimalByCurrency,
   type KarlilikCurrency,
   type MoneyByCurrency,
@@ -51,65 +55,120 @@ async function computeForDosya(
   const kasaDateWhere = dateFilter ? { tarih: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
   const odemeDateWhere = dateFilter ? { odemeTarihi: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
 
-  const [vekaletUcreti, odemelerAgg, avansAgg, masrafAgg, duzeltmeRows] = await Promise.all([
+  const [vekaletUcreti, odemeler, avansAgg, masrafAgg, duzeltmeRows] = await Promise.all([
     dateFilter
       ? null
       : prisma.vekaletUcreti.findFirst({
           where: { tenantId, dosyaId, durum: 'AKTIF' },
-          select: { toplamTutar: true }
+          select: { toplamTutar: true, paraBirimi: true }
         }),
-    prisma.vekaletTaksitOdeme.aggregate({
-      where: { tenantId, dosyaId, iptalAt: null, ...odemeDateWhere },
+    prisma.vekaletTaksitOdeme.findMany({
+      where: {
+        tenantId,
+        dosyaId,
+        ...aktifTahsilatOdemeWhere(),
+        ...odemeDateWhere
+      },
+      select: {
+        id: true,
+        tutar: true,
+        alacakParaBirimi: true,
+        iptalAt: true,
+        ofisKasaHareketId: true,
+        ofisKasaHareket: { select: { deletedAt: true } }
+      }
+    }),
+    prisma.kasaHareketi.aggregate({
+      where: {
+        tenantId,
+        dosyaId,
+        tip: KasaHareketTipi.AVANS_GIRISI,
+        onayDurumu: KasaOnayDurumu.ONAYLI,
+        deletedAt: null,
+        ...kasaDateWhere
+      },
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.aggregate({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.AVANS_GIRISI, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
-      _sum: { tutar: true }
-    }),
-    prisma.kasaHareketi.aggregate({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.MASRAF, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
+      where: {
+        tenantId,
+        dosyaId,
+        tip: KasaHareketTipi.MASRAF,
+        onayDurumu: KasaOnayDurumu.ONAYLI,
+        deletedAt: null,
+        ...kasaDateWhere
+      },
       _sum: { tutar: true }
     }),
     prisma.kasaHareketi.findMany({
-      where: { tenantId, dosyaId, tip: KasaHareketTipi.DUZELTME, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null, ...kasaDateWhere },
+      where: {
+        tenantId,
+        dosyaId,
+        tip: KasaHareketTipi.DUZELTME,
+        onayDurumu: KasaOnayDurumu.ONAYLI,
+        deletedAt: null,
+        ...kasaDateWhere
+      },
       select: { tutar: true }
     })
   ])
 
-  const kararlastirilan = dateFilter ? 0 : Number(vekaletUcreti?.toplamTutar ?? 0)
-  const tahsilEdilen = Number(odemelerAgg._sum.tutar ?? 0)
-  const kalan = Math.max(0, kararlastirilan - tahsilEdilen)
-  const tahsilatOrani = kararlastirilan > 0 ? Math.round((tahsilEdilen / kararlastirilan) * 10000) / 100 : 0
+  const aktifOdemeler = filterAktifTahsilatOdemeleri(odemeler)
+  let tahsilEdilen = zeroDecimal()
+  for (const o of aktifOdemeler) tahsilEdilen = tahsilEdilen.plus(o.tutar)
 
-  const avans = Number(avansAgg._sum.tutar ?? 0)
-  const masraf = Number(masrafAgg._sum.tutar ?? 0)
+  const kararlastirilan = dateFilter
+    ? zeroDecimal()
+    : new Prisma.Decimal(vekaletUcreti?.toplamTutar ?? 0)
+  const kalanRaw = kararlastirilan.minus(tahsilEdilen)
+  const kalan = kalanRaw.isNegative() ? zeroDecimal() : kalanRaw
+  const tahsilatOrani = kararlastirilan.gt(0)
+    ? Math.round(Number(tahsilEdilen.div(kararlastirilan).times(10000))) / 100
+    : 0
 
-  let duzeltmeTotal = 0
-  let masrafAvansiIadesi = 0
+  const avans = new Prisma.Decimal(avansAgg._sum.tutar ?? 0)
+  const masraf = new Prisma.Decimal(masrafAgg._sum.tutar ?? 0)
+
+  let duzeltmeTotal = zeroDecimal()
+  let masrafAvansiIadesi = zeroDecimal()
   for (const r of duzeltmeRows) {
-    const v = Number(r.tutar)
-    duzeltmeTotal += v
-    if (v < 0) masrafAvansiIadesi += Math.abs(v)
+    duzeltmeTotal = duzeltmeTotal.plus(r.tutar)
+    if (r.tutar.isNegative()) masrafAvansiIadesi = masrafAvansiIadesi.plus(r.tutar.abs())
   }
 
-  const kasaBakiye = avans - masraf + duzeltmeTotal
-  const buroKarsiladi = kasaBakiye < 0 ? Math.abs(kasaBakiye) : 0
-  const netKazanc = tahsilEdilen - buroKarsiladi
+  const kasaBakiye = avans.minus(masraf).plus(duzeltmeTotal)
+  const buroKarsiladi = kasaBakiye.isNegative() ? kasaBakiye.abs() : zeroDecimal()
+  const netKazanc = tahsilEdilen.minus(buroKarsiladi)
 
-  const f = (n: number) => n.toFixed(2)
   return {
-    kararlastirilanVekalet: f(kararlastirilan),
-    tahsilEdilenVekalet: f(tahsilEdilen),
-    kalanVekalet: f(kalan),
+    kararlastirilanVekalet: moneyToApiString(kararlastirilan),
+    tahsilEdilenVekalet: moneyToApiString(tahsilEdilen),
+    kalanVekalet: moneyToApiString(kalan),
     tahsilatOrani,
-    alinanMasrafAvansi: f(avans),
-    toplamMasraf: f(masraf),
-    duzeltmeEtkisi: f(duzeltmeTotal),
-    masrafAvansiIadesi: f(masrafAvansiIadesi),
-    kalanMasrafAvansi: f(Math.max(0, kasaBakiye)),
-    buroKarsiladigiGider: f(buroKarsiladi),
-    netKazanc: f(netKazanc)
+    alinanMasrafAvansi: moneyToApiString(avans),
+    toplamMasraf: moneyToApiString(masraf),
+    duzeltmeEtkisi: moneyToApiString(duzeltmeTotal),
+    masrafAvansiIadesi: moneyToApiString(masrafAvansiIadesi),
+    kalanMasrafAvansi: moneyToApiString(kasaBakiye.isNegative() ? zeroDecimal() : kasaBakiye),
+    buroKarsiladigiGider: moneyToApiString(buroKarsiladi),
+    netKazanc: moneyToApiString(netKazanc)
   }
+}
+
+/** Test / tutarlılık: dosya mali özet tahsilatı yalnız aktif ödemeler. */
+export function sumAktifOdemeTutarForDosyaMali(
+  odemeler: {
+    tutar: Prisma.Decimal
+    iptalAt?: Date | null
+    ofisKasaHareketId?: string | null
+    ofisKasaHareket?: { deletedAt: Date | null } | null
+  }[]
+): Prisma.Decimal {
+  let s = zeroDecimal()
+  for (const o of filterAktifTahsilatOdemeleri(odemeler)) {
+    s = s.plus(o.tutar)
+  }
+  return s
 }
 
 function periodDates(period: { bas: string; bit: string }): { gte: Date; lt: Date } {
@@ -179,7 +238,7 @@ export type MuvekkilKarlilikPayload = {
   ofisGeliri: MoneyByCurrency
   /**
    * Net’ten düşülen gider (para birimine göre bağımsız).
-   * Şu an: dosya kasası büro karşıladığı (TRY). USD/EUR kovaları ofis gider FX ile genişleyebilir.
+   * Dosya kasası büro karşıladığı (TRY) + müvekkile bağlı onaylı Ofis Kasası GIDER.
    */
   gider: MoneyByCurrency
   /**
@@ -236,6 +295,48 @@ async function loadManuelOfisGelirBuckets(
   )
 }
 
+/**
+ * Müvekkile bağlı onaylı Ofis Kasası GIDER (+ DUZELTME) — para birimine göre.
+ * muvekkilId’siz genel ofis giderleri dahil edilmez (mevcut iş kuralı).
+ */
+async function loadManuelOfisGiderBuckets(
+  tenantId: string,
+  muvekkilId: string,
+  dateFilter?: { gte: Date; lt: Date }
+): Promise<DecimalByCurrency> {
+  const tarihWhere = dateFilter ? { tarih: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
+  const giderRows = await prisma.ofisKasaHareketi.findMany({
+    where: {
+      tenantId,
+      muvekkilId,
+      islemTipi: OfisKasaIslemTipi.GIDER,
+      onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+      deletedAt: null,
+      ...tarihWhere
+    },
+    select: { id: true, tutar: true, paraBirimi: true }
+  })
+  const giderIds = giderRows.map((r) => r.id)
+  const duzeltmeRows =
+    giderIds.length === 0
+      ? []
+      : await prisma.ofisKasaHareketi.findMany({
+          where: {
+            tenantId,
+            islemTipi: OfisKasaIslemTipi.DUZELTME,
+            onayDurumu: OfisKasaOnayDurumu.ONAYLI,
+            deletedAt: null,
+            orijinalHareketId: { in: giderIds },
+            ...tarihWhere
+          },
+          select: { tutar: true, paraBirimi: true }
+        })
+  const buckets = emptyDecimalByCurrency()
+  for (const r of giderRows) addToDecimalByCurrency(buckets, r.paraBirimi, r.tutar)
+  for (const r of duzeltmeRows) addToDecimalByCurrency(buckets, r.paraBirimi, r.tutar)
+  return buckets
+}
+
 function pickDagilim(
   rows: MuvekkilKarlilikDosya[]
 ): MuvekkilKarlilikDagilim | null {
@@ -263,7 +364,7 @@ async function computeForMuvekkil(
   const kasaDateWhere = dateFilter ? { tarih: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
   const odemeDateWhere = dateFilter ? { odemeTarihi: { gte: dateFilter.gte, lt: dateFilter.lt } } : {}
 
-  const [vekaletler, odemeler, kasaRows, ofisGelir] = await Promise.all([
+  const [vekaletler, odemeler, kasaRows, ofisGelir, ofisGider] = await Promise.all([
     dateFilter || dosyaIds.length === 0
       ? Promise.resolve(
           [] as { dosyaId: string; toplamTutar: Prisma.Decimal; paraBirimi: string }[]
@@ -278,11 +379,26 @@ async function computeForMuvekkil(
             dosyaId: string
             tutar: Prisma.Decimal
             alacakParaBirimi: string
+            iptalAt: Date | null
+            ofisKasaHareketId: string | null
+            ofisKasaHareket: { deletedAt: Date | null } | null
           }[]
         )
       : prisma.vekaletTaksitOdeme.findMany({
-          where: { tenantId, dosyaId: { in: dosyaIds }, iptalAt: null, ...odemeDateWhere },
-          select: { dosyaId: true, tutar: true, alacakParaBirimi: true }
+          where: {
+            tenantId,
+            dosyaId: { in: dosyaIds },
+            ...aktifTahsilatOdemeWhere(),
+            ...odemeDateWhere
+          },
+          select: {
+            dosyaId: true,
+            tutar: true,
+            alacakParaBirimi: true,
+            iptalAt: true,
+            ofisKasaHareketId: true,
+            ofisKasaHareket: { select: { deletedAt: true } }
+          }
         }),
     dosyaIds.length === 0
       ? Promise.resolve([] as { dosyaId: string; tip: string; tutar: Prisma.Decimal }[])
@@ -296,7 +412,8 @@ async function computeForMuvekkil(
           },
           select: { dosyaId: true, tip: true, tutar: true }
         }),
-    loadManuelOfisGelirBuckets(tenantId, muvekkilId, dateFilter)
+    loadManuelOfisGelirBuckets(tenantId, muvekkilId, dateFilter),
+    loadManuelOfisGiderBuckets(tenantId, muvekkilId, dateFilter)
   ])
 
   const vekaletMap = new Map<string, { tutar: Prisma.Decimal; paraBirimi: KarlilikCurrency }>()
@@ -393,6 +510,7 @@ async function computeForMuvekkil(
 
   for (const c of KARLILIK_CURRENCIES) {
     totalGelir[c] = totalGelir[c].plus(ofisGelir[c])
+    totalGider[c] = totalGider[c].plus(ofisGider[c])
   }
 
   const net = netByCurrency(totalGelir, totalGider)

@@ -1,8 +1,11 @@
 import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 const prisma = new PrismaClient()
 const API = (process.env.E2E_API_URL ?? `http://localhost:${process.env.PORT ?? 4100}`).replace(/\/$/, '')
+requireSafeTestDatabaseOrExit({ apiUrl: API })
+requireSafeMessagingTestOrExit()
 const PASS = process.env.E2E_PASSWORD ?? 'E2eTestPass123!'
 
 async function api(path: string, init?: RequestInit & { token?: string }) {

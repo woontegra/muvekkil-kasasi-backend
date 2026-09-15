@@ -4,6 +4,7 @@
  *
  *   E2E_USER=e2e.sahip E2E_PASSWORD=... npx tsx scripts/auth-session-smoke.ts
  */
+
 import 'dotenv/config'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
@@ -17,8 +18,10 @@ import {
   revokeUserRefreshSessions,
   rotateRefreshSession
 } from '../src/auth/refreshSession.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 const API = (process.env.E2E_API_URL ?? `http://localhost:${process.env.PORT ?? 4100}`).replace(/\/$/, '')
+requireSafeTestDatabaseOrExit({ apiUrl: API })
 const USER = process.env.E2E_USER ?? 'e2e.sahip'
 const PASS = process.env.E2E_PASSWORD ?? 'E2eTestPass123!'
 const ORIGIN = (process.env.CORS_ORIGIN ?? 'http://localhost:5173').split(',')[0]!.trim()

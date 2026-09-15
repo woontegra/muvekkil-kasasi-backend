@@ -3,6 +3,7 @@
  *
  *   npm run test:whatsapp-paket-talep-mail
  */
+
 import 'dotenv/config'
 import { WhatsAppMesajPaketTalepDurum } from '@prisma/client'
 import { prisma } from '../src/lib/prisma.js'
@@ -23,6 +24,10 @@ import {
   setAdminWhatsAppPaketTalepMailSenderForTests,
   setAdminWhatsAppPaketTalepWaSenderForTests
 } from '../src/tahsilatBildirim/whatsappMesajPaketTalepNotify.js'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
+requireSafeMessagingTestOrExit()
 
 const TAG = `quality-wa-paket-mail-${Date.now()}`
 

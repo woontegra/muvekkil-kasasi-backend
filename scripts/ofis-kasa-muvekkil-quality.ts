@@ -63,12 +63,7 @@ function main(): void {
     ...baseGider,
     muvekkilId: '11111111-1111-4111-8111-111111111111'
   })
-  record(
-    'schema-gider-muvekkil-red',
-    !giderWithMuvekkil.success &&
-      (giderWithMuvekkil.error?.issues.some((i) => i.path.includes('muvekkilId')) ?? false),
-    giderWithMuvekkil.success ? 'beklenmeyen kabul' : undefined
-  )
+  record('schema-gider-muvekkilli', giderWithMuvekkil.success)
 
   const giderClean = createOfisKasaHareketiBodySchema.safeParse(baseGider)
   record('schema-gider-muvekkilsiz', giderClean.success)

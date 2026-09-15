@@ -2,13 +2,16 @@
  * Production smoke — parola env’den; çıktıda secret yok.
  * E2E_API_URL / PROD_API_URL + ADMIN_BOOTSTRAP_PASSWORD + E2E_USER/E2E_PASSWORD
  */
+
 import 'dotenv/config'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 const API = (
   process.env.PROD_API_URL ??
   process.env.E2E_API_URL ??
   'https://muvekkil-kasasi-backend-production.up.railway.app'
 ).replace(/\/$/, '')
+requireSafeTestDatabaseOrExit({ apiUrl: API })
 
 function resolveFrontendOrigin(): string {
   const fromEnv = process.env.PROD_FRONTEND_ORIGIN?.trim()

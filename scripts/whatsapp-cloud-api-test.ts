@@ -9,6 +9,7 @@
  * Kullanım:
  *   WHATSAPP_CLOUD_TEST_PHONE=905xxxxxxxxx npm run whatsapp:cloud-test
  */
+
 import { env } from '../src/config/env.js'
 import { maskPhone, normalizeTurkiyePhone } from '../src/tahsilatBildirim/phone.js'
 import {
@@ -16,6 +17,10 @@ import {
   isWhatsAppCloudApiConfigured
 } from '../src/tahsilatBildirim/providers/whatsappProvider.js'
 import { platformSmokeSend } from '../src/tahsilatBildirim/connection.service.js'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
+requireSafeMessagingTestOrExit({ allowRealWithExplicitFlag: true })
 
 const FREE_TEXT =
   'Woontegra Müvekkil Kasa WhatsApp bağlantı testi başarıyla çalışıyor.'

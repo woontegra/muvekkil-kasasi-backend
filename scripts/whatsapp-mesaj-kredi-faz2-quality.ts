@@ -3,6 +3,7 @@
  *
  *   npx tsx scripts/whatsapp-mesaj-kredi-faz2-quality.ts
  */
+
 import 'dotenv/config'
 import { prisma } from '../src/lib/prisma.js'
 import {
@@ -16,6 +17,9 @@ import {
   WHATSAPP_YILLIK_DAHIL_KREDI
 } from '../src/tahsilatBildirim/whatsappMesajKredi.service.js'
 import { listWhatsAppMesajPaketleri } from '../src/tahsilatBildirim/whatsappMesajPaketleri.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 function assert(c: boolean, m: string): void {
   if (!c) throw new Error(`FAIL: ${m}`)

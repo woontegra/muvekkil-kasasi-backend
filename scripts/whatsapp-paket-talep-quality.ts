@@ -3,6 +3,7 @@
  *
  *   npm run test:whatsapp-paket-talep
  */
+
 import 'dotenv/config'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -23,6 +24,9 @@ import {
   adminReddetWhatsAppMesajPaketTalebi,
   createWhatsAppMesajPaketTalebi
 } from '../src/tahsilatBildirim/whatsappMesajPaketTalep.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 const TAG = `quality-wa-paket-talep-${Date.now()}`
 

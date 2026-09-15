@@ -2,11 +2,16 @@
  * One-shot controlled session Cloud text send (explicit user approval).
  * Does not print raw phone or message body.
  */
+
 import 'dotenv/config'
 import type { Request } from 'express'
 import { prisma } from '../src/lib/prisma.js'
 import { sendControlledSessionCloudTextTest } from '../src/tahsilatBildirim/connection.controlledSessionTest.js'
 import { maskPhone } from '../src/tahsilatBildirim/phone.js'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
+requireSafeMessagingTestOrExit({ allowRealWithExplicitFlag: true })
 
 const TENANT_ID = 'c433539d-fae3-4419-a6d8-9f1b59464d61'
 const CONNECTION_ID = '159a0c71-3344-4b29-a14f-2df0c70f5fb5'

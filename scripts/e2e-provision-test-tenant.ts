@@ -2,13 +2,15 @@
  * İzole E2E test tenant + büro sahibi oluşturur / şifresini yeniler.
  * Migration çalıştırmaz. Canlı müşteri tenantlarına dokunmaz.
  *
- *   cd muvekkil-kasasi-backend
- *   npx tsx scripts/e2e-provision-test-tenant.ts
+ *   TEST_DATABASE_URL=postgresql://…/muvekkil_test npx tsx scripts/e2e-provision-test-tenant.ts
  */
 import 'dotenv/config'
 import bcrypt from 'bcrypt'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 import { prisma } from '../src/lib/prisma.js'
 import { provisionTenantWithOwner } from '../src/tenant/provisionTenantWithOwner.js'
+
+requireSafeTestDatabaseOrExit()
 
 async function main(): Promise<void> {
   const ownerUser = (process.env.E2E_OWNER_USER ?? 'e2e.sahip').trim().toLowerCase()

@@ -75,15 +75,6 @@ export const createOfisKasaHareketiBodySchema = z
     /** Hareket para birimi; boş → TRY. GELIR/GIDER: TRY | USD | EUR. */
     paraBirimi: optionalParaBirimiSchema
   })
-  .superRefine((data, ctx) => {
-    if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.muvekkilId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Gider işlemine müvekkil bağlanamaz.',
-        path: ['muvekkilId']
-      })
-    }
-  })
 
 export type CreateOfisKasaHareketiBody = z.infer<typeof createOfisKasaHareketiBodySchema>
 

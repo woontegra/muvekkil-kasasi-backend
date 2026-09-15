@@ -6,10 +6,12 @@
  *   npm run security:quality-phase2
  */
 import 'dotenv/config'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 import { cookieSecure } from '../src/auth/sessionCookies.js'
 import { env } from '../src/config/env.js'
 
 const API = (process.env.E2E_API_URL ?? `http://localhost:${process.env.PORT ?? 4100}`).replace(/\/$/, '')
+requireSafeTestDatabaseOrExit({ apiUrl: API })
 const PASS = process.env.E2E_PASSWORD ?? process.env.E2E_OWNER_PASSWORD ?? 'E2eTestPass123!'
 const ORIGIN = (process.env.CORS_ORIGIN ?? 'http://localhost:5173').split(',')[0]!.trim()
 

@@ -5,6 +5,8 @@
  *   npx tsx scripts/randevu-quality.ts
  */
 import 'dotenv/config'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+requireSafeTestDatabaseOrExit()
 
 const API = (process.env.E2E_API_URL ?? `http://localhost:${process.env.PORT ?? 4100}`).replace(/\/$/, '')
 const PASS = process.env.E2E_PASSWORD ?? process.env.E2E_OWNER_PASSWORD ?? 'E2eTestPass123!'

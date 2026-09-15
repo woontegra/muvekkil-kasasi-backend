@@ -21,13 +21,13 @@ describe('createOfisKasaHareketiBodySchema — GIDER para birimi', () => {
     }
   })
 
-  it('GIDER + muvekkilId reddeder', () => {
+  it('GIDER + muvekkilId kabul eder (isteğe bağlı kârlılık bağı)', () => {
     const r = createOfisKasaHareketiBodySchema.safeParse({
       ...baseGider,
       paraBirimi: 'USD',
       muvekkilId: '11111111-1111-4111-8111-111111111111'
     })
-    assert.equal(r.success, false)
+    assert.equal(r.success, true)
   })
 
   it('varsayılan para birimi boş bırakılabilir (sunucu TRY)', () => {

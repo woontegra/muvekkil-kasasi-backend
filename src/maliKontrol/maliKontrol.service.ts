@@ -1,6 +1,17 @@
-import { DosyaDurumu, KasaHareketTipi, KasaOnayDurumu, ParaBirimi, VekaletTaksitOdemeDurumu } from '@prisma/client'
+import {
+  DosyaDurumu,
+  KasaHareketTipi,
+  KasaOnayDurumu,
+  ParaBirimi,
+  Prisma,
+  VekaletTaksitOdemeDurumu
+} from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { formatMoneyDisplay } from '../lib/paraBirimi.js'
+import { aktifTahsilatOdemeWhere, isTahsilatOdemeAktif } from '../lib/tahsilatOdemeAktif.js'
+import { computeTaksitOdemeOzeti } from '../vekalet/taksitOdemeOzet.js'
+
+export { aktifTahsilatOdemeWhere }
 
 export type UyariSeviyesi = 'KRITIK' | 'UYARI' | 'BILGI'
 
@@ -73,8 +84,40 @@ function ymdLocal(d: Date): string {
   return `${y}-${m}-${dd}`
 }
 
-function sumTutarlar(arr: { tutar: { toString(): string } }[]): number {
-  return arr.reduce((s, r) => s + Number(r.tutar), 0)
+const EPS = new Prisma.Decimal('0.001')
+
+const odemeAktiflikSelect = {
+  id: true,
+  tutar: true,
+  iptalAt: true,
+  ofisKasaHareketId: true,
+  ofisKasaHareket: { select: { deletedAt: true } }
+} as const
+
+
+function decimalToNum(d: Prisma.Decimal): number {
+  return Number(d)
+}
+
+function sumKasaByTip(rows: { tip: KasaHareketTipi; tutar: Prisma.Decimal }[]): {
+  avans: Prisma.Decimal
+  masraf: Prisma.Decimal
+  duzeltme: Prisma.Decimal
+} {
+  let avans = new Prisma.Decimal(0)
+  let masraf = new Prisma.Decimal(0)
+  let duzeltme = new Prisma.Decimal(0)
+  for (const r of rows) {
+    if (r.tip === KasaHareketTipi.AVANS_GIRISI) avans = avans.plus(r.tutar)
+    else if (r.tip === KasaHareketTipi.MASRAF) masraf = masraf.plus(r.tutar)
+    else if (r.tip === KasaHareketTipi.DUZELTME) duzeltme = duzeltme.plus(r.tutar)
+  }
+  return { avans, masraf, duzeltme }
+}
+
+export function kasaAvansBakiye(rows: { tip: KasaHareketTipi; tutar: Prisma.Decimal }[]): Prisma.Decimal {
+  const { avans, masraf, duzeltme } = sumKasaByTip(rows)
+  return avans.minus(masraf).plus(duzeltme)
 }
 
 function buildAction(
@@ -111,7 +154,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
           odemeDurumu: { not: VekaletTaksitOdemeDurumu.IPTAL }
         },
         include: {
-          odemeler: { select: { tutar: true } },
+          odemeler: { select: odemeAktiflikSelect },
           muvekkil: { select: { id: true, gorunenAd: true } },
           dosya: { select: { id: true, konuBasligi: true, dosyaNo: true, durum: true } }
         }
@@ -119,7 +162,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
 
       // Tüm onaylı kasa hareketleri (avans hesabı için)
       prisma.kasaHareketi.findMany({
-        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYLI },
+        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null },
         select: {
           dosyaId: true,
           tip: true,
@@ -131,7 +174,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
 
       // Onay bekleyen kasa hareketleri
       prisma.kasaHareketi.findMany({
-        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ },
+        where: { tenantId, onayDurumu: KasaOnayDurumu.ONAYSIZ, deletedAt: null },
         select: {
           id: true,
           tarih: true,
@@ -162,25 +205,28 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
             take: 1
           },
           kasaHareketleri: {
-            where: { onayDurumu: KasaOnayDurumu.ONAYLI },
+            where: { onayDurumu: KasaOnayDurumu.ONAYLI, deletedAt: null },
             select: { tip: true, tutar: true }
           },
           vekaletTaksitleri: {
             where: { odemeDurumu: { not: VekaletTaksitOdemeDurumu.IPTAL } },
-            include: { odemeler: { select: { tutar: true } } }
+            include: { odemeler: { select: odemeAktiflikSelect } }
           }
         }
       }),
 
       // SMM kesilmemiş vekalet taksit ödemeleri
       prisma.vekaletTaksitOdeme.findMany({
-        where: { tenantId, smmKesildiMi: false },
+        where: { tenantId, smmKesildiMi: false, ...aktifTahsilatOdemeWhere() },
         select: {
           id: true,
           tutar: true,
           odemeTarihi: true,
           dosyaId: true,
           muvekkilId: true,
+          iptalAt: true,
+          ofisKasaHareketId: true,
+          ofisKasaHareket: { select: { deletedAt: true } },
           dosya: { select: { id: true, konuBasligi: true, dosyaNo: true } },
           muvekkil: { select: { id: true, gorunenAd: true } }
         }
@@ -188,13 +234,16 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
 
       // Makbuz numarası boş olan vekalet taksit ödemeleri
       prisma.vekaletTaksitOdeme.findMany({
-        where: { tenantId, makbuzNo: '' },
+        where: { tenantId, makbuzNo: '', ...aktifTahsilatOdemeWhere() },
         select: {
           id: true,
           tutar: true,
           odemeTarihi: true,
           dosyaId: true,
           muvekkilId: true,
+          iptalAt: true,
+          ofisKasaHareketId: true,
+          ofisKasaHareket: { select: { deletedAt: true } },
           dosya: { select: { id: true, konuBasligi: true, dosyaNo: true } },
           muvekkil: { select: { id: true, gorunenAd: true } }
         }
@@ -213,10 +262,10 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
 
   // ── 1. Vadesi geçmiş taksitler (ODENMEDI veya KISMI_ODENDI, vade < bugün) ──
   for (const t of vekaletTaksitler) {
-    const tutar = Number(t.tutar)
-    const odenen = sumTutarlar(t.odemeler)
-    const kalan = Math.max(0, tutar - odenen)
-    if (kalan <= 0.001) continue
+    const ozet = computeTaksitOdemeOzeti(t.tutar, t.odemeler)
+    const kalan = ozet.kalanTutar
+    if (!kalan.gt(EPS)) continue
+    const kalanNum = decimalToNum(kalan)
 
     const vadeYmd = ymdLocal(t.vadeTarihi)
     const dosyaBaslik = t.dosya.konuBasligi + (t.dosya.dosyaNo ? ` (${t.dosya.dosyaNo})` : '')
@@ -230,9 +279,9 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: t.muvekkil.gorunenAd,
         dosyaId: t.dosyaId,
         dosyaBaslik,
-        tutar: fmt(kalan),
+        tutar: fmt(kalanNum),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} vadesi geçmiş; kalan: ${fmtTry(kalan)}`,
+        aciklama: `Taksit ${t.taksitNo} vadesi geçmiş; kalan: ${fmtTry(kalanNum)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     } else if (vadeYmd <= ymdLocal(ucGunSonra)) {
@@ -245,9 +294,9 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: t.muvekkil.gorunenAd,
         dosyaId: t.dosyaId,
         dosyaBaslik,
-        tutar: fmt(kalan),
+        tutar: fmt(kalanNum),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} 3 gün içinde vadesi dolacak; kalan: ${fmtTry(kalan)}`,
+        aciklama: `Taksit ${t.taksitNo} 3 gün içinde vadesi dolacak; kalan: ${fmtTry(kalanNum)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     } else if (t.odemeDurumu === VekaletTaksitOdemeDurumu.KISMI_ODENDI) {
@@ -260,16 +309,25 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: t.muvekkil.gorunenAd,
         dosyaId: t.dosyaId,
         dosyaBaslik,
-        tutar: fmt(kalan),
+        tutar: fmt(kalanNum),
         tarih: vadeYmd,
-        aciklama: `Taksit ${t.taksitNo} kısmi ödenmiş; kalan: ${fmtTry(kalan)}`,
+        aciklama: `Taksit ${t.taksitNo} kısmi ödenmiş; kalan: ${fmtTry(kalanNum)}`,
         ...buildAction(t.muvekkilId, t.dosyaId, 'VEKALET_TAKSIT', 'vekalet', { taksitId: t.id })
       })
     }
   }
 
   // ── 4 & 5. Avans bakiyesi hesabı (dosya bazlı) ──
-  type AvansData = { avans: number; masraf: number; duzeltme: number; dosyaId: string; muvekkilId: string; dosyaBaslik: string; muvekkilAd: string; durum: DosyaDurumu }
+  type AvansData = {
+    avans: Prisma.Decimal
+    masraf: Prisma.Decimal
+    duzeltme: Prisma.Decimal
+    dosyaId: string
+    muvekkilId: string
+    dosyaBaslik: string
+    muvekkilAd: string
+    durum: DosyaDurumu
+  }
   const avansMap = new Map<string, AvansData>()
 
   for (const r of kasaRows) {
@@ -278,18 +336,28 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
     let entry = avansMap.get(dosyaId)
     if (!entry) {
       const dosyaBaslik = r.dosya.konuBasligi + (r.dosya.dosyaNo ? ` (${r.dosya.dosyaNo})` : '')
-      entry = { avans: 0, masraf: 0, duzeltme: 0, dosyaId, muvekkilId: r.muvekkil.id, dosyaBaslik, muvekkilAd: r.muvekkil.gorunenAd, durum: r.dosya.durum as DosyaDurumu }
+      entry = {
+        avans: new Prisma.Decimal(0),
+        masraf: new Prisma.Decimal(0),
+        duzeltme: new Prisma.Decimal(0),
+        dosyaId,
+        muvekkilId: r.muvekkil.id,
+        dosyaBaslik,
+        muvekkilAd: r.muvekkil.gorunenAd,
+        durum: r.dosya.durum as DosyaDurumu
+      }
       avansMap.set(dosyaId, entry)
     }
-    const v = Number(r.tutar)
-    if (r.tip === KasaHareketTipi.AVANS_GIRISI) entry.avans += v
-    else if (r.tip === KasaHareketTipi.MASRAF) entry.masraf += v
-    else if (r.tip === KasaHareketTipi.DUZELTME) entry.duzeltme += v
+    if (r.tip === KasaHareketTipi.AVANS_GIRISI) entry.avans = entry.avans.plus(r.tutar)
+    else if (r.tip === KasaHareketTipi.MASRAF) entry.masraf = entry.masraf.plus(r.tutar)
+    else if (r.tip === KasaHareketTipi.DUZELTME) entry.duzeltme = entry.duzeltme.plus(r.tutar)
   }
 
   for (const [dosyaId, d] of avansMap) {
-    const bakiye = d.avans - d.masraf + d.duzeltme
-    if (bakiye < -0.001) {
+    const bakiye = d.avans.minus(d.masraf).plus(d.duzeltme)
+    if (bakiye.lt(EPS.negated())) {
+      const absBakiye = bakiye.abs()
+      const absNum = decimalToNum(absBakiye)
       // ── 4. Negatif avans bakiyesi ──
       addUyari({
         id: `avans-neg-${dosyaId}`,
@@ -299,9 +367,9 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: d.muvekkilAd,
         dosyaId,
         dosyaBaslik: d.dosyaBaslik,
-        tutar: fmt(Math.abs(bakiye)),
+        tutar: fmt(absNum),
         tarih: null,
-        aciklama: `Masraf avansı negatife düştü; büro ${fmtTry(Math.abs(bakiye))} karşılıyor`,
+        aciklama: `Masraf avansı negatife düştü; büro ${fmtTry(absNum)} karşılıyor`,
         ...buildAction(d.muvekkilId, dosyaId, 'DOSYA_MALI', 'mali')
       })
     }
@@ -309,17 +377,11 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
 
   // ── 6. Kapanmış dosyada kalan avans ──
   for (const d of kapaliDosyalar) {
-    let avans = 0, masraf = 0, duzeltme = 0
-    for (const r of d.kasaHareketleri) {
-      const v = Number(r.tutar)
-      if (r.tip === KasaHareketTipi.AVANS_GIRISI) avans += v
-      else if (r.tip === KasaHareketTipi.MASRAF) masraf += v
-      else if (r.tip === KasaHareketTipi.DUZELTME) duzeltme += v
-    }
-    const bakiye = avans - masraf + duzeltme
+    const bakiye = kasaAvansBakiye(d.kasaHareketleri)
     const dosyaBaslik = d.konuBasligi + (d.dosyaNo ? ` (${d.dosyaNo})` : '')
 
-    if (bakiye > 0.001) {
+    if (bakiye.gt(EPS)) {
+      const bakiyeNum = decimalToNum(bakiye)
       addUyari({
         id: `kapali-avans-${d.id}`,
         tur: 'KAPALI_DOSYA_AVANS',
@@ -328,29 +390,31 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: d.muvekkil.gorunenAd,
         dosyaId: d.id,
         dosyaBaslik,
-        tutar: fmt(bakiye),
+        tutar: fmt(bakiyeNum),
         tarih: null,
-        aciklama: `Kapalı dosyada ${fmtTry(bakiye)} masraf avansı bakiyesi bulunuyor`,
+        aciklama: `Kapalı dosyada ${fmtTry(bakiyeNum)} masraf avansı bakiyesi bulunuyor`,
         ...buildAction(d.muvekkilId, d.id, 'DOSYA_MALI', 'mali')
       })
     }
 
     // ── 7. Kapanmış dosyada kalan vekalet alacağı ──
-    let toplamOdenen = 0
+    let toplamOdenen = new Prisma.Decimal(0)
     for (const t of d.vekaletTaksitleri) {
-      toplamOdenen += sumTutarlar(t.odemeler)
+      toplamOdenen = toplamOdenen.plus(computeTaksitOdemeOzeti(t.tutar, t.odemeler).odenenToplam)
     }
-    const toplamVekalet = Number(d.vekaletUcretleri[0]?.toplamTutar ?? 0)
-    const kalanAlacak = Math.max(0, toplamVekalet - toplamOdenen)
-    if (kalanAlacak > 0.001 && toplamVekalet > 0) {
+    const toplamVekalet = d.vekaletUcretleri[0]?.toplamTutar ?? new Prisma.Decimal(0)
+    const kalanAlacakRaw = toplamVekalet.minus(toplamOdenen)
+    const kalanAlacak = kalanAlacakRaw.isNegative() ? new Prisma.Decimal(0) : kalanAlacakRaw
+    if (kalanAlacak.gt(EPS) && toplamVekalet.gt(EPS)) {
       let ilkKalanTaksitId: string | undefined
       for (const t of d.vekaletTaksitleri) {
-        const kalan = Math.max(0, Number(t.tutar) - sumTutarlar(t.odemeler))
-        if (kalan > 0.001) {
+        const kalan = computeTaksitOdemeOzeti(t.tutar, t.odemeler).kalanTutar
+        if (kalan.gt(EPS)) {
           ilkKalanTaksitId = t.id
           break
         }
       }
+      const kalanAlacakNum = decimalToNum(kalanAlacak)
       addUyari({
         id: `kapali-alacak-${d.id}`,
         tur: 'KAPALI_DOSYA_ALACAK',
@@ -359,9 +423,9 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
         muvekkilAd: d.muvekkil.gorunenAd,
         dosyaId: d.id,
         dosyaBaslik,
-        tutar: fmt(kalanAlacak),
+        tutar: fmt(kalanAlacakNum),
         tarih: null,
-        aciklama: `Kapalı dosyada ${fmtTry(kalanAlacak)} tahsil edilmemiş vekalet ücreti alacağı var`,
+        aciklama: `Kapalı dosyada ${fmtTry(kalanAlacakNum)} tahsil edilmemiş vekalet ücreti alacağı var`,
         ...(ilkKalanTaksitId
           ? buildAction(d.muvekkilId, d.id, 'VEKALET_TAKSIT', 'vekalet', { taksitId: ilkKalanTaksitId })
           : buildAction(d.muvekkilId, d.id, 'DOSYA_VEKALET', 'vekalet'))
@@ -370,7 +434,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
   }
 
   // ── 8. SMM kesilmemiş tahsilatlar ──
-  for (const o of smmEksikOdemeler) {
+  for (const o of smmEksikOdemeler.filter(isTahsilatOdemeAktif)) {
     if (!o.dosya || !o.muvekkil) continue
     const dosyaBaslik = o.dosya.konuBasligi + (o.dosya.dosyaNo ? ` (${o.dosya.dosyaNo})` : '')
     addUyari({
@@ -417,7 +481,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
   }
 
   // ── 10. Makbuz numarası eksik tahsilatlar ──
-  for (const o of makbuzEksikOdemeler) {
+  for (const o of makbuzEksikOdemeler.filter(isTahsilatOdemeAktif)) {
     if (!o.dosya || !o.muvekkil) continue
     const dosyaBaslik = o.dosya.konuBasligi + (o.dosya.dosyaNo ? ` (${o.dosya.dosyaNo})` : '')
     addUyari({
@@ -447,6 +511,7 @@ export async function getMaliKontrolUyarilari(tenantId: string): Promise<MaliKon
       createdAt: true,
       muvekkil: { select: { id: true, gorunenAd: true } },
       kasaHareketleri: {
+        where: { deletedAt: null },
         orderBy: { tarih: 'desc' },
         take: 1,
         select: { tarih: true }

@@ -585,11 +585,8 @@ export async function createOfisKasaHareketi(
       ? await resolveTahsilatiYapanPersonel(tenantId, userId, actorRole, body.tahsilatiYapanPersonelId ?? body.tahsilatiYapanUserId)
       : null
 
-  // GIDER’de müvekkil asla yazılmaz (tip sonradan gider olsaydı da temizlenirdi).
-  const linkedMuvekkil =
-    body.islemTipi === OfisKasaIslemTipi.GELIR
-      ? await resolveAktifMuvekkilForOfisGelir(tenantId, body.muvekkilId)
-      : null
+  // GELIR ve GIDER için isteğe bağlı müvekkil (kârlılık kapsamı); boş = genel ofis kaydı.
+  const linkedMuvekkil = await resolveAktifMuvekkilForOfisGelir(tenantId, body.muvekkilId)
 
   let attempts = 0
   while (attempts < 5) {

@@ -1,15 +1,18 @@
 /**
- * Vekalet taksit update — post-update 500 regresyon testi (E2E tenant).
- * Production verisine dokunmaz.
+ * Vekalet taksit update — post-update 500 regresyon testi (izolasyonlu test DB).
  *
- *   npx tsx scripts/vekalet-taksit-update-quality.ts
+ *   TEST_DATABASE_URL=postgresql://…/muvekkil_test npx tsx scripts/vekalet-taksit-update-quality.ts
+ *
+ * Production / Railway DATABASE_URL ile çalışmaz.
  */
 import 'dotenv/config'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 const API = (process.env.E2E_API_URL ?? `http://localhost:${process.env.PORT ?? 4100}`).replace(
   /\/$/,
   ''
 )
+requireSafeTestDatabaseOrExit({ apiUrl: API })
 const PASS = process.env.E2E_PASSWORD ?? process.env.E2E_OWNER_PASSWORD ?? 'E2eTestPass123!'
 const USER = process.env.E2E_USER ?? 'e2e.sahip'
 

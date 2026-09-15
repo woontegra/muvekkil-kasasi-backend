@@ -7,11 +7,15 @@
  *
  * Parola env'den alınır; çıktıda gösterilmez.
  */
+
 import 'dotenv/config'
 import bcrypt from 'bcrypt'
 import { PrismaClient } from '@prisma/client'
 import { signAdminAccessToken } from '../src/auth/adminJwt.js'
 import { bootstrapOwnerAdmin, normalizeEmail, BCRYPT_COST } from '../src/admin/bootstrapOwnerAdmin.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 type Check = { name: string; ok: boolean; detail?: string }
 const results: Check[] = []

@@ -2,6 +2,7 @@
  * WhatsApp / bildirim kalite testleri — dış servis çağırmaz.
  * Migration uygulamaz.
  */
+
 import { normalizeTurkiyePhone, maskPhone } from '../src/tahsilatBildirim/phone.js'
 import { renderTemplate, DEFAULT_TEMPLATES } from '../src/tahsilatBildirim/templates.js'
 import {
@@ -11,6 +12,10 @@ import {
   isWhatsAppCloudApiAllowed
 } from '../src/tahsilatBildirim/providers/whatsappProvider.js'
 import { env } from '../src/config/env.js'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
+requireSafeMessagingTestOrExit()
 
 function assert(cond: unknown, msg: string): void {
   if (!cond) throw new Error(msg)

@@ -1,4 +1,6 @@
 import { prisma } from '../lib/prisma.js'
+import { isTahsilatOdemeAktif } from '../lib/tahsilatOdemeAktif.js'
+import type { Prisma } from '@prisma/client'
 
 export type SmmBekleyenRowDto = {
   id: string
@@ -25,11 +27,16 @@ export type SmmBekleyenRowDto = {
   taksitNo: number | null
 }
 
-/** Dashboard ve liste uçlarında ortak filtre (kiracı + SMM kesilmemiş ödeme). */
-export function smmBekleyenWhere(tenantId: string) {
+/**
+ * Aktif + SMM kesilmemiş ödeme filtresi (global ve dosya listeleri ortak).
+ * iptalAt null; ofis bağlıysa deletedAt null; ofis bağı yoksa OK.
+ */
+export function smmBekleyenWhere(tenantId: string): Prisma.VekaletTaksitOdemeWhereInput {
   return {
     tenantId,
-    smmKesildiMi: false
+    smmKesildiMi: false,
+    iptalAt: null,
+    OR: [{ ofisKasaHareketId: null }, { ofisKasaHareket: { is: { deletedAt: null } } }]
   }
 }
 
@@ -48,19 +55,22 @@ const ODEME_YONTEMI_LABEL: Record<string, string> = {
   DIGER: 'Diğer'
 }
 
-/** Kiracıda SMM kesilmemiş vekalet taksit ödemeleri. */
+const smmListInclude = {
+  dosya: { select: { konuBasligi: true, dosyaNo: true, dosyaTuru: true } },
+  muvekkil: { select: { gorunenAd: true } },
+  taksit: { select: { taksitNo: true } },
+  ofisKasaHareket: { select: { deletedAt: true } }
+} as const
+
+/** Kiracıda SMM kesilmemiş aktif vekalet taksit ödemeleri. */
 export async function listSmmBekleyenlerForTenant(tenantId: string): Promise<SmmBekleyenRowDto[]> {
   const rows = await prisma.vekaletTaksitOdeme.findMany({
     where: smmBekleyenWhere(tenantId),
-    include: {
-      dosya: { select: { konuBasligi: true, dosyaNo: true, dosyaTuru: true } },
-      muvekkil: { select: { gorunenAd: true } },
-      taksit: { select: { taksitNo: true } }
-    },
+    include: smmListInclude,
     orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }]
   })
 
-  return rows.map((r) => ({
+  return rows.filter(isTahsilatOdemeAktif).map((r) => ({
     id: r.id,
     tenantId: r.tenantId,
     muvekkilId: r.muvekkilId,

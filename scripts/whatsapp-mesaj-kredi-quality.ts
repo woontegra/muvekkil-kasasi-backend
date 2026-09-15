@@ -5,6 +5,7 @@
  *
  * Test hareketlerini aciklama öneki ile temizler; bakiyeyi başlangıç değerine döndürür.
  */
+
 import 'dotenv/config'
 import { randomUUID } from 'node:crypto'
 import { WhatsAppMesajKrediHareketTipi } from '@prisma/client'
@@ -17,6 +18,9 @@ import {
   refundForJob,
   WHATSAPP_KREDI_YETERSIZ
 } from '../src/tahsilatBildirim/whatsappMesajKredi.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 const TAG = `quality-wa-credit-${Date.now()}`
 

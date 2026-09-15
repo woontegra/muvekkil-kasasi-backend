@@ -1,5 +1,12 @@
-import { VekaletTaksitOdemeDurumu } from '@prisma/client'
+/**
+ * Taksit uyarıları — aktif tahsilat ödemeleri (iptal / ofis soft-delete hariç).
+ */
+import { Prisma, VekaletTaksitOdemeDurumu } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
+import { moneyToApiString } from '../lib/paraBirimi.js'
+import { filterAktifTahsilatOdemeleri } from '../lib/tahsilatOdemeAktif.js'
+import { computeTaksitOdemeOzeti } from '../vekalet/taksitOdemeOzet.js'
+import { smmBekleyenWhere } from '../smm/smm.service.js'
 
 export type TaksitUyariSinif = 'vadesiGecmis' | 'bugunOdenecek' | 'odenmemis'
 
@@ -28,6 +35,14 @@ export type TaksitUyarilariPayload = {
   vadesiGecmisListe: TaksitUyariListeSatir[]
 }
 
+const odemeAktiflikSelect = {
+  id: true,
+  tutar: true,
+  iptalAt: true,
+  ofisKasaHareketId: true,
+  ofisKasaHareket: { select: { deletedAt: true } }
+} as const
+
 function bugunYmdLocal(ref = new Date()): string {
   const y = ref.getFullYear()
   const m = String(ref.getMonth() + 1).padStart(2, '0')
@@ -39,21 +54,14 @@ function vadeToYmdLocal(vade: Date): string {
   return bugunYmdLocal(vade)
 }
 
-function sumOdeme(tutarlar: { tutar: { toString: () => string } }[]): number {
-  return tutarlar.reduce((s, o) => s + Number(o.tutar), 0)
-}
-
-function fmt(n: number): string {
-  return (Math.round(n * 100) / 100).toFixed(2)
-}
-
-/** kalan > 0 ise vade tarihine göre sınıflandırır. */
+/** kalan > 0 ise vade tarihine göre sınıflandırır (Decimal). */
 export function siniflaTaksitUyari(
   vadeTarihi: Date,
-  kalanTutar: number,
+  kalanTutar: Prisma.Decimal | string | number,
   bugun = bugunYmdLocal()
 ): TaksitUyariSinif | null {
-  if (!Number.isFinite(kalanTutar) || kalanTutar <= 0.001) return null
+  const kalan = new Prisma.Decimal(kalanTutar)
+  if (kalan.lte(0)) return null
   const v = vadeToYmdLocal(vadeTarihi)
   if (v < bugun) return 'vadesiGecmis'
   if (v === bugun) return 'bugunOdenecek'
@@ -62,13 +70,19 @@ export function siniflaTaksitUyari(
 
 async function countSmmBekleyen(tenantId: string): Promise<number> {
   const [vekalet, icra] = await Promise.all([
-    prisma.vekaletTaksitOdeme.count({ where: { tenantId, smmKesildiMi: false } }),
-    prisma.icraTahsilatOdeme.count({ where: { tenantId, smmKesildiMi: false } })
+    prisma.vekaletTaksitOdeme.count({ where: smmBekleyenWhere(tenantId) }),
+    prisma.icraTahsilatOdeme.count({
+      where: {
+        tenantId,
+        smmKesildiMi: false,
+        // icra ödemelerinde iptal alanı yoksa yalnız smm flag
+      }
+    })
   ])
   return vekalet + icra
 }
 
-/** Kiracı taksit uyarı özeti — vekalet + icra taksitleri, ödeme toplamına göre kalan. */
+/** Kiracı taksit uyarı özeti — vekalet + icra; yalnız aktif ödemeler. */
 export async function getTaksitUyarilariForTenant(tenantId: string): Promise<TaksitUyarilariPayload> {
   const bugun = bugunYmdLocal()
 
@@ -79,7 +93,7 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         odemeDurumu: { not: VekaletTaksitOdemeDurumu.IPTAL }
       },
       include: {
-        odemeler: { select: { tutar: true } },
+        odemeler: { select: odemeAktiflikSelect },
         muvekkil: { select: { gorunenAd: true } },
         dosya: { select: { konuBasligi: true } }
       }
@@ -90,7 +104,7 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         alacak: { durum: { not: 'IPTAL' } }
       },
       include: {
-        odemeler: { select: { tutar: true } },
+        odemeler: { select: { id: true, tutar: true } },
         alacak: {
           include: {
             muvekkil: { select: { gorunenAd: true } },
@@ -108,10 +122,8 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
   const vadesiGecmisListe: TaksitUyariListeSatir[] = []
 
   for (const t of vekaletRows) {
-    const tutar = Number(t.tutar)
-    const odenen = sumOdeme(t.odemeler)
-    const kalan = Math.max(0, tutar - odenen)
-    const sinif = siniflaTaksitUyari(t.vadeTarihi, kalan, bugun)
+    const ozet = computeTaksitOdemeOzeti(t.tutar, t.odemeler)
+    const sinif = siniflaTaksitUyari(t.vadeTarihi, ozet.kalanTutar, bugun)
     if (sinif === 'vadesiGecmis') {
       vadesiGecmisCount += 1
       vadesiGecmisListe.push({
@@ -124,9 +136,9 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         taksitNo: t.taksitNo,
         taksitEtiket: String(t.taksitNo),
         vadeTarihi: vadeToYmdLocal(t.vadeTarihi),
-        tutar: fmt(tutar),
-        odenen: fmt(odenen),
-        kalan: fmt(kalan),
+        tutar: ozet.taksitTutariStr,
+        odenen: ozet.odenenToplamStr,
+        kalan: ozet.kalanTutarStr,
         paraBirimi: t.paraBirimi,
         durum: 'GECIKTI'
       })
@@ -138,9 +150,11 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
   }
 
   for (const t of icraRows) {
-    const tutar = Number(t.tutar)
-    const odenen = sumOdeme(t.odemeler)
-    const kalan = Math.max(0, tutar - odenen)
+    // İcra ödemelerinde ofis soft-delete modeli yok; tutarları Decimal topla.
+    let odenen = new Prisma.Decimal(0)
+    for (const o of t.odemeler) odenen = odenen.plus(o.tutar)
+    const kalanRaw = t.tutar.minus(odenen)
+    const kalan = kalanRaw.isNegative() ? new Prisma.Decimal(0) : kalanRaw
     const sinif = siniflaTaksitUyari(t.vadeTarihi, kalan, bugun)
     const alacak = t.alacak
     const muvekkilAd = alacak.muvekkil?.gorunenAd ?? alacak.borcluAd
@@ -157,9 +171,9 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
         taksitNo: t.taksitNo,
         taksitEtiket: String(t.taksitNo),
         vadeTarihi: vadeToYmdLocal(t.vadeTarihi),
-        tutar: fmt(tutar),
-        odenen: fmt(odenen),
-        kalan: fmt(kalan),
+        tutar: moneyToApiString(t.tutar),
+        odenen: moneyToApiString(odenen),
+        kalan: moneyToApiString(kalan),
         paraBirimi: t.paraBirimi,
         durum: 'GECIKTI'
       })
@@ -183,4 +197,15 @@ export async function getTaksitUyarilariForTenant(tenantId: string): Promise<Tak
     smmBekleyenCount,
     vadesiGecmisListe
   }
+}
+
+/** Test yardımcısı — yalnız aktif ödemeleri toplar. */
+export function sumAktifOdemeForUyari(
+  odemeler: Parameters<typeof filterAktifTahsilatOdemeleri>[0]
+): Prisma.Decimal {
+  let s = new Prisma.Decimal(0)
+  for (const o of filterAktifTahsilatOdemeleri(odemeler)) {
+    s = s.plus((o as { tutar: Prisma.Decimal }).tutar)
+  }
+  return s
 }

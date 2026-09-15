@@ -5,11 +5,14 @@
  * Çalıştırma: npx tsx scripts/masraf-guvenli-sil-quality.ts
  * Gerekli env: aynı quality-phase2 (TEST_BASE_URL, tenant kullanıcıları).
  */
+
 import { createHash, randomBytes } from 'node:crypto'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 type ApiResult = { status: number; body: any }
 
 const BASE = (process.env.TEST_BASE_URL || process.env.API_BASE_URL || 'http://127.0.0.1:4100').replace(/\/$/, '')
+requireSafeTestDatabaseOrExit({ apiUrl: BASE })
 
 async function api(path: string, opts: { method?: string; token?: string; body?: string } = {}): Promise<ApiResult> {
   const res = await fetch(`${BASE}${path}`, {

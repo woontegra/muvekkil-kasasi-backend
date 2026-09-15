@@ -2,13 +2,16 @@
  * Phase-2 E2E: Tenant A (3 rol) + Tenant B (sahip) — yalnızca demo/E2E tenantlar.
  * Migration çalıştırmaz. Canlı müşteri tenantlarına dokunmaz.
  *
- *   npx tsx scripts/e2e-provision-phase2.ts
+ *   TEST_DATABASE_URL=postgresql://…/muvekkil_test npx tsx scripts/e2e-provision-phase2.ts
  */
 import 'dotenv/config'
 import bcrypt from 'bcrypt'
 import type { UserRole } from '@prisma/client'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 import { prisma } from '../src/lib/prisma.js'
 import { provisionTenantWithOwner } from '../src/tenant/provisionTenantWithOwner.js'
+
+requireSafeTestDatabaseOrExit()
 
 const PASS = (process.env.E2E_OWNER_PASSWORD ?? process.env.E2E_PASSWORD ?? 'E2eTestPass123!').trim()
 const NOTE = 'E2E phase2 otomatik test tenantı — müşteri verisi değil'

@@ -50,6 +50,19 @@ function toOfisOdemeYontemi(y: OdemeYontemi): OfisKasaOdemeYontemi {
   return y as OfisKasaOdemeYontemi
 }
 
+/** Onaylı ofis kasa hareketi bağlı tahsilat doğrudan güncellenemez. */
+export function assertOfisHareketGuncellenebilir(
+  ofis: { onayDurumu: string } | null | undefined
+): void {
+  if (ofis?.onayDurumu === OfisKasaOnayDurumu.ONAYLI) {
+    throw new AppError(
+      409,
+      'Onaylanmış tahsilat doğrudan değiştirilemez. Önce mevcut tahsilatı güvenli biçimde silip doğru bilgilerle yeniden kaydedin.',
+      'ONAYLI_TAHSILAT_LOCKED'
+    )
+  }
+}
+
 function vekaletOfisAciklama(muvekkilAd: string, dosyaKonu: string, taksitNo?: number): string {
   const base = `Vekalet tahsilatı - ${muvekkilAd} - ${dosyaKonu}`
   if (taksitNo != null) return `${base} - Taksit No: ${taksitNo}`
@@ -563,7 +576,14 @@ export async function updateVekaletTaksitOdeme(
           vekaletUcreti: true
         }
       },
-      ofisKasaHareket: true
+      ofisKasaHareket: {
+        select: {
+          onayDurumu: true,
+          kurKaynagi: true,
+          tcmbKurTarihi: true,
+          tcmbReferansKur: true
+        }
+      }
     }
   })
   if (!existing) {
@@ -572,6 +592,7 @@ export async function updateVekaletTaksitOdeme(
   if (existing.taksit.odemeDurumu === 'IPTAL') {
     throw new AppError(400, 'İptal edilmiş taksit ödemesi düzenlenemez.', 'INVALID_STATE')
   }
+  assertOfisHareketGuncellenebilir(existing.ofisKasaHareket)
 
   const meta = getRequestMeta(req)
   const odemeTarihi = body.odemeTarihi ?? existing.odemeTarihi

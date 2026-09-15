@@ -2,6 +2,10 @@ import { PrismaClient } from '@prisma/client'
 import { calculateSmsParts } from '../src/tahsilatBildirim/smsParts.js'
 import { MockSmsProvider } from '../src/tahsilatBildirim/providers/smsProvider.js'
 import { ensureSmsWallet, reserveSmsCredit, releaseReservedSmsCredit } from '../src/tahsilatBildirim/smsWallet.service.js'
+import { requireSafeTestDatabaseOrExit, requireSafeMessagingTestOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
+requireSafeMessagingTestOrExit()
 
 const prisma = new PrismaClient()
 

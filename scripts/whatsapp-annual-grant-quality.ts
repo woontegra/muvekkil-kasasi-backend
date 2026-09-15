@@ -6,6 +6,7 @@
  * extendTenantLicense / tryGrant / Website-sim / Admin-sim senaryoları.
  * Production tenantlara toplu 500 dağıtmaz; yalnız test tenant bakiyesini geçici oynar.
  */
+
 import 'dotenv/config'
 import { WhatsAppMesajKrediHareketTipi } from '@prisma/client'
 import { prisma } from '../src/lib/prisma.js'
@@ -19,6 +20,9 @@ import {
   tryGrantAnnualIncludedCreditsAfterLicensePeriod,
   WHATSAPP_YILLIK_DAHIL_KREDI
 } from '../src/tahsilatBildirim/whatsappMesajKredi.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 const TAG = `annual-grant-${Date.now()}`
 

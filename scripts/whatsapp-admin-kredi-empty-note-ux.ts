@@ -2,6 +2,7 @@
  * UX: boş açıklama ile +500 (Woontegra tenant).
  *   npx tsx scripts/whatsapp-admin-kredi-empty-note-ux.ts
  */
+
 import 'dotenv/config'
 import { prisma } from '../src/lib/prisma.js'
 import {
@@ -11,6 +12,9 @@ import {
   getTransactions
 } from '../src/tahsilatBildirim/whatsappMesajKredi.service.js'
 import { adminAdjustTenantWhatsAppKredi } from '../src/admin/adminWhatsAppKredi.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 const TAG = `ux-empty-note-${Date.now()}`
 

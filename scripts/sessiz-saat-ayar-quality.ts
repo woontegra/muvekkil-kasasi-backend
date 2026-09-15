@@ -2,6 +2,7 @@
  * Sessiz saat kolonu / Prisma client uyumu — DB yazmaz, Meta yok.
  *   npx tsx scripts/sessiz-saat-ayar-quality.ts
  */
+
 import 'dotenv/config'
 import { prisma } from '../src/lib/prisma.js'
 import {
@@ -10,6 +11,9 @@ import {
   resetSessizSaatColumnCache
 } from '../src/tahsilatBildirim/sessizSaatColumn.js'
 import { ensureTenantBildirimDefaults, ensureWhatsAppBaglantiRow } from '../src/tahsilatBildirim/settings.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 function assert(c: boolean, m: string): void {
   if (!c) throw new Error(`FAIL: ${m}`)

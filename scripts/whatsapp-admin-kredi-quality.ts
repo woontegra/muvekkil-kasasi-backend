@@ -3,6 +3,7 @@
  *
  *   npm run test:whatsapp-admin-kredi
  */
+
 import 'dotenv/config'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -22,6 +23,9 @@ import {
   adminAdjustTenantWhatsAppKredi,
   adminGetTenantWhatsAppKredi
 } from '../src/admin/adminWhatsAppKredi.service.js'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
+
+requireSafeTestDatabaseOrExit()
 
 const TAG = `quality-wa-admin-kredi-${Date.now()}`
 

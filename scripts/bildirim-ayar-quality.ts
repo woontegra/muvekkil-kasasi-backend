@@ -2,12 +2,15 @@
  * Otomatik bildirim uygunluk + müvekkil/dosya/taksit ayar API testleri.
  * Gerçek WhatsApp çağrısı yok. Yalnızca E2E tenant.
  */
+
 import { PrismaClient, UserRole } from '@prisma/client'
 import { createHash, randomBytes } from 'node:crypto'
+import { requireSafeTestDatabaseOrExit } from '../src/lib/assertSafeTestDatabase.js'
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'development'
 
 const API = process.env.E2E_API_BASE?.replace(/\/$/, '') || 'http://localhost:4100'
+requireSafeTestDatabaseOrExit({ apiUrl: API })
 const PASS = process.env.E2E_PASSWORD || process.env.E2E_OWNER_PASSWORD || 'E2eTestPass123!'
 
 type CookieJar = Map<string, string>

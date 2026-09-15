@@ -24,7 +24,8 @@ import {
   shouldCascadeVekaletTaksitParaBirimi
 } from './vekaletParaBirimi.js'
 
-import { filterAktifTahsilatOdemeleri } from '../lib/tahsilatOdemeAktif.js'
+import { filterAktifTahsilatOdemeleri, isTahsilatOdemeAktif } from '../lib/tahsilatOdemeAktif.js'
+import { smmBekleyenWhere } from '../smm/smm.service.js'
 
 export type TaksitComputedDurum = 'ODENMEDI' | 'KISMI_ODENDI' | 'ODENDI' | 'GECIKTI'
 export type TaksitSmmDurum = 'YOK' | 'BEKLIYOR' | 'KESILDI'
@@ -377,15 +378,11 @@ export async function listSmmBekleyenForDosya(
   if (!dosya) return null
 
   const rows = await prisma.vekaletTaksitOdeme.findMany({
-    where: {
-      tenantId,
-      dosyaId,
-      smmKesildiMi: false,
-      iptalAt: null
-    },
+    where: { ...smmBekleyenWhere(tenantId), dosyaId },
+    include: { ofisKasaHareket: { select: { deletedAt: true } } },
     orderBy: [{ odemeTarihi: 'desc' }, { createdAt: 'desc' }]
   })
-  return rows.map((o) => ({
+  return rows.filter(isTahsilatOdemeAktif).map((o) => ({
     id: o.id,
     odemeId: o.id,
     taksitId: o.taksitId,
