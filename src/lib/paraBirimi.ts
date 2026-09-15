@@ -247,16 +247,6 @@ export function resolveDovizDonusum(opts: {
   }
 }
 
-export function assertGiderParaBirimiTry(paraBirimi: ParaBirimi): void {
-  if (paraBirimi !== ParaBirimi.TRY) {
-    throw new AppError(
-      400,
-      'Ofis kasası giderleri yalnızca Türk Lirası (TRY) cinsinden kaydedilebilir.',
-      'GIDER_TRY_ONLY'
-    )
-  }
-}
-
 export function formatKurOzeti(
   baz: ParaBirimi,
   karsi: ParaBirimi,

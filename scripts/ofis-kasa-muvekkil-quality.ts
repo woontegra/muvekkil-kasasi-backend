@@ -73,6 +73,12 @@ function main(): void {
   const giderClean = createOfisKasaHareketiBodySchema.safeParse(baseGider)
   record('schema-gider-muvekkilsiz', giderClean.success)
 
+  const giderUsd = createOfisKasaHareketiBodySchema.safeParse({ ...baseGider, paraBirimi: 'USD' })
+  record('schema-gider-usd', giderUsd.success)
+
+  const giderEur = createOfisKasaHareketiBodySchema.safeParse({ ...baseGider, paraBirimi: 'EUR' })
+  record('schema-gider-eur', giderEur.success)
+
   const nullMuvekkil = createOfisKasaHareketiBodySchema.safeParse({
     ...baseGelir,
     muvekkilId: null

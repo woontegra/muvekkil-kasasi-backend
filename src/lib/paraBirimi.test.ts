@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { ParaBirimi, Prisma } from '@prisma/client'
 import { AppError } from '../middleware/errorHandler.js'
 import {
-  assertGiderParaBirimiTry,
   resolveDovizDonusum,
   resolveParaBirimi,
   resolvePaymentAmounts
@@ -101,16 +100,6 @@ describe('resolvePaymentAmounts', () => {
         }),
       'KASA_TUTARI_REQUIRED'
     )
-  })
-})
-
-describe('assertGiderParaBirimiTry', () => {
-  it('allows TRY', () => {
-    assert.doesNotThrow(() => assertGiderParaBirimiTry(ParaBirimi.TRY))
-  })
-
-  it('rejects non-TRY', () => {
-    expectAppError(() => assertGiderParaBirimiTry(ParaBirimi.USD), 'GIDER_TRY_ONLY')
   })
 })
 

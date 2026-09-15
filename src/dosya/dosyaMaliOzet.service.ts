@@ -178,8 +178,13 @@ export type MuvekkilKarlilikPayload = {
   /** Ofis Kasası manuel onaylı gelir (kaynakTipi’siz) + DUZELTME neti. */
   ofisGeliri: MoneyByCurrency
   /**
+   * Net’ten düşülen gider (para birimine göre bağımsız).
+   * Şu an: dosya kasası büro karşıladığı (TRY). USD/EUR kovaları ofis gider FX ile genişleyebilir.
+   */
+  gider: MoneyByCurrency
+  /**
    * Net kazanç para birimine göre bağımsız:
-   * gelir (vekalet tahsilatı alacak PB + ofis manuel) − gider (büro karşıladığı, şu an TRY).
+   * gelir (vekalet tahsilatı alacak PB + ofis manuel) − gider (aynı PB).
    */
   netKazanc: MoneyByCurrency
   /** Para birimleri birbirleriyle kıyaslanmaz. */
@@ -406,6 +411,7 @@ async function computeForMuvekkil(
     toplamDosyaMasrafi: moneyToApiString(totalMasraf),
     toplamMasrafAvansiIadesi: moneyToApiString(totalIade),
     ofisGeliri: toMoneyByCurrency(ofisGelir),
+    gider: toMoneyByCurrency(totalGider),
     netKazanc: toMoneyByCurrency(net),
     kazancDagilimi: {
       TRY: pickDagilim(dagilimRows.TRY),

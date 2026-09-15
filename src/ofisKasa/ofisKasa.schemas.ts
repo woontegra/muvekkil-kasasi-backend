@@ -72,17 +72,10 @@ export const createOfisKasaHareketiBodySchema = z
     tahsilatiYapanUserId: z.string().uuid().optional().nullable(),
     /** Yalnızca GELIR — isteğe bağlı müvekkil bağlantısı (dosya dışı ofis geliri). */
     muvekkilId: z.string().uuid().optional().nullable(),
-    /** Hareket para birimi; boş → TRY. GIDER yalnızca TRY. */
+    /** Hareket para birimi; boş → TRY. GELIR/GIDER: TRY | USD | EUR. */
     paraBirimi: optionalParaBirimiSchema
   })
   .superRefine((data, ctx) => {
-    if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.paraBirimi && data.paraBirimi !== 'TRY') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Ofis kasası giderleri yalnızca TRY cinsinden kaydedilebilir.',
-        path: ['paraBirimi']
-      })
-    }
     if (data.islemTipi === OfisKasaIslemTipi.GIDER && data.muvekkilId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

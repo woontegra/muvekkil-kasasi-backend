@@ -17,7 +17,6 @@ import type {
   ListOfisKasaHareketleriQuery
 } from './ofisKasa.schemas.js'
 import {
-  assertGiderParaBirimiTry,
   moneyToApiString,
   PARA_BIRIMLERI,
   rateToApiString,
@@ -580,9 +579,6 @@ export async function createOfisKasaHareketi(
 
   const tutar = new PrismaClient.Decimal(body.tutar)
   const paraBirimi = resolveParaBirimi(body.paraBirimi)
-  if (body.islemTipi === OfisKasaIslemTipi.GIDER) {
-    assertGiderParaBirimiTry(paraBirimi)
-  }
 
   const tahsilati =
     body.islemTipi === OfisKasaIslemTipi.GELIR
@@ -804,7 +800,15 @@ export async function createOfisKasaDuzeltme(
   }
 
   const tutar = new PrismaClient.Decimal(body.tutar)
-  const paraBirimi = resolveParaBirimi(body.paraBirimi ?? orijinal.paraBirimi)
+  const kaynakParaBirimi = resolveParaBirimi(orijinal.paraBirimi)
+  if (body.paraBirimi != null && resolveParaBirimi(body.paraBirimi) !== kaynakParaBirimi) {
+    throw new AppError(
+      400,
+      'Onaylı giderin para birimi düzeltme kaydıyla değiştirilemez. Yanlış kaydı güvenli biçimde silip doğru para birimiyle yeniden girin.',
+      'DUZELTME_PARA_BIRIMI_LOCKED'
+    )
+  }
+  const paraBirimi = kaynakParaBirimi
   let attempts = 0
   while (attempts < 5) {
     attempts += 1
