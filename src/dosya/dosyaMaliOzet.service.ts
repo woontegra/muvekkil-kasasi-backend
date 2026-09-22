@@ -5,6 +5,12 @@ import {
   getAccountingPeriod,
   toLocalYmd
 } from '../lib/accountingPeriod.js'
+import {
+  coercePresetForManualDates,
+  resolveFinancePeriodRange,
+  type FinancePeriodPreset,
+  type FinancePeriodRange
+} from '../lib/financePeriodRange.js'
 import { moneyToApiString } from '../lib/paraBirimi.js'
 import { manuelOfisGelirKaynakWhere } from '../lib/primTahsilatFilter.js'
 import {
@@ -45,6 +51,90 @@ export type DosyaMaliOzetResponse = {
   tumZamanlar: DosyaMaliOzetPayload
   buDonem: DosyaMaliOzetPayload | null
   donemEtiketi: string | null
+  /** Finans dönem meta — periodPreset query ile dolu. */
+  period?: {
+    preset: FinancePeriodPreset
+    bas: string | null
+    bit: string | null
+    etiket: string
+  }
+}
+
+function resolveDosyaMaliFinancePeriod(opts?: {
+  periodPreset?: FinancePeriodPreset
+  bas?: string | null
+  bit?: string | null
+}): FinancePeriodRange {
+  const period = resolveFinancePeriodRange(opts?.periodPreset ?? 'ALL_TIME', {
+    bas: opts?.bas,
+    bit: opts?.bit
+  })
+  if (opts?.periodPreset === 'CUSTOM' || opts?.bas || opts?.bit) {
+    if (opts.bas !== undefined) period.bas = opts.bas
+    if (opts.bit !== undefined) period.bit = opts.bit
+    if (opts.periodPreset) period.preset = opts.periodPreset
+    else period.preset = coercePresetForManualDates(period.bas, period.bit)
+  }
+  return period
+}
+
+export async function getDosyaMaliOzet(
+  tenantId: string,
+  dosyaId: string,
+  opts?: { periodPreset?: FinancePeriodPreset; bas?: string | null; bit?: string | null }
+): Promise<DosyaMaliOzetResponse | null> {
+  const dosya = await prisma.dosya.findFirst({
+    where: { id: dosyaId, tenantId },
+    select: { id: true }
+  })
+  if (!dosya) return null
+
+  const hasFinancePeriodQuery =
+    opts?.periodPreset != null || Boolean(opts?.bas?.trim()) || Boolean(opts?.bit?.trim())
+
+  if (hasFinancePeriodQuery) {
+    const financePeriod = resolveDosyaMaliFinancePeriod(opts)
+    const dates =
+      financePeriod.bas && financePeriod.bit
+        ? periodDates({ bas: financePeriod.bas, bit: financePeriod.bit })
+        : undefined
+
+    const [tumZamanlar, buDonem] = await Promise.all([
+      computeForDosya(tenantId, dosyaId),
+      dates ? computeForDosya(tenantId, dosyaId, dates) : Promise.resolve(null)
+    ])
+
+    return {
+      tumZamanlar,
+      buDonem,
+      donemEtiketi: financePeriod.etiket,
+      period: {
+        preset: financePeriod.preset,
+        bas: financePeriod.bas,
+        bit: financePeriod.bit,
+        etiket: financePeriod.etiket
+      }
+    }
+  }
+
+  const tenant = await prisma.tenant.findUniqueOrThrow({
+    where: { id: tenantId },
+    select: { hesapDonemiModu: true }
+  })
+  const mode = tenant.hesapDonemiModu as AccountingPeriodMode
+  const period = getAccountingPeriod(mode, toLocalYmd())
+  const dates = periodDates(period)
+
+  const [tumZamanlar, buDonem] = await Promise.all([
+    computeForDosya(tenantId, dosyaId),
+    computeForDosya(tenantId, dosyaId, dates)
+  ])
+
+  return {
+    tumZamanlar,
+    buDonem,
+    donemEtiketi: period.etiket
+  }
 }
 
 async function computeForDosya(
@@ -178,36 +268,6 @@ function periodDates(period: { bas: string; bit: string }): { gte: Date; lt: Dat
   return { gte, lt: bitNext }
 }
 
-export async function getDosyaMaliOzet(
-  tenantId: string,
-  dosyaId: string
-): Promise<DosyaMaliOzetResponse | null> {
-  const dosya = await prisma.dosya.findFirst({
-    where: { id: dosyaId, tenantId },
-    select: { id: true }
-  })
-  if (!dosya) return null
-
-  const tenant = await prisma.tenant.findUniqueOrThrow({
-    where: { id: tenantId },
-    select: { hesapDonemiModu: true }
-  })
-  const mode = tenant.hesapDonemiModu as AccountingPeriodMode
-  const period = getAccountingPeriod(mode, toLocalYmd())
-  const dates = periodDates(period)
-
-  const [tumZamanlar, buDonem] = await Promise.all([
-    computeForDosya(tenantId, dosyaId),
-    computeForDosya(tenantId, dosyaId, dates)
-  ])
-
-  return {
-    tumZamanlar,
-    buDonem,
-    donemEtiketi: period.etiket
-  }
-}
-
 export type MuvekkilKarlilikDosya = {
   dosyaId: string
   konuBasligi: string
@@ -250,10 +310,37 @@ export type MuvekkilKarlilikPayload = {
   kazancDagilimi: Record<KarlilikCurrency, MuvekkilKarlilikDagilim | null>
 }
 
+export type MuvekkilKarlilikPeriodMeta = {
+  preset: FinancePeriodPreset
+  bas: string | null
+  bit: string | null
+  etiket: string
+}
+
 export type MuvekkilKarlilikResponse = {
   tumZamanlar: MuvekkilKarlilikPayload
   buDonem: MuvekkilKarlilikPayload | null
   donemEtiketi: string | null
+  /** Seçilen finans dönemi — Ofis Kasası `period` sözleşmesi ile aynı. */
+  period: MuvekkilKarlilikPeriodMeta
+}
+
+function resolveKarlilikFinancePeriod(opts?: {
+  periodPreset?: FinancePeriodPreset
+  bas?: string | null
+  bit?: string | null
+}): FinancePeriodRange {
+  const period = resolveFinancePeriodRange(opts?.periodPreset ?? 'ALL_TIME', {
+    bas: opts?.bas,
+    bit: opts?.bit
+  })
+  if (opts?.periodPreset === 'CUSTOM' || opts?.bas || opts?.bit) {
+    if (opts.bas !== undefined) period.bas = opts.bas
+    if (opts.bit !== undefined) period.bit = opts.bit
+    if (opts.periodPreset) period.preset = opts.periodPreset
+    else period.preset = coercePresetForManualDates(period.bas, period.bit)
+  }
+  return period
 }
 
 async function loadManuelOfisGelirBuckets(
@@ -541,7 +628,8 @@ async function computeForMuvekkil(
 
 export async function getMuvekkilKarlilik(
   tenantId: string,
-  muvekkilId: string
+  muvekkilId: string,
+  opts?: { periodPreset?: FinancePeriodPreset; bas?: string | null; bit?: string | null }
 ): Promise<MuvekkilKarlilikResponse | null> {
   const muvekkil = await prisma.muvekkil.findFirst({
     where: { id: muvekkilId, tenantId },
@@ -549,13 +637,42 @@ export async function getMuvekkilKarlilik(
   })
   if (!muvekkil) return null
 
+  const hasFinancePeriodQuery =
+    opts?.periodPreset != null || Boolean(opts?.bas?.trim()) || Boolean(opts?.bit?.trim())
+
+  if (hasFinancePeriodQuery) {
+    const financePeriod = resolveKarlilikFinancePeriod(opts)
+    const dates =
+      financePeriod.bas && financePeriod.bit
+        ? periodDates({ bas: financePeriod.bas, bit: financePeriod.bit })
+        : undefined
+
+    const [tumZamanlar, buDonem] = await Promise.all([
+      computeForMuvekkil(tenantId, muvekkilId),
+      dates ? computeForMuvekkil(tenantId, muvekkilId, dates) : Promise.resolve(null)
+    ])
+
+    return {
+      tumZamanlar,
+      buDonem,
+      donemEtiketi: financePeriod.etiket,
+      period: {
+        preset: financePeriod.preset,
+        bas: financePeriod.bas,
+        bit: financePeriod.bit,
+        etiket: financePeriod.etiket
+      }
+    }
+  }
+
   const tenant = await prisma.tenant.findUniqueOrThrow({
     where: { id: tenantId },
     select: { hesapDonemiModu: true }
   })
   const mode = tenant.hesapDonemiModu as AccountingPeriodMode
-  const period = getAccountingPeriod(mode, toLocalYmd())
-  const dates = periodDates(period)
+  const accountingPeriod = getAccountingPeriod(mode, toLocalYmd())
+  const dates = periodDates(accountingPeriod)
+  const financeFallback = resolveFinancePeriodRange('THIS_MONTH')
 
   const [tumZamanlar, buDonem] = await Promise.all([
     computeForMuvekkil(tenantId, muvekkilId),
@@ -565,6 +682,12 @@ export async function getMuvekkilKarlilik(
   return {
     tumZamanlar,
     buDonem,
-    donemEtiketi: period.etiket
+    donemEtiketi: accountingPeriod.etiket,
+    period: {
+      preset: 'THIS_MONTH',
+      bas: financeFallback.bas,
+      bit: financeFallback.bit,
+      etiket: accountingPeriod.etiket
+    }
   }
 }

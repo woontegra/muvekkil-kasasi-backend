@@ -12,9 +12,29 @@ import {
   resolveAktifManuelKalem
 } from '../finansKalemi/finansKalemi.service.js'
 import { FinansKalemTuru } from '@prisma/client'
+import { computeBalanceImpact, computeEskiYeniTutar } from '../lib/duzeltmeBalanceImpact.js'
+import {
+  groupDuzeltmeWithParents,
+  paginateGroups,
+  type DuzeltmeGroupable
+} from '../lib/duzeltmeGrouping.js'
+import { financePeriodToDateFilter } from '../lib/financePeriodRange.js'
 
 export type KasaHareketiWithOrijinal = KasaHareketi & {
-  orijinalHareket?: { id: string; belgeNo: string } | null
+  orijinalHareket?: {
+    id: string
+    belgeNo: string
+    tarih?: Date
+    tutar?: Prisma.Decimal
+    tip?: KasaHareketTipi
+  } | null
+  duzeltmeler?: Array<{ id: string }>
+  createdBy?: { id: string; adSoyad: string; kullaniciAdi: string } | null
+  _groupMeta?: {
+    duzeltildi: boolean
+    orphanWarning: boolean
+    economicTarih: Date
+  }
 }
 
 function decimalToString(d: Prisma.Decimal): string {
@@ -22,6 +42,23 @@ function decimalToString(d: Prisma.Decimal): string {
 }
 
 export function serializeKasaHareketi(h: KasaHareketiWithOrijinal): Record<string, unknown> {
+  const isDuz = h.tip === KasaHareketTipi.DUZELTME
+  const economicTarih =
+    h._groupMeta?.economicTarih ?? (isDuz ? h.orijinalHareket?.tarih ?? h.tarih : h.tarih)
+  const duzeltildi = h._groupMeta?.duzeltildi ?? Boolean(h.duzeltmeler && h.duzeltmeler.length > 0 && !isDuz)
+  const orphanWarning = h._groupMeta?.orphanWarning ?? (isDuz && !h.orijinalHareketId)
+  let bakiyeEtkisi = null as ReturnType<typeof computeBalanceImpact> | null
+  let eskiYeni: { eskiTutar: string; yeniTutar: string } | null = null
+  if (isDuz) {
+    bakiyeEtkisi = computeBalanceImpact(h.tutar, 'TRY')
+    if (h.orijinalHareket?.tutar != null && h.orijinalHareket.tip) {
+      eskiYeni = computeEskiYeniTutar({
+        orijinalTutar: h.orijinalHareket.tutar,
+        duzeltmeTutar: h.tutar,
+        orijinalTip: h.orijinalHareket.tip
+      })
+    }
+  }
   return {
     id: h.id,
     tenantId: h.tenantId,
@@ -29,6 +66,7 @@ export function serializeKasaHareketi(h: KasaHareketiWithOrijinal): Record<strin
     muvekkilId: h.muvekkilId,
     tip: h.tip,
     tarih: h.tarih.toISOString(),
+    economicTarih: economicTarih.toISOString(),
     masrafTuru: h.masrafTuru,
     ozelMasrafAdi: h.ozelMasrafAdi,
     aciklama: h.aciklama,
@@ -42,6 +80,17 @@ export function serializeKasaHareketi(h: KasaHareketiWithOrijinal): Record<strin
     redSebebi: h.redSebebi,
     orijinalHareketId: h.orijinalHareketId,
     orijinalBelgeNo: h.orijinalHareket?.belgeNo ?? null,
+    duzeltildi,
+    orphanWarning,
+    bagliIslemUyari: orphanWarning ? 'Bağlı işlem bulunamadı' : null,
+    bakiyeEtkisi: bakiyeEtkisi?.amount ?? null,
+    bakiyeEtkisiSign: bakiyeEtkisi?.sign ?? null,
+    bakiyeEtkisiDisplay: bakiyeEtkisi?.display ?? null,
+    eskiTutar: eskiYeni?.eskiTutar ?? null,
+    yeniTutar: eskiYeni?.yeniTutar ?? null,
+    duzeltenUserAd: isDuz
+      ? h.createdBy?.adSoyad?.trim() || h.createdBy?.kullaniciAdi?.trim() || null
+      : null,
     otomatikOnayMi: h.otomatikOnayMi,
     tahsilatiYapanUserId: h.tahsilatiYapanUserId,
     tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
@@ -177,9 +226,7 @@ export async function listKasaHareketleri(
   const dosya = await assertDosyaForKasa(tenantId, dosyaId)
   if (!dosya) return null
 
-  const { q, tip, onayDurumu, page, limit } = query
-  const skip = (page - 1) * limit
-
+  const { q, tip, onayDurumu, startDate, endDate, page, limit } = query
   const searchOr = q.length > 0 ? await buildKasaSearchOr(tenantId, dosyaId, q) : undefined
 
   const where: Prisma.KasaHareketiWhereInput = {
@@ -191,20 +238,93 @@ export async function listKasaHareketleri(
     ...(searchOr && searchOr.length > 0 ? { OR: searchOr } : {})
   }
 
-  const [total, items] = await prisma.$transaction([
-    prisma.kasaHareketi.count({ where }),
-    prisma.kasaHareketi.findMany({
-      where,
-      orderBy: [{ tarih: 'desc' }, { createdAt: 'desc' }],
-      skip,
-      take: limit,
-      include: {
-        orijinalHareket: { select: { id: true, belgeNo: true } }
-      }
-    })
-  ])
+  const matched = await prisma.kasaHareketi.findMany({
+    where,
+    select: { id: true, tip: true, orijinalHareketId: true }
+  })
 
-  return { items: items as KasaHareketiWithOrijinal[], total }
+  const parentIds = new Set<string>()
+  const correctionIds = new Set<string>()
+  for (const m of matched) {
+    if (m.tip === KasaHareketTipi.DUZELTME) {
+      correctionIds.add(m.id)
+      if (m.orijinalHareketId) parentIds.add(m.orijinalHareketId)
+    } else {
+      parentIds.add(m.id)
+    }
+  }
+
+  if (parentIds.size > 0) {
+    const linked = await prisma.kasaHareketi.findMany({
+      where: {
+        tenantId,
+        dosyaId,
+        deletedAt: null,
+        tip: KasaHareketTipi.DUZELTME,
+        orijinalHareketId: { in: [...parentIds] }
+      },
+      select: { id: true }
+    })
+    for (const l of linked) correctionIds.add(l.id)
+  }
+
+  const allIds = [...new Set([...parentIds, ...correctionIds])]
+  if (allIds.length === 0) return { items: [], total: 0 }
+
+  const full = (await prisma.kasaHareketi.findMany({
+    where: { tenantId, dosyaId, deletedAt: null, id: { in: allIds } },
+    include: {
+      orijinalHareket: { select: { id: true, belgeNo: true, tarih: true, tutar: true, tip: true } },
+      duzeltmeler: { where: { deletedAt: null }, select: { id: true } },
+      createdBy: { select: { id: true, adSoyad: true, kullaniciAdi: true } }
+    }
+  })) as KasaHareketiWithOrijinal[]
+
+  type G = KasaHareketiWithOrijinal & DuzeltmeGroupable
+  const groupables: G[] = full.map((h) => {
+    const isDuz = h.tip === KasaHareketTipi.DUZELTME
+    const economicAt = isDuz ? h.orijinalHareket?.tarih ?? h.tarih : h.tarih
+    return { ...h, isDuzeltme: isDuz, economicAt, duzeltmeAt: isDuz ? h.tarih : null }
+  })
+
+  const groups = groupDuzeltmeWithParents(groupables)
+  for (const g of groups) {
+    if (g.parent) {
+      g.parent._groupMeta = {
+        duzeltildi: g.corrections.length > 0,
+        orphanWarning: false,
+        economicTarih: g.economicAt
+      }
+    }
+    for (const c of g.corrections) {
+      c._groupMeta = {
+        duzeltildi: false,
+        orphanWarning: g.orphanWarning || !c.orijinalHareketId,
+        economicTarih: g.economicAt
+      }
+    }
+  }
+
+  // Dönem: grup bütünlüğünü koru — economicAt ile filtrele (Europe/Istanbul gün sınırları)
+  let groupsInPeriod = groups
+  if (startDate || endDate) {
+    const dateFilter = financePeriodToDateFilter({
+      preset: 'CUSTOM',
+      bas: startDate ? startDate.toISOString().slice(0, 10) : null,
+      bit: endDate ? endDate.toISOString().slice(0, 10) : null,
+      etiket: 'Özel'
+    })
+    if (dateFilter) {
+      groupsInPeriod = groups.filter(g => {
+        if (dateFilter.gte && g.economicAt < dateFilter.gte) return false
+        if (dateFilter.lt && g.economicAt >= dateFilter.lt) return false
+        return true
+      })
+    }
+  }
+
+  const paged = paginateGroups(groupsInPeriod, page, limit)
+  return { items: paged.items, total: paged.totalGroups }
 }
 
 const HESAP_OZETI_KASA_LIMIT = 10_000

@@ -63,6 +63,8 @@ dosyalarRouter.get(
       q: req.query.q,
       tip: req.query.tip,
       onayDurumu: req.query.onayDurumu,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
       page: req.query.page,
       limit: req.query.limit
     })
@@ -240,7 +242,17 @@ dosyalarRouter.get(
   asyncHandler(async (req, res) => {
     const { id: dosyaId } = idParamSchema.parse(req.params)
     const tenantId = req.auth!.tenantId
-    const data = await getDosyaMaliOzet(tenantId, dosyaId)
+    const periodPreset =
+      typeof req.query.periodPreset === 'string' && req.query.periodPreset.trim()
+        ? (req.query.periodPreset.trim() as import('../lib/financePeriodRange.js').FinancePeriodPreset)
+        : undefined
+    const bas = typeof req.query.bas === 'string' ? req.query.bas : undefined
+    const bit = typeof req.query.bit === 'string' ? req.query.bit : undefined
+    const data = await getDosyaMaliOzet(tenantId, dosyaId, {
+      periodPreset,
+      bas,
+      bit
+    })
     if (!data) {
       res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Dosya bulunamadı.' })
       return

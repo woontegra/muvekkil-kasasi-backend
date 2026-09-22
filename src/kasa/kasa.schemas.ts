@@ -117,6 +117,14 @@ export const listKasaHareketleriQuerySchema = z.object({
     (v) => (v === '' || v === undefined || v === null ? undefined : v),
     z.nativeEnum(KasaOnayDurumu).optional()
   ),
+  startDate: z.preprocess(
+    (v) => (v === '' || v === undefined || v === null ? undefined : v),
+    z.coerce.date().optional()
+  ),
+  endDate: z.preprocess(
+    (v) => (v === '' || v === undefined || v === null ? undefined : v),
+    z.coerce.date().optional()
+  ),
   page: z.preprocess((v) => (v === undefined || v === '' ? 1 : Number(v)), z.number().int().min(1)),
   limit: z.preprocess((v) => (v === undefined || v === '' ? 50 : Number(v)), z.number().int().min(1).max(200))
 })

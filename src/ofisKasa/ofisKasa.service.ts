@@ -37,6 +37,29 @@ import {
   isCurrentAccountingPeriod,
   canGoToNextAccountingPeriod
 } from '../lib/accountingPeriod.js'
+import {
+  computeBalanceImpact,
+  computeEskiYeniTutar
+} from '../lib/duzeltmeBalanceImpact.js'
+import {
+  groupDuzeltmeWithParents,
+  paginateGroups,
+  type DuzeltmeGroupable
+} from '../lib/duzeltmeGrouping.js'
+import {
+  coercePresetForManualDates,
+  resolveFinancePeriodRange,
+  type FinancePeriodPreset,
+  type FinancePeriodRange
+} from '../lib/financePeriodRange.js'
+import {
+  aggregateOfisRows,
+  loadApprovedOfisRows,
+  ofisEconomicDate,
+  bucketToApi,
+  periodBucketToApi
+} from '../lib/ofisKasaEconomicAgg.js'
+import { PARA_BIRIMLERI as PB_LIST } from '../lib/paraBirimi.js'
 
 export const OFIS_KASA_DUZELTME_KATEGORI = 'Düzeltme'
 
@@ -45,10 +68,23 @@ export const OFIS_KASA_KAYNAK_VEKALET_TAHSILATI = 'VEKALET_TAHSILATI'
 export const OFIS_KASA_KATEGORI_VEKALET_TAHSILATI = 'Vekalet Ücreti Tahsilatı'
 
 export type OfisKasaHareketiWithOrijinal = OfisKasaHareketi & {
-  orijinalHareket?: { id: string; belgeNo: string } | null
+  orijinalHareket?: {
+    id: string
+    belgeNo: string
+    tarih?: Date
+    tutar?: Prisma.Decimal
+    islemTipi?: OfisKasaIslemTipi
+  } | null
+  duzeltmeler?: Array<{ id: string }>
   muvekkil?: { id: string; gorunenAd: string; aktifMi: boolean } | null
   tahsilatiYapanPersonel?: { id: string; adSoyad: string } | null
   createdBy?: { id: string; adSoyad: string; kullaniciAdi: string } | null
+  /** Serialize yardımcıları (liste sonrası) */
+  _groupMeta?: {
+    duzeltildi: boolean
+    orphanWarning: boolean
+    economicTarih: Date
+  }
 }
 
 function decimalToString(d: Prisma.Decimal): string {
@@ -109,11 +145,38 @@ function resolvePersonelAd(h: OfisKasaHareketiWithOrijinal): string | null {
 
 export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Record<string, unknown> {
   const muvekkilAd = resolveMuvekkilAd(h)
+  const isDuz = h.islemTipi === OfisKasaIslemTipi.DUZELTME
+  const economicTarih =
+    h._groupMeta?.economicTarih ??
+    ofisEconomicDate({
+      islemTipi: h.islemTipi,
+      tarih: h.tarih,
+      orijinalTarih: h.orijinalHareket?.tarih ?? null
+    })
+  const duzeltildi =
+    h._groupMeta?.duzeltildi ??
+    (Boolean(h.duzeltmeler && h.duzeltmeler.length > 0) && !isDuz)
+  const orphanWarning = h._groupMeta?.orphanWarning ?? (isDuz && !h.orijinalHareketId)
+
+  let bakiyeEtkisi: ReturnType<typeof computeBalanceImpact> | null = null
+  let eskiYeni: { eskiTutar: string; yeniTutar: string } | null = null
+  if (isDuz) {
+    bakiyeEtkisi = computeBalanceImpact(h.tutar, h.paraBirimi)
+    if (h.orijinalHareket?.tutar != null && h.orijinalHareket.islemTipi) {
+      eskiYeni = computeEskiYeniTutar({
+        orijinalTutar: h.orijinalHareket.tutar,
+        duzeltmeTutar: h.tutar,
+        orijinalTip: h.orijinalHareket.islemTipi
+      })
+    }
+  }
+
   return {
     id: h.id,
     tenantId: h.tenantId,
     islemTipi: h.islemTipi,
     tarih: h.tarih.toISOString(),
+    economicTarih: economicTarih.toISOString(),
     kategori: h.kategori,
     ozelKategoriAdi: h.ozelKategoriAdi,
     aciklama: h.aciklama,
@@ -134,6 +197,20 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
     redSebebi: h.redSebebi,
     orijinalHareketId: h.orijinalHareketId,
     orijinalBelgeNo: h.orijinalHareket?.belgeNo ?? null,
+    orijinalIslemTipi: h.orijinalHareket?.islemTipi ?? null,
+    orijinalTutar: h.orijinalHareket?.tutar != null ? decimalToString(h.orijinalHareket.tutar) : null,
+    duzeltildi,
+    orphanWarning,
+    bagliIslemUyari: orphanWarning ? 'Bağlı işlem bulunamadı' : null,
+    bakiyeEtkisi: bakiyeEtkisi?.amount ?? null,
+    bakiyeEtkisiSign: bakiyeEtkisi?.sign ?? null,
+    bakiyeEtkisiDisplay: bakiyeEtkisi?.display ?? null,
+    eskiTutar: eskiYeni?.eskiTutar ?? null,
+    yeniTutar: eskiYeni?.yeniTutar ?? null,
+    duzeltenUserId: isDuz ? h.createdById : null,
+    duzeltenUserAd: isDuz
+      ? h.createdBy?.adSoyad?.trim() || h.createdBy?.kullaniciAdi?.trim() || null
+      : null,
     otomatikOnayMi: h.otomatikOnayMi,
     tahsilatiYapanUserId: h.tahsilatiYapanUserId,
     tahsilatiYapanPersonelId: h.tahsilatiYapanPersonelId,
@@ -160,7 +237,13 @@ export function serializeOfisKasaHareketi(h: OfisKasaHareketiWithOrijinal): Reco
 }
 
 const ofisKasaListInclude = {
-  orijinalHareket: { select: { id: true, belgeNo: true } },
+  orijinalHareket: {
+    select: { id: true, belgeNo: true, tarih: true, tutar: true, islemTipi: true }
+  },
+  duzeltmeler: {
+    where: { deletedAt: null },
+    select: { id: true }
+  },
   muvekkil: { select: { id: true, gorunenAd: true, aktifMi: true } },
   tahsilatiYapanPersonel: { select: { id: true, adSoyad: true } },
   createdBy: { select: { id: true, adSoyad: true, kullaniciAdi: true } }
@@ -232,25 +315,33 @@ export async function listOfisKasaHareketleri(
 ): Promise<{ items: OfisKasaHareketiWithOrijinal[]; total: number }> {
   const { q, islemTipi, onayDurumu, kategori, muvekkilId, paraBirimi, startDate, endDate, page, limit } =
     query
-  const skip = (page - 1) * limit
 
-  const tarihFilter: Prisma.DateTimeFilter | undefined =
+  const period: FinancePeriodRange = resolveFinancePeriodRange(
     startDate || endDate
-      ? {
-          ...(startDate ? { gte: startDate } : {}),
-          ...(endDate ? { lte: endDate } : {})
-        }
-      : undefined
+      ? coercePresetForManualDates(
+          startDate ? startDate.toISOString().slice(0, 10) : null,
+          endDate ? endDate.toISOString().slice(0, 10) : null
+        )
+      : 'ALL_TIME',
+    {
+      bas: startDate ? toLocalYmd(startDate) : null,
+      bit: endDate ? toLocalYmd(endDate) : null
+    }
+  )
+  // startDate/endDate already Date from zod — prefer ISO date parts from query dates in TR
+  if (startDate || endDate) {
+    period.bas = startDate ? toLocalYmd(startDate) : null
+    period.bit = endDate ? toLocalYmd(endDate) : null
+    period.preset = coercePresetForManualDates(period.bas, period.bit)
+  }
 
-  const where: Prisma.OfisKasaHareketiWhereInput = {
+  const baseWhere: Prisma.OfisKasaHareketiWhereInput = {
     tenantId,
     deletedAt: null,
-    ...(islemTipi ? { islemTipi } : {}),
     ...(onayDurumu ? { onayDurumu } : {}),
     ...(kategori ? { kategori } : {}),
     ...(muvekkilId ? { muvekkilId } : {}),
     ...(paraBirimi ? { paraBirimi } : {}),
-    ...(tarihFilter ? { tarih: tarihFilter } : {}),
     ...(q.length > 0
       ? {
           OR: [
@@ -265,18 +356,127 @@ export async function listOfisKasaHareketleri(
       : {})
   }
 
-  const [total, items] = await prisma.$transaction([
-    prisma.ofisKasaHareketi.count({ where }),
-    prisma.ofisKasaHareketi.findMany({
-      where,
-      orderBy: [{ tarih: 'desc' }, { createdAt: 'desc' }],
-      skip,
-      take: limit,
-      include: ofisKasaListInclude
+  // Ekonomik dönem: non-duzeltme.tarih veya duzeltme→parent.tarih
+  const dateOr: Prisma.OfisKasaHareketiWhereInput[] = []
+  if (period.bas || period.bit) {
+    const gte = period.bas ? new Date(`${period.bas}T00:00:00+03:00`) : undefined
+    const lt = period.bit
+      ? (() => {
+          const d = new Date(`${period.bit}T00:00:00+03:00`)
+          d.setDate(d.getDate() + 1)
+          return d
+        })()
+      : undefined
+    const tarihRange: Prisma.DateTimeFilter = {
+      ...(gte ? { gte } : {}),
+      ...(lt ? { lt } : {})
+    }
+    dateOr.push({
+      islemTipi: { not: OfisKasaIslemTipi.DUZELTME },
+      tarih: tarihRange
     })
-  ])
+    dateOr.push({
+      islemTipi: OfisKasaIslemTipi.DUZELTME,
+      orijinalHareket: { is: { tarih: tarihRange } }
+    })
+    dateOr.push({
+      islemTipi: OfisKasaIslemTipi.DUZELTME,
+      orijinalHareketId: null,
+      tarih: tarihRange
+    })
+  }
 
-  return { items: items as OfisKasaHareketiWithOrijinal[], total }
+  const where: Prisma.OfisKasaHareketiWhereInput = {
+    ...baseWhere,
+    ...(islemTipi ? { islemTipi } : {}),
+    ...(dateOr.length > 0 ? { OR: dateOr } : {})
+  }
+
+  const matched = (await prisma.ofisKasaHareketi.findMany({
+    where,
+    select: { id: true, islemTipi: true, orijinalHareketId: true }
+  })) as Array<{ id: string; islemTipi: OfisKasaIslemTipi; orijinalHareketId: string | null }>
+
+  const parentIds = new Set<string>()
+  const correctionIds = new Set<string>()
+  for (const m of matched) {
+    if (m.islemTipi === OfisKasaIslemTipi.DUZELTME) {
+      correctionIds.add(m.id)
+      if (m.orijinalHareketId) parentIds.add(m.orijinalHareketId)
+    } else {
+      parentIds.add(m.id)
+    }
+  }
+
+  // Tip filtresi GELIR vb. iken bağlı düzeltmeleri de getir
+  if (parentIds.size > 0) {
+    const linked = await prisma.ofisKasaHareketi.findMany({
+      where: {
+        tenantId,
+        deletedAt: null,
+        islemTipi: OfisKasaIslemTipi.DUZELTME,
+        orijinalHareketId: { in: [...parentIds] }
+      },
+      select: { id: true }
+    })
+    for (const l of linked) correctionIds.add(l.id)
+  }
+
+  // Düzeltme filtresinde parent'ı da getir
+  if (islemTipi === OfisKasaIslemTipi.DUZELTME && parentIds.size > 0) {
+    // parents already in parentIds
+  } else if (correctionIds.size > 0 && !islemTipi) {
+    // ok
+  }
+
+  const allIds = new Set<string>([...parentIds, ...correctionIds])
+  if (allIds.size === 0) {
+    return { items: [], total: 0 }
+  }
+
+  const full = (await prisma.ofisKasaHareketi.findMany({
+    where: { tenantId, deletedAt: null, id: { in: [...allIds] } },
+    include: ofisKasaListInclude
+  })) as OfisKasaHareketiWithOrijinal[]
+
+  type G = OfisKasaHareketiWithOrijinal & DuzeltmeGroupable
+  const groupables: G[] = full.map((h) => {
+    const isDuz = h.islemTipi === OfisKasaIslemTipi.DUZELTME
+    const economicAt = ofisEconomicDate({
+      islemTipi: h.islemTipi,
+      tarih: h.tarih,
+      orijinalTarih: h.orijinalHareket?.tarih ?? null
+    })
+    return {
+      ...h,
+      isDuzeltme: isDuz,
+      economicAt,
+      duzeltmeAt: isDuz ? h.tarih : null
+    }
+  })
+
+  const groups = groupDuzeltmeWithParents(groupables)
+  for (const g of groups) {
+    const hasCorrections = g.corrections.length > 0
+    if (g.parent) {
+      g.parent._groupMeta = {
+        duzeltildi: hasCorrections,
+        orphanWarning: false,
+        economicTarih: g.economicAt
+      }
+    }
+    for (const c of g.corrections) {
+      c._groupMeta = {
+        duzeltildi: false,
+        orphanWarning: g.orphanWarning || !c.orijinalHareketId,
+        economicTarih: g.economicAt
+      }
+    }
+  }
+
+  const paged = paginateGroups(groups, page, limit)
+  // total = grup sayısı (sayfalama grup bazlı)
+  return { items: paged.items, total: paged.totalGroups }
 }
 
 /** Müvekkil detayı: dosya dışı ofis gelirleri (GELIR + bağlı müvekkil). */
@@ -343,7 +543,10 @@ async function aggregateApprovedByCurrency(
   return buckets
 }
 
-export async function getOfisKasaOzet(tenantId: string): Promise<{
+export async function getOfisKasaOzet(
+  tenantId: string,
+  opts?: { periodPreset?: FinancePeriodPreset; bas?: string | null; bit?: string | null }
+): Promise<{
   toplamGelir: string
   toplamGider: string
   toplamDuzeltme: string
@@ -351,6 +554,7 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
   onaysizIslemSayisi: number
   buAyGelir: string
   buAyGider: string
+  period: { preset: FinancePeriodPreset; bas: string | null; bit: string | null; etiket: string }
   byCurrency: Record<
     ParaBirimi,
     {
@@ -360,21 +564,80 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
       kasaBakiyesi: string
       buAyGelir: string
       buAyGider: string
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNet: string
     }
   >
   bakiyeler: Record<ParaBirimi, string>
+  donem: Record<
+    ParaBirimi,
+    {
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNet: string
+    }
+  >
+  onaysizIslemSayisiDonem: number
 }> {
-  const lifetime = await aggregateApprovedByCurrency(tenantId)
-  const { start, end } = monthRangeLocal(new Date())
-  const monthBuckets = await aggregateApprovedByCurrency(tenantId, { gte: start, lte: end })
+  const period = resolveFinancePeriodRange(opts?.periodPreset ?? 'THIS_MONTH', {
+    bas: opts?.bas,
+    bit: opts?.bit
+  })
+  if (opts?.periodPreset === 'CUSTOM' || opts?.bas || opts?.bit) {
+    if (opts.bas !== undefined) period.bas = opts.bas
+    if (opts.bit !== undefined) period.bit = opts.bit
+    if (opts.periodPreset) period.preset = opts.periodPreset
+    else period.preset = coercePresetForManualDates(period.bas, period.bit)
+  }
+
+  const rows = await loadApprovedOfisRows(tenantId)
+  const lifetime = aggregateOfisRows(rows)
+  const periodBuckets = aggregateOfisRows(rows, period)
+  const thisMonth = resolveFinancePeriodRange('THIS_MONTH')
+  const monthBuckets = aggregateOfisRows(rows, thisMonth)
 
   const onaysizIslemSayisi = await prisma.ofisKasaHareketi.count({
     where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ, deletedAt: null }
   })
 
-  const tryLifetime = lifetime.TRY
+  const onaysizRows = await prisma.ofisKasaHareketi.findMany({
+    where: { tenantId, onayDurumu: OfisKasaOnayDurumu.ONAYSIZ, deletedAt: null },
+    select: {
+      islemTipi: true,
+      tarih: true,
+      orijinalHareket: { select: { tarih: true } }
+    }
+  })
+  let onaysizIslemSayisiDonem = 0
+  if (!period.bas && !period.bit) {
+    onaysizIslemSayisiDonem = onaysizIslemSayisi
+  } else {
+    const gte = period.bas ? new Date(`${period.bas}T00:00:00+03:00`) : null
+    const lt = period.bit
+      ? (() => {
+          const d = new Date(`${period.bit}T00:00:00+03:00`)
+          d.setDate(d.getDate() + 1)
+          return d
+        })()
+      : null
+    for (const r of onaysizRows) {
+      const economicAt = ofisEconomicDate({
+        islemTipi: r.islemTipi,
+        tarih: r.tarih,
+        orijinalTarih: r.orijinalHareket?.tarih ?? null
+      })
+      if (gte && economicAt < gte) continue
+      if (lt && economicAt >= lt) continue
+      onaysizIslemSayisiDonem += 1
+    }
+  }
+
+  const tryLife = lifetime.TRY
   const tryMonth = monthBuckets.TRY
-  const f = (n: number) => n.toFixed(2)
+  const f = (d: PrismaClient.Decimal) => d.toFixed(2)
 
   const byCurrency = {} as Record<
     ParaBirimi,
@@ -385,40 +648,63 @@ export async function getOfisKasaOzet(tenantId: string): Promise<{
       kasaBakiyesi: string
       buAyGelir: string
       buAyGider: string
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNet: string
     }
   >
   const bakiyeler = {} as Record<ParaBirimi, string>
-  for (const pb of PARA_BIRIMLERI) {
+  const donem = {} as Record<
+    ParaBirimi,
+    {
+      donemGelir: string
+      donemGider: string
+      donemDuzeltmeEtkisi: string
+      donemNet: string
+    }
+  >
+
+  for (const pb of PB_LIST) {
     const life = lifetime[pb]
     const month = monthBuckets[pb]
+    const per = periodBuckets[pb]
+    const lifeApi = bucketToApi(life)
+    const perApi = periodBucketToApi(per)
     byCurrency[pb] = {
-      toplamGelir: f(life.toplamGelir),
-      toplamGider: f(life.toplamGider),
-      toplamDuzeltme: f(life.toplamDuzeltme),
-      kasaBakiyesi: f(currencyBucketBalance(life)),
-      buAyGelir: f(month.toplamGelir),
-      buAyGider: f(month.toplamGider)
+      ...lifeApi,
+      buAyGelir: f(month.gelir),
+      buAyGider: f(month.gider),
+      ...perApi
     }
-    bakiyeler[pb] = byCurrency[pb].kasaBakiyesi
+    bakiyeler[pb] = lifeApi.kasaBakiyesi
+    donem[pb] = perApi
   }
 
   return {
-    toplamGelir: f(tryLifetime.toplamGelir),
-    toplamGider: f(tryLifetime.toplamGider),
-    toplamDuzeltme: f(tryLifetime.toplamDuzeltme),
-    kasaBakiyesi: f(currencyBucketBalance(tryLifetime)),
+    toplamGelir: f(tryLife.gelir),
+    toplamGider: f(tryLife.gider),
+    toplamDuzeltme: f(tryLife.duzeltme),
+    kasaBakiyesi: bucketToApi(tryLife).kasaBakiyesi,
     onaysizIslemSayisi,
-    buAyGelir: f(tryMonth.toplamGelir),
-    buAyGider: f(tryMonth.toplamGider),
+    buAyGelir: f(tryMonth.gelir),
+    buAyGider: f(tryMonth.gider),
+    period: {
+      preset: period.preset,
+      bas: period.bas,
+      bit: period.bit,
+      etiket: period.etiket
+    },
     byCurrency,
-    bakiyeler
+    bakiyeler,
+    donem,
+    onaysizIslemSayisiDonem
   }
 }
 
 /**
  * Hesap dönemi bazlı anasayfa özeti — mevcut getOfisKasaOzet'e dokunmaz.
- * Tarih sınırlarında Türkiye yerel günü esas alınır (YYYY-MM-DD karşılaştırma).
- * Yalnızca ONAYLI hareketler dahil; REDDEDILDI/ONAYSIZ hariç tutulur.
+ * Düzeltmeler ekonomik dönemde (parent.tarih) sayılır.
  */
 export async function getOfisKasaAnaSayfaOzet(
   tenantId: string,
@@ -461,50 +747,38 @@ export async function getOfisKasaAnaSayfaOzet(
   const nextDayAfterEnd = new Date(`${period.bit}T00:00:00+03:00`)
   nextDayAfterEnd.setDate(nextDayAfterEnd.getDate() + 1)
 
-  const approvedWhere = {
-    tenantId,
-    onayDurumu: OfisKasaOnayDurumu.ONAYLI,
-    deletedAt: null
-  } as const
+  const rows = await loadApprovedOfisRows(tenantId)
+  const economicPeriod = resolveFinancePeriodRange('CUSTOM', {
+    bas: period.bas,
+    bit: period.bit
+  })
+  const lifeAgg = aggregateOfisRows(rows)
+  const periodAgg = aggregateOfisRows(rows, economicPeriod)
 
-  const [allBeforePeriod, periodRows, lifetimeBuckets] = await Promise.all([
-    prisma.ofisKasaHareketi.findMany({
-      where: { ...approvedWhere, tarih: { lt: periodStartDate } },
-      select: { islemTipi: true, tutar: true, paraBirimi: true }
-    }),
-    prisma.ofisKasaHareketi.findMany({
-      where: { ...approvedWhere, tarih: { gte: periodStartDate, lt: nextDayAfterEnd } },
-      select: { islemTipi: true, tutar: true, tarih: true, paraBirimi: true }
-    }),
-    aggregateApprovedByCurrency(tenantId)
-  ])
-
-  const devBuckets = emptyCurrencyBuckets()
-  for (const r of allBeforePeriod) {
-    applyToCurrencyBucket(devBuckets, r.islemTipi, r.paraBirimi, Number(r.tutar))
-  }
-
-  const periodBuckets = emptyCurrencyBuckets()
-  const bugunGiderByPb = emptyCurrencyBuckets()
   const bugun = toLocalYmd()
-  for (const r of periodRows) {
-    const t = Number(r.tutar)
-    applyToCurrencyBucket(periodBuckets, r.islemTipi, r.paraBirimi, t)
-    const tarihYmd = r.tarih.toISOString().slice(0, 10)
-    if (r.islemTipi === OfisKasaIslemTipi.GIDER && tarihYmd === bugun) {
-      bugunGiderByPb[r.paraBirimi].toplamGider += t
+  const bugunGiderByPb = emptyCurrencyBuckets()
+  const devBuckets = emptyCurrencyBuckets()
+  for (const r of rows) {
+    const economicAt = ofisEconomicDate(r)
+    if (economicAt < periodStartDate) {
+      applyToCurrencyBucket(devBuckets, r.islemTipi, r.paraBirimi as ParaBirimi, Number(r.tutar))
+    }
+    if (
+      r.islemTipi === OfisKasaIslemTipi.GIDER &&
+      r.tarih.toISOString().slice(0, 10) === bugun
+    ) {
+      bugunGiderByPb[r.paraBirimi as ParaBirimi].toplamGider += Number(r.tutar)
     }
   }
 
-  const tryDev = devBuckets.TRY
-  const tryPeriod = periodBuckets.TRY
-  const tryLifetime = lifetimeBuckets.TRY
-  const devredenBakiye = currencyBucketBalance(tryDev)
-  const donemGelir = tryPeriod.toplamGelir
-  const donemGider = tryPeriod.toplamGider
-  const donemDuz = tryPeriod.toplamDuzeltme
+  const tryDev = currencyBucketBalance(devBuckets.TRY)
+  const tryPeriod = periodAgg.TRY
+  const tryLife = lifeAgg.TRY
+  const donemGelir = Number(tryPeriod.gelir)
+  const donemGider = Number(tryPeriod.gider)
+  const donemDuz = Number(tryPeriod.duzeltme)
   const donemNet = donemGelir - donemGider + donemDuz
-  const kasaBakiyesi = currencyBucketBalance(tryLifetime)
+  const kasaBakiyesi = Number(bucketToApi(tryLife).kasaBakiyesi)
   const bugunGider = bugunGiderByPb.TRY.toplamGider
 
   const f = (n: number) => n.toFixed(2)
@@ -521,18 +795,17 @@ export async function getOfisKasaAnaSayfaOzet(
     }
   >
   const bakiyeler = {} as Record<ParaBirimi, string>
-  for (const pb of PARA_BIRIMLERI) {
-    const dev = devBuckets[pb]
-    const per = periodBuckets[pb]
-    const life = lifetimeBuckets[pb]
-    const net = per.toplamGelir - per.toplamGider + per.toplamDuzeltme
+  for (const pb of PB_LIST) {
+    const per = periodAgg[pb]
+    const life = lifeAgg[pb]
+    const net = Number(per.gelir) - Number(per.gider) + Number(per.duzeltme)
     byCurrency[pb] = {
-      devredenBakiye: f(currencyBucketBalance(dev)),
-      donemGelir: f(per.toplamGelir),
-      donemGider: f(per.toplamGider),
-      donemDuzeltmeEtkisi: f(per.toplamDuzeltme),
+      devredenBakiye: f(currencyBucketBalance(devBuckets[pb])),
+      donemGelir: per.gelir.toFixed(2),
+      donemGider: per.gider.toFixed(2),
+      donemDuzeltmeEtkisi: per.duzeltme.toFixed(2),
       donemNetSonucu: f(net),
-      kasaBakiyesi: f(currencyBucketBalance(life)),
+      kasaBakiyesi: bucketToApi(life).kasaBakiyesi,
       bugunGider: f(bugunGiderByPb[pb].toplamGider)
     }
     bakiyeler[pb] = byCurrency[pb].kasaBakiyesi
@@ -543,7 +816,7 @@ export async function getOfisKasaAnaSayfaOzet(
     period: { bas: period.bas, bit: period.bit, etiket: period.etiket },
     isCurrent: isCurrentAccountingPeriod(period),
     canGoNext: canGoToNextAccountingPeriod(period),
-    devredenBakiye: f(devredenBakiye),
+    devredenBakiye: f(tryDev),
     donemGelir: f(donemGelir),
     donemGider: f(donemGider),
     donemDuzeltmeEtkisi: f(donemDuz),

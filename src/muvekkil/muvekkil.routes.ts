@@ -187,7 +187,37 @@ muvekkillerRouter.get(
   asyncHandler(async (req, res) => {
     const { id } = idParamSchema.parse(req.params)
     const tenantId = req.auth!.tenantId
-    const data = await getMuvekkilKarlilik(tenantId, id)
+    const periodPresetRaw =
+      typeof req.query.periodPreset === 'string' ? req.query.periodPreset : undefined
+    const bas = typeof req.query.bas === 'string' ? req.query.bas : undefined
+    const bit = typeof req.query.bit === 'string' ? req.query.bit : undefined
+    const allowed = new Set([
+      'THIS_MONTH',
+      'LAST_MONTH',
+      'LAST_3_MONTHS',
+      'LAST_6_MONTHS',
+      'LAST_12_MONTHS',
+      'THIS_YEAR',
+      'ALL_TIME',
+      'CUSTOM'
+    ])
+    const periodPreset =
+      periodPresetRaw && allowed.has(periodPresetRaw)
+        ? (periodPresetRaw as
+            | 'THIS_MONTH'
+            | 'LAST_MONTH'
+            | 'LAST_3_MONTHS'
+            | 'LAST_6_MONTHS'
+            | 'LAST_12_MONTHS'
+            | 'THIS_YEAR'
+            | 'ALL_TIME'
+            | 'CUSTOM')
+        : undefined
+    const data = await getMuvekkilKarlilik(tenantId, id, {
+      periodPreset,
+      bas: bas ?? null,
+      bit: bit ?? null
+    })
     if (!data) {
       res.status(404).json({ ok: false, error: 'NOT_FOUND', message: 'Müvekkil bulunamadı.' })
       return

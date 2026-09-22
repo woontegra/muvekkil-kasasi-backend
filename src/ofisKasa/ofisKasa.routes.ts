@@ -52,7 +52,37 @@ ofisKasasiRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const tenantId = req.auth!.tenantId
-    const ozet = await getOfisKasaOzet(tenantId)
+    const periodPresetRaw =
+      typeof req.query.periodPreset === 'string' ? req.query.periodPreset : undefined
+    const bas = typeof req.query.bas === 'string' ? req.query.bas : undefined
+    const bit = typeof req.query.bit === 'string' ? req.query.bit : undefined
+    const allowed = new Set([
+      'THIS_MONTH',
+      'LAST_MONTH',
+      'LAST_3_MONTHS',
+      'LAST_6_MONTHS',
+      'LAST_12_MONTHS',
+      'THIS_YEAR',
+      'ALL_TIME',
+      'CUSTOM'
+    ])
+    const periodPreset =
+      periodPresetRaw && allowed.has(periodPresetRaw)
+        ? (periodPresetRaw as
+            | 'THIS_MONTH'
+            | 'LAST_MONTH'
+            | 'LAST_3_MONTHS'
+            | 'LAST_6_MONTHS'
+            | 'LAST_12_MONTHS'
+            | 'THIS_YEAR'
+            | 'ALL_TIME'
+            | 'CUSTOM')
+        : undefined
+    const ozet = await getOfisKasaOzet(tenantId, {
+      periodPreset,
+      bas: bas ?? null,
+      bit: bit ?? null
+    })
     res.json({ ok: true, ozet })
   })
 )
