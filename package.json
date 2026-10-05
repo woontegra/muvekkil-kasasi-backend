@@ -44,9 +44,12 @@
     "test:license-reminder": "tsx scripts/license-expiry-reminder-quality.ts",
     "test:randevu": "tsx scripts/randevu-quality.ts",
     "test:ofis-kasa-muvekkil": "tsx scripts/ofis-kasa-muvekkil-quality.ts",
-    "test:vekalet-para-birimi": "tsx --test src/vekalet/vekaletParaBirimi.test.ts src/lib/paraBirimi.test.ts && tsx scripts/vekalet-para-birimi-quality.ts"
+    "test:vekalet-para-birimi": "tsx --test src/vekalet/vekaletParaBirimi.test.ts src/lib/paraBirimi.test.ts && tsx scripts/vekalet-para-birimi-quality.ts",
+    "backup:tenants": "tsx scripts/backup-tenants.ts",
+    "test:backup": "tsx --test src/backup/backup.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
     "@prisma/client": "^6.19.0",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^11.10.0",
