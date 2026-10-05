@@ -1,10 +1,12 @@
 import {
   DeleteObjectsCommand,
+  GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client
 } from '@aws-sdk/client-s3'
 import { BackupTenantError } from './backupErrors.js'
+import { BACKUP_OBJECT_KEY_RE } from './backupObjectKey.js'
 import { assertObjectUpload, type BackupObjectHead, type BackupObjectStore } from './backupStore.js'
 
 export type R2StoreConfig = {
@@ -17,6 +19,7 @@ export type R2StoreConfig = {
 
 export type R2BackupStore = BackupObjectStore & {
   listObjectHeads: (prefix: string) => Promise<BackupObjectHead[]>
+  getObject: (key: string) => Promise<Buffer | null>
 }
 
 export function createR2BackupStore(cfg: R2StoreConfig): R2BackupStore {
@@ -84,6 +87,20 @@ export function createR2BackupStore(cfg: R2StoreConfig): R2BackupStore {
       } while (token)
       return heads
     },
+    async getObject(key) {
+      if (!BACKUP_OBJECT_KEY_RE.test(key) || key.includes('@') || key.includes('..')) {
+        throw new BackupTenantError('OBJECT_KEY_REJECTED', 'get')
+      }
+      try {
+        const out = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: key }))
+        if (!out.Body) return null
+        const bytes = await out.Body.transformToByteArray()
+        return Buffer.from(bytes)
+      } catch (err) {
+        if (isMissingObject(err)) return null
+        throw new BackupTenantError('RESTORE_OBJECT_READ_FAILED', 'get')
+      }
+    },
     async deleteKeys(keys) {
       if (keys.length === 0) return
       for (let i = 0; i < keys.length; i += 1000) {
@@ -103,4 +120,12 @@ export function createR2BackupStore(cfg: R2StoreConfig): R2BackupStore {
       }
     }
   }
+}
+
+function isMissingObject(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const name = 'name' in err ? String((err as { name: unknown }).name) : ''
+  if (name === 'NoSuchKey' || name === 'NotFound') return true
+  const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
+  return status === 404
 }

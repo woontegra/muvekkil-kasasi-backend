@@ -1,12 +1,16 @@
 import { prisma } from '../lib/prisma.js'
+import { BackupTenantError } from './backupErrors.js'
+import { assertTenantUuid } from './backupObjectKey.js'
 import { loadBackupListEnv } from './backupEnv.js'
 import {
   backupCatalogWhere,
+  backupDaysForTenant,
   createBackupCatalogLoader,
   type BackupCatalogQuery,
   type CatalogTenantRow
 } from './backupCatalog.js'
 import { createR2BackupStore } from './backupR2.js'
+import { shouldBackupTenant } from './backupTables.js'
 
 const ownerSelect = {
   where: { role: 'BURO_SAHIBI' as const },
@@ -80,4 +84,25 @@ export function clearBackupCatalogCache(): void {
 
 export function getBackupCatalog(query: BackupCatalogQuery) {
   return loader.load(query)
+}
+
+export async function getTenantBackupDays(tenantId: string) {
+  assertTenantUuid(tenantId)
+  const id = tenantId.toLowerCase()
+  const tenant = await prisma.tenant.findUnique({
+    where: { id },
+    select: { id: true, buroAdi: true, eposta: true, lisansDurumu: true, demoMu: true }
+  })
+  if (!tenant) throw new BackupTenantError('RESTORE_TENANT_MISSING', 'restore')
+  if (!shouldBackupTenant(tenant)) throw new BackupTenantError('RESTORE_TENANT_INELIGIBLE', 'restore')
+  const index = await loader.objectIndex()
+  return {
+    tenant: {
+      id: tenant.id,
+      buroAdi: tenant.buroAdi,
+      eposta: tenant.eposta,
+      lisansDurumu: tenant.lisansDurumu
+    },
+    days: backupDaysForTenant(index, tenant.id)
+  }
 }

@@ -231,6 +231,24 @@ export function buildCatalogResponse(input: {
   }
 }
 
+export type BackupDayView = {
+  calendarDate: string
+  lastModified: string | null
+  status: 'BASARILI' | 'EKSIK'
+}
+
+export function backupDaysForTenant(index: BackupIndex, tenantId: string): BackupDayView[] {
+  const days = index.get(tenantId.toLowerCase())
+  if (!days) return []
+  return [...days.entries()]
+    .sort((left, right) => (left[0] < right[0] ? 1 : left[0] > right[0] ? -1 : 0))
+    .map(([calendarDate, day]) => ({
+      calendarDate,
+      lastModified: day.lastModified,
+      status: day.snapshot && day.manifest ? 'BASARILI' : 'EKSIK'
+    }))
+}
+
 export function createBackupCatalogLoader(deps: {
   listHeads: () => Promise<BackupObjectHead[]>
   readPage: (query: BackupCatalogQuery) => Promise<{ total: number; rows: CatalogTenantRow[] }>
@@ -239,17 +257,21 @@ export function createBackupCatalogLoader(deps: {
   ttlMs?: number
 }) {
   let cache: { at: number; heads: BackupObjectHead[] } | null = null
+  async function currentIndex(): Promise<BackupIndex> {
+    const now = deps.now?.() ?? Date.now()
+    const ttl = deps.ttlMs ?? DEFAULT_TTL_MS
+    if (!cache || now - cache.at >= ttl) {
+      cache = { at: now, heads: await deps.listHeads() }
+    }
+    return buildBackupIndex(cache.heads)
+  }
   return {
     clear(): void {
       cache = null
     },
+    objectIndex: currentIndex,
     async load(query: BackupCatalogQuery): Promise<BackupCatalogPage> {
-      const now = deps.now?.() ?? Date.now()
-      const ttl = deps.ttlMs ?? DEFAULT_TTL_MS
-      if (!cache || now - cache.at >= ttl) {
-        cache = { at: now, heads: await deps.listHeads() }
-      }
-      const index = buildBackupIndex(cache.heads)
+      const index = await currentIndex()
       const [page, eligibleIds] = await Promise.all([deps.readPage(query), deps.readEligibleIds()])
       return buildCatalogResponse({
         rows: page.rows,

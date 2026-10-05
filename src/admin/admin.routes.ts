@@ -54,8 +54,10 @@ import {
   adminSetSuperAdminActive,
   adminUpdateSuperAdmin
 } from './adminSuperAdmin.service.js'
-import { getBackupCatalog } from '../backup/backupCatalogDb.js'
+import { getBackupCatalog, getTenantBackupDays } from '../backup/backupCatalogDb.js'
 import { createBackupCatalogRouter } from '../backup/backupCatalogRoutes.js'
+import { restoreTenantBackupFromRequest } from '../backup/restore/restoreDb.js'
+import { createBackupRestoreRouter } from '../backup/restore/restoreRoutes.js'
 import {
   adminCreateTenantWithOwner,
   adminDeleteTenant,
@@ -104,6 +106,16 @@ adminRouter.use(
     requireAuth: requireAdminAuth,
     requireSuper: superOnly,
     load: (query) => getBackupCatalog(query)
+  })
+)
+
+adminRouter.use(
+  '/backups',
+  createBackupRestoreRouter({
+    requireAuth: requireAdminAuth,
+    requireSuper: superOnly,
+    loadDays: (tenantId) => getTenantBackupDays(tenantId),
+    restore: (input) => restoreTenantBackupFromRequest(input)
   })
 )
 
