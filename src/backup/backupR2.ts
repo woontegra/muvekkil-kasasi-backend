@@ -5,7 +5,7 @@ import {
   S3Client
 } from '@aws-sdk/client-s3'
 import { BackupTenantError } from './backupErrors.js'
-import { assertObjectUpload, type BackupObjectStore } from './backupStore.js'
+import { assertObjectUpload, type BackupObjectHead, type BackupObjectStore } from './backupStore.js'
 
 export type R2StoreConfig = {
   accountId: string
@@ -15,7 +15,11 @@ export type R2StoreConfig = {
   endpoint: string
 }
 
-export function createR2BackupStore(cfg: R2StoreConfig): BackupObjectStore {
+export type R2BackupStore = BackupObjectStore & {
+  listObjectHeads: (prefix: string) => Promise<BackupObjectHead[]>
+}
+
+export function createR2BackupStore(cfg: R2StoreConfig): R2BackupStore {
   const client = new S3Client({
     region: 'auto',
     endpoint: cfg.endpoint,
@@ -54,6 +58,31 @@ export function createR2BackupStore(cfg: R2StoreConfig): BackupObjectStore {
         token = out.IsTruncated ? out.NextContinuationToken : undefined
       } while (token)
       return keys
+    },
+    async listObjectHeads(prefix) {
+      if (!prefix.startsWith('tenants/') || prefix.includes('@')) {
+        throw new BackupTenantError('LIST_PREFIX_INVALID', 'list')
+      }
+      const heads: BackupObjectHead[] = []
+      let token: string | undefined
+      do {
+        const out = await client.send(
+          new ListObjectsV2Command({
+            Bucket: cfg.bucket,
+            Prefix: prefix,
+            ContinuationToken: token
+          })
+        )
+        for (const obj of out.Contents ?? []) {
+          if (!obj.Key) continue
+          heads.push({
+            key: obj.Key,
+            lastModified: obj.LastModified ? obj.LastModified.toISOString() : null
+          })
+        }
+        token = out.IsTruncated ? out.NextContinuationToken : undefined
+      } while (token)
+      return heads
     },
     async deleteKeys(keys) {
       if (keys.length === 0) return

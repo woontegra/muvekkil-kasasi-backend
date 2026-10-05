@@ -54,6 +54,8 @@ import {
   adminSetSuperAdminActive,
   adminUpdateSuperAdmin
 } from './adminSuperAdmin.service.js'
+import { getBackupCatalog } from '../backup/backupCatalogDb.js'
+import { createBackupCatalogRouter } from '../backup/backupCatalogRoutes.js'
 import {
   adminCreateTenantWithOwner,
   adminDeleteTenant,
@@ -95,6 +97,15 @@ adminRouter.get(
 /** Platform personeli: SUPER_ADMIN, DESTEK, FINANS. */
 const platformStaff = requireAdminRoles('SUPER_ADMIN', 'DESTEK', 'FINANS')
 const superOnly = requireAdminRoles('SUPER_ADMIN')
+
+adminRouter.use(
+  '/backups',
+  createBackupCatalogRouter({
+    requireAuth: requireAdminAuth,
+    requireSuper: superOnly,
+    load: (query) => getBackupCatalog(query)
+  })
+)
 
 adminRouter.get(
   '/settings/profile',

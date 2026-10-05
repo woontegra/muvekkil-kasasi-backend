@@ -439,7 +439,7 @@ describe('tenant backup v1', () => {
   it('has no database write calls in the backup path', () => {
     const files = fs
       .readdirSync(here)
-      .filter((name) => name.endsWith('.ts') && name !== 'backup.test.ts')
+      .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
       .map((name) => path.join(here, name))
     files.push(path.resolve(here, '../../scripts/backup-tenants.ts'))
     const writeCall = /\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\s*\(/

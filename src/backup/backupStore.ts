@@ -2,6 +2,11 @@ import { assertSnapshotCiphertext } from './backupCrypto.js'
 import { BackupTenantError } from './backupErrors.js'
 import { assertManifestSafe } from './backupManifest.js'
 
+export type BackupObjectHead = {
+  key: string
+  lastModified: string | null
+}
+
 export type BackupObjectStore = {
   putObject: (key: string, body: Buffer, contentType: string) => Promise<void>
   listKeys: (prefix: string) => Promise<string[]>
