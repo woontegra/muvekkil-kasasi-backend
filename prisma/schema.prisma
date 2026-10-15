@@ -428,6 +428,8 @@ enum OdemeYontemi {
   BANKA
   KREDI_KARTI
   DIGER
+  /// Yalnız dosya kasası masraf girişi; vekalet tahsilatında kabul edilmez (OfisKasaOdemeYontemi'nde yok).
+  BAROKART
 }
 
 /// Dosya / müvekkil kasasından bağımsız büro ofis kasası

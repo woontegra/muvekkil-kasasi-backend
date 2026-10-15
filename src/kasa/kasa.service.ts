@@ -183,7 +183,8 @@ async function buildKasaSearchOr(tenantId: string, dosyaId: string, q: string): 
     nakit: 'NAKIT',
     banka: 'BANKA',
     kredi: 'KREDI_KARTI',
-    kart: 'KREDI_KARTI'
+    kart: 'KREDI_KARTI',
+    barokart: 'BAROKART'
   }
   if (odemeMap[tipKey]) or.push({ odemeYontemi: odemeMap[tipKey] as Prisma.EnumOdemeYontemiFilter['equals'] })
 

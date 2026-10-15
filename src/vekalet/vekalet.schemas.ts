@@ -87,11 +87,19 @@ export const markTaksitSmmBodySchema = z.object({
 
 export type MarkTaksitSmmBody = z.infer<typeof markTaksitSmmBodySchema>
 
+/** Tahsilat ofis kasasına aynı yöntemle yazılır; OfisKasaOdemeYontemi'nde olmayan BAROKART kabul edilmez. */
+const vekaletOdemeYontemiSchema = z.enum([
+  OdemeYontemi.NAKIT,
+  OdemeYontemi.BANKA,
+  OdemeYontemi.KREDI_KARTI,
+  OdemeYontemi.DIGER
+])
+
 export const createVekaletTaksitOdemeBodySchema = z.object({
   /** Borçtan düşülecek tutar (alacak para biriminde). */
   tutar: tutarPositive,
   odemeTarihi: z.coerce.date().optional(),
-  odemeYontemi: z.nativeEnum(OdemeYontemi),
+  odemeYontemi: vekaletOdemeYontemiSchema,
   aciklama: z.string().trim().max(4000).optional().nullable(),
   smmKesildiMi: z.boolean().optional().default(false),
   tahsilatiYapanPersonelId: z.string().uuid().optional().nullable(),
@@ -113,7 +121,7 @@ export type CreateVekaletPesinOdemeBody = z.infer<typeof createVekaletPesinOdeme
 export const updateVekaletTaksitOdemeBodySchema = z.object({
   tutar: tutarPositive.optional(),
   odemeTarihi: z.coerce.date().optional(),
-  odemeYontemi: z.nativeEnum(OdemeYontemi).optional(),
+  odemeYontemi: vekaletOdemeYontemiSchema.optional(),
   aciklama: z.string().trim().max(4000).optional().nullable(),
   ...crossPaymentBodyFields
 })
